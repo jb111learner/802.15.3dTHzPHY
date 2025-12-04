@@ -16,40 +16,48 @@ class BaseTransmitter:
         self.preamble = None  # 前导码（SYNC+SFD+CES）
         self.modulated_data = None  # 调制后数据
 
-    def generate_header(self):
+    def add_header(self, data_bits):
         """生成头部（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 generate_header() 方法")
+        raise NotImplementedError("子类必须实现 add_header() 方法")
 
     def generate_preamble(self):
         """生成前导码（子类必须重写）"""
         raise NotImplementedError("子类必须实现 generate_preamble() 方法")
 
-    def _generate_random_data(self, length=None):
+    def _generate_random_data(self, length=int(10e5)):
         """生成随机二进制数据（内部辅助方法）"""
-        if length is None:
-            length = self.params.get("length_data")
-        return np.random.randint(0, 2, length)
+        return np.random.randint(0, 2, length, dtype=np.uint8)
 
     def modulate(self, data_bits):
         """调制（子类必须重写）"""
         raise NotImplementedError("子类必须实现 modulate() 方法")
+    
+    def channel_encode(self, data_bits):
+        """信道编码（子类可选重写）"""
+        return data_bits  # 默认不编码
 
     def insert_cp(self, data):
         """插入循环前缀（子类必须重写）"""
         raise NotImplementedError("子类必须实现 insert_cp() 方法")
+    
+    def pulse_shaping(self):
+        """脉冲成型（子类可选重写）"""
 
     def assemble_signal(self):
         """组装发射信号（子类必须重写）"""
         raise NotImplementedError("子类必须实现 assemble_signal() 方法")
 
-    def run(self):
+    def run(self,data_bits=None):
         """执行完整发射流程（统一调度）"""
-        self.generate_header()
         self.generate_preamble()
-        data_bits = self._generate_random_data()
+        if data_bits is None:
+            data_bits = self._generate_random_data()
+        data_bits = self.add_header(data_bits)
+        data_bits = self.channel_encode(data_bits)
         self.modulated_data = self.modulate(data_bits)
         data_with_cp = self.insert_cp(self.modulated_data)
-        self.assemble_signal(data_with_cp)
+        self.assemble_signal()
+        self.pulse_shaping()
         return self.tx_signal
 
 # # 使用示例（子类实现）
