@@ -1,48 +1,120 @@
 import numpy as np
 from scipy.signal import lfilter
-from transmitter.Pulseshaper import PulseShaper 
+from transmitter.Pulseshaper import TxPulseShaper 
+from params.PHYParams import PHYParams
+from transmitter.THzTransmitter import THzTransmitter
+from channel.THzChannel import THzChannel
+import matplotlib.pyplot as plt
+
+# 设置中文显示
+plt.rcParams["font.family"] = ["SimHei"]
+plt.rcParams["axes.unicode_minus"] = False
 
 class RxMatchedFilter:
-    """
-    接收端匹配滤波类：实现接收信号的匹配滤波和下采样，恢复原始符号
-    与发送端脉冲成型滤波器共轭匹配，最大化接收信噪比
-    """
     def __init__(self, tx_pulse_shaper):
-        """
-        初始化接收端匹配滤波器（直接复用发送端参数，保证匹配）
-        :param tx_pulse_shaper: 发送端TxPulseShaper实例
-        """
-        self.tx_params = tx_pulse_shaper
-        self.upsample_factor = tx_pulse_shaper.upsample_factor
+        self.upsample = tx_pulse_shaper.oversampling
+        self.chan_max_delay = tx_pulse_shaper.chan_max_delay
         self.filter_type = tx_pulse_shaper.filter_type
-        self.filter_coeffs = self._design_rx_matched_filter()
-
-    def _design_rx_matched_filter(self):
-        """设计接收端匹配滤波器（与发送端滤波器共轭匹配）"""
+        h = tx_pulse_shaper.filter_coeffs        # Tx RRC
+        
+        # 匹配滤波器 = 共轭翻转
         if self.filter_type == "rrc":
-            # 根升余弦匹配滤波：与发送端相同（RRC*RRC=RC）
-            matched_coeffs = self.tx_params.filter_coeffs
+            self.h_rx = h      
         else:
-            # 其他滤波器：共轭反转（保证相位匹配）
-            matched_coeffs = np.conj(self.tx_params.filter_coeffs[::-1])
-        return matched_coeffs
+            self.h_rx = np.conj(h[::-1])
 
-    def matched_filter(self, rx_signal):
-        """对接收信号进行匹配滤波"""
-        filtered_signal = lfilter(self.filter_coeffs, 1, rx_signal)
-        # 去除滤波器延迟
-        filtered_signal = filtered_signal[len(self.filter_coeffs)//2:]
-        return filtered_signal
+        # 发送 + 信道 + 接收总延迟
+        self.total_delay = (len(h) - 1) + self.chan_max_delay
 
-    def downsample_symbols(self, filtered_signal):
-        """对滤波后的信号下采样，恢复原始符号"""
-        # 下采样：取每个符号周期的最佳采样点（同步后）
-        downsampled = filtered_signal[::self.upsample_factor]
-        return downsampled
+    def matched_filter(self, rx):
+        # full 卷积才正确
+        y = np.convolve(rx, self.h_rx, 'full')
+        # 去除总延迟
+        y = y[self.total_delay:]
+        return y
+    
+    def downsample(self, y):
+        # 理论最佳采样点是 h 的中心
+        start = (self.upsample - 1)
+        return y[start::self.upsample]
 
     def recover_symbols(self, rx_signal):
-        """完整接收处理流程：匹配滤波 + 下采样"""
-        filtered_signal = self.matched_filter(rx_signal)
-        recovered_symbols = self.downsample_symbols(filtered_signal)
-        return recovered_symbols
+        y = self.matched_filter(rx_signal)
+        s = self.downsample(y)
+        return s
+
+
+# 测试
+if __name__ == "__main__":
+    # 初始化参数和发射机
+    params = PHYParams()
+    transmitter = THzTransmitter(params)
+    tx_signal = transmitter.run()
+    tx_symbols = transmitter.tx_symbols
+    # 初始化信道并生成接收信号
+    channel = THzChannel(params)
+    rx_signal = channel.run(tx_signal)
+    # 初始化接收端匹配滤波器
+    rx_matched_filter = RxMatchedFilter(transmitter.pulse_shaper)
+    # 恢复接收符号
+    recovered_symbols = rx_matched_filter.recover_symbols(rx_signal)
+    print(f"发射信号长度：{len(tx_signal)}, 接收信号长度：{len(rx_signal)}")
+    print(f"发射符号长度：{len(tx_symbols)}, 接收符号长度：{len(recovered_symbols)}")
+
+    # === 进行匹配滤波并获得中间信号 ===
+    y_matched = rx_matched_filter.matched_filter(rx_signal)
+    y_down = rx_matched_filter.downsample(y_matched)
+
+    # ================================
+    #        可视化绘图部分
+    # ================================
+
+    plt.figure(figsize=(10, 8))
+
+    # ---- 1. 时域波形（匹配滤波前）----
+    plt.subplot(2, 3, 1)
+    plt.plot(np.real(rx_signal[:2000]))
+    plt.title("接收信号（匹配滤波前）时域波形（实部）")
+    plt.xlabel("样本点")
+    plt.ylabel("幅度")
+
+    # ---- 2. 时域波形（匹配滤波后）----
+    plt.subplot(2, 3, 2)
+    plt.plot(np.real(y_matched[:2000]))
+    plt.title("匹配滤波后信号时域波形（实部）")
+    plt.xlabel("样本点")
+    plt.ylabel("幅度")
+
+    # ---- 3. 频域（匹配滤波前）----
+    plt.subplot(2, 3, 3)
+    RX = np.fft.fftshift(np.fft.fft(rx_signal))
+    plt.plot(20*np.log10(np.abs(RX) + 1e-12))
+    plt.title("接收信号（匹配滤波前）频谱")
+    plt.xlabel("频率Bin")
+    plt.ylabel("幅度 (dB)")
+
+    # ---- 4. 频域（匹配滤波后）----
+    plt.subplot(2, 3, 4)
+    MF = np.fft.fftshift(np.fft.fft(y_matched))
+    plt.plot(20*np.log10(np.abs(MF) + 1e-12))
+    plt.title("匹配滤波后信号频谱")
+    plt.xlabel("频率Bin")
+    plt.ylabel("幅度 (dB)")
+
+    # ---- 5. 时域（原始符号）----
+    plt.subplot(2, 3, 5)
+    plt.plot(np.real(tx_symbols[:1000]))
+    plt.title("发射符号时域波形（实部）")
+    plt.xlabel("样本点")
+    plt.ylabel("幅度")    
+
+    # ---- 6. 时域（恢复符号）----
+    plt.subplot(2, 3, 6)
+    plt.plot(np.real(recovered_symbols[:1000]))
+    plt.title("恢复符号时域波形（实部）")
+    plt.xlabel("样本点")
+    plt.ylabel("幅度")
+
+    plt.tight_layout()
+    plt.show()
     

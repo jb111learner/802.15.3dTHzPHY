@@ -13,10 +13,12 @@ class TxPulseShaper:
 
     def __init__(self, params):
         self.symbol_rate = params.get("symbol_rate")
-        self.sample_rate = params.get("sample_rate")
+        self.oversampling = params.get("oversampling")
+        self.sample_rate = self.symbol_rate * self.oversampling
         self.rolloff = params.get("rolloff")
         self.filter_type = params.get("filter_type").lower()
         self.filter_length = params.get("filter_length")
+        self.chan_max_delay = max(params.get("chan_delays"))
 
         self.sps = int(self.sample_rate / self.symbol_rate)
         self._validate_params()
