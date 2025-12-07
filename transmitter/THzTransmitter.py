@@ -2,13 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 from core.BaseTransmitter import BaseTransmitter
-from HeaderGenerator import HeaderGenerator
-from PreambleGenerator import PreambleGenerator
-from Modulator import QAMModulator as Modulator
-from CPInserter import CPInserter
+from .HeaderGenerator import HeaderGenerator
+from .PreambleGenerator import PreambleGenerator
+from .Modulator import QAMModulator as Modulator
+from .CPInserter import CPInserter
 # from utils.Rotator import Rotator  # 信号旋转工具
 from utils.Coder import RSCoder 
-from Pulseshaper import TxPulseShaper
+from .Pulseshaper import TxPulseShaper
 from params.PHYParams import PHYParams
 
 class THzTransmitter(BaseTransmitter):
@@ -24,6 +24,7 @@ class THzTransmitter(BaseTransmitter):
         self.rscoder = RSCoder(params)
         self.cp_inserter = CPInserter(params)
         self.testbits_len = int(10e5)  # 测试用数据比特长度
+        self.pulse_shaper = TxPulseShaper(params)
         # self.rotator = Rotator()
 
     def add_header(self, data_bits):
@@ -71,7 +72,7 @@ class THzTransmitter(BaseTransmitter):
         # delay_signal = np.zeros(delay, dtype=complex)
         
         # 5. 组装完整信号
-        self.tx_signal = np.concatenate([
+        self.tx_symbols = np.concatenate([
             # delay_signal,
             self.preamble,
             data_with_cp
@@ -79,8 +80,7 @@ class THzTransmitter(BaseTransmitter):
 
     def pulse_shaping(self):
         """脉冲成型（调用TxPulseShaper）"""
-        pulse_shaper = TxPulseShaper(self.params)
-        shaped_signal = pulse_shaper.shape_pulse(self.tx_signal)
+        shaped_signal = self.pulse_shaper.shape_pulse(self.tx_symbols)
         self.tx_signal = shaped_signal
 
 # 测试
@@ -108,8 +108,8 @@ if __name__ == "__main__":
         "系统带宽": params.get("bandwidth"),
         "子帧长度": params.get("subframe_length"),
         "CP长度": params.get("cp_length"),
-        "符号率": params.get("symbol_rate"),
-        "采样率": params.get("sample_rate"),
+        "符号速率": params.get("symbol_rate"),
+        "上采样率": params.get("oversampling"),
         "滚降系数": params.get("rolloff"),
         "滤波器类型": params.get("filter_type"),
         "滤波器长度": params.get("filter_length"),
@@ -186,7 +186,7 @@ if __name__ == "__main__":
     
     # 子图2: 频域频谱
     fft_signal = np.fft.fft(tx_signal)
-    freq = np.fft.fftfreq(len(fft_signal), 1/params.get("sample_rate"))
+    freq = np.fft.fftfreq(len(fft_signal), 1/(params.get("symbol_rate") * params.get("oversampling")))
     ax2.plot(freq/1e9, 20*np.log10(np.abs(fft_signal)))
     ax2.set_title('信号频域频谱')
     ax2.set_xlabel('频率 (GHz)')
@@ -194,9 +194,12 @@ if __name__ == "__main__":
     ax2.grid(True, alpha=0.3)
     
     # 子图3: 调制符号星座图
-    ax3.scatter(np.real(transmitter.modulated_data[:1000]), 
-                np.imag(transmitter.modulated_data[:1000]), 
+    ax3.scatter(transmitter.modulated_data[:1000].real, 
+                transmitter.modulated_data[:1000].imag,
                 s=5, alpha=0.6, c='orange')
+    # ax3.scatter(tx_signal[:1000].real, 
+    #         tx_signal[:1000].imag,
+    #         s=5, alpha=0.6, c='orange')
     ax3.set_title('调制符号星座图（前1000符号）')
     ax3.set_xlabel('实部')
     ax3.set_ylabel('虚部')
