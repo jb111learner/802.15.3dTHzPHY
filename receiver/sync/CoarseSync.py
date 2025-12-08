@@ -1,4 +1,9 @@
 import numpy as np
+from params.PHYParams import PHYParams
+from transmitter.THzTransmitter import THzTransmitter
+from channel.THzChannel import THzChannel
+from receiver.MatchedFilter import RxMatchedFilter
+import matplotlib.pyplot as plt
 
 class CoarseSync:
     """
@@ -6,12 +11,12 @@ class CoarseSync:
     基于重复SYNC序列的自相关检测，实现帧起始定位
     支持short/long两种SYNC类型，分块处理、功率归一化、模式匹配筛选
     """
-    def __init__(self, params):
-        self.params = params
+    def __init__(self, tx_preamble, sync_threshold=0.1, scaling_factor=5):
         # 核心参数（对齐MATLAB）
-        self.symbol_length = 128  # a128序列长度
-        self.sync_threshold = 0.8  # 相关性阈值（0~1）
-        self.scaling_factor = 5    # 连续高相关区间长度阈值（倍symbol_length）
+        self.base_sequences_length = len(tx_preamble.a128)  # a128序列长度
+        self.sync_threshold = sync_threshold  # 相关性阈值（0~1）
+        self.scaling_factor = scaling_factor    # 连续高相关区间长度阈值（倍base_sequences_length）
+        self.sync_type = tx_preamble.preamble_type  # SYNC类型 'short'/'long'
         self.p_noise = np.finfo(np.float64).eps  # 防除零极小值
 
     def _pattern_match(self, data, pattern):
@@ -46,6 +51,8 @@ class CoarseSync:
         :return: packet_start（块内帧偏移）, Mn（归一化相关性统计值）
         """
         # 信号延迟：错开symbol_length个采样点
+        if rx_sig.shape[0] <= symbol_length:
+            return [], np.array([])  # 信号过短，直接返回空
         rx_delayed = rx_sig[symbol_length:, :]  # 延迟信号
         rx = rx_sig[:-symbol_length, :]         # 原始信号
 
@@ -54,33 +61,46 @@ class CoarseSync:
         # 共轭相乘
         corr_raw = np.conj(rx_delayed) * rx
         # 滑动求和（等价于MATLAB filter(weights,1,x)）
-        C = np.zeros((corr_raw.shape[0] - symbol_length + 1, corr_raw.shape[1]))
+        # C = np.zeros((corr_raw.shape[0] - symbol_length + 1, corr_raw.shape[1]))
+        # for c in range(corr_raw.shape[1]):
+        #     C[:, c] = np.convolve(corr_raw[:, c].real, weights.flatten(), mode='valid') + \
+        #               1j * np.convolve(corr_raw[:, c].imag, weights.flatten(), mode='valid')
+        C = []
         for c in range(corr_raw.shape[1]):
-            C[:, c] = np.convolve(corr_raw[:, c].real, weights.flatten(), mode='valid') + \
-                      1j * np.convolve(corr_raw[:, c].imag, weights.flatten(), mode='valid')
+            # 复信号直接卷积，保留相位信息
+            conv_res = np.convolve(corr_raw[:, c], np.ones(symbol_length), mode='valid')
+            C.append(conv_res)
+        C = np.stack(C, axis=1)
         # 多通道求和 + 归一化
         C_sum = np.sum(C, axis=1)
-        CS = C_sum[symbol_length:] / symbol_length
+        CS = C_sum / symbol_length
 
         # 2. 计算接收信号功率（滑动求和 + 多通道求和）
-        power_raw = np.abs(rx_delayed) ** 2 / symbol_length
-        P = np.zeros((power_raw.shape[0] - symbol_length + 1, power_raw.shape[1]))
+        power_raw = np.abs(rx_delayed) ** 2
+        P = []
         for c in range(power_raw.shape[1]):
-            P[:, c] = np.convolve(power_raw[:, c], weights.flatten(), mode='valid')
+            conv_res = np.convolve(power_raw[:, c], np.ones(symbol_length), mode='valid')
+            P.append(conv_res)
+        P = np.stack(P, axis=1)
         P_sum = np.sum(P, axis=1)
-        PS = P_sum[symbol_length:] + self.p_noise  # 防除零
+        PS = (P_sum / symbol_length) + self.p_noise
 
         # 3. 功率归一化的相关性统计值
-        Mn = (np.abs(CS) ** 2) / (PS ** 2)
-        # 归一化到0~1
-        Mn_norm = Mn / (np.max(Mn) + self.p_noise)
+        Mn = (np.abs(CS) ** 2) / (PS)
+        # 归一化到0~1（避免数值溢出）
+        Mn_max = np.max(Mn) if len(Mn) > 0 else self.p_noise
+        Mn_norm = Mn / Mn_max
 
         # 4. 阈值判决 + 模式匹配筛选连续高相关区间
+        if len(Mn_norm) == 0:
+            return [], Mn_norm
         N = (Mn_norm > threshold).astype(int)  # 二值化（1=超过阈值，0=未超过）
         packet_start = []
 
-        if np.sum(N) >= symbol_length * self.scaling_factor:
-            # 构造扩展序列（对齐MATLAB：[N(1)~=1 N.' N(end)~=1]）
+        # 放宽长度条件：测试场景下降低阈值更容易检测到
+        min_valid_len = symbol_length * self.scaling_factor
+        if np.sum(N) >= min_valid_len:
+            # 构造扩展序列（对齐MATLAB：[N(1)~=1 N N(end)~=1]）
             N_ext_start = np.concatenate([[1 - N[0]], N])
             N_ext_end = np.concatenate([N, [1 - N[-1]]])
             # 找“0→1”起始位置、“1→0”结束位置
@@ -91,15 +111,14 @@ class CoarseSync:
                 # 计算每个连续区间的长度
                 length_ones = end_ones - start_ones + 1
                 # 筛选超过长度阈值的区间
-                valid_idx = np.where(length_ones > symbol_length * self.scaling_factor)[0]
+                valid_idx = np.where(length_ones >= min_valid_len)[0]
                 if len(valid_idx) > 0:
-                    # 取第一个最长有效区间的起始位置
-                    max_len_idx = valid_idx[np.argmax(length_ones[valid_idx])]
-                    packet_start = start_ones[max_len_idx] - 1  # 块内偏移
+                    # 取第一个有效区间的起始位置
+                    packet_start = [start_ones[valid_idx[0]] - 1]
 
         return packet_start, Mn_norm
 
-    def detect_sync(self, rx_signal, sync_type='short'):
+    def detect_sync(self, rx_signal):
         """
         主检测函数（对齐MATLAB Frame_detect）
         :param rx_signal: 接收信号（N×C或N，C为通道数）
@@ -113,14 +132,14 @@ class CoarseSync:
         num_channels = rx_signal.shape[1]
 
         # 1. SYNC参数初始化（对齐MATLAB）
-        if sync_type == 'short':
+        if self.sync_type == 'short':
             num_repetitions = 14  # short: a128重复14次
-        elif sync_type == 'long':
+        elif self.sync_type == 'long':
             num_repetitions = 28  # long: a128重复28次
         else:
             raise ValueError("sync_type仅支持 'short' 或 'long'")
         
-        len_sync = self.symbol_length * num_repetitions
+        len_sync = self.base_sequences_length * num_repetitions
         len_half_sync = len_sync // 2
 
         # 2. 补零处理：使输入长度为len_half_sync的整数倍
@@ -135,10 +154,10 @@ class CoarseSync:
 
         # 3. 分块处理初始化
         num_blocks = (padded_length) // len_half_sync
-        # 预分配相关性统计数组（对齐MATLAB DS）
-        ds_len = padded_length - 2 * self.symbol_length + 1
+        # 预分配相关性统计数组
+        ds_len = max(1, padded_length - 2 * self.base_sequences_length + 1)
         DS = np.zeros((ds_len, 1), dtype=np.float64)
-        coarse_offset = []
+        coarse_offset = None
         Mn = np.array([])
 
         # 4. 分块处理信号
@@ -147,66 +166,92 @@ class CoarseSync:
                 # 提取当前块（长度为len_sync）
                 start_idx = n * len_half_sync
                 end_idx = start_idx + len_sync
+                if end_idx > rx_padded.shape[0]:
+                    continue
                 buffer = rx_padded[start_idx:end_idx, :]
                 
                 # 自相关检测
-                start_offset, out = self._correlate_samples(buffer, self.symbol_length, self.sync_threshold)
+                start_offset, out = self._correlate_samples(buffer, self.base_sequences_length, self.sync_threshold)
                 
-                # 保存相关性统计值
-                ds_start = start_idx
-                ds_end = start_idx + len_half_sync
-                DS[ds_start:ds_end, 0] = out[:len_half_sync]
-
                 # 检测到帧：修正全局偏移并返回
                 if len(start_offset) > 0:
-                    coarse_offset = start_offset + start_idx
-                    DS[start_idx:start_idx + len(out), 0] = out
-                    Mn = DS[:start_idx + len(out), 0]
+                    coarse_offset = start_offset[0] + start_idx
+                    Mn = out
                     return coarse_offset, Mn
 
             # 处理最后一个块
             blk_offset = len_half_sync * (num_blocks - 2)
-            buffer = np.concatenate([rx_padded[blk_offset:, :], pad_samples], axis=0)[:len_sync, :]
-            start_offset, out = self._correlate_samples(buffer, self.symbol_length, self.sync_threshold)
+            buffer = rx_padded[blk_offset:blk_offset + len_sync, :]
+            # 补零到len_sync长度
+            if buffer.shape[0] < len_sync:
+                buffer = np.concatenate([buffer, np.zeros((len_sync - buffer.shape[0], num_channels), dtype=buffer.dtype)], axis=0)
+            start_offset, out = self._correlate_samples(buffer, self.base_sequences_length, self.sync_threshold)
             
             if len(start_offset) > 0:
-                coarse_offset = start_offset + blk_offset
-            DS[blk_offset:blk_offset + len(out), 0] = out
-            Mn = DS[:padded_length - num_pad_samples, 0]  # 去除补零部分
+                coarse_offset = start_offset[0] + blk_offset
+            Mn = out
 
         else:
             # 信号较短：直接处理补零后的完整信号
             buffer = np.concatenate([rx_signal, pad_samples], axis=0)[:len_sync, :]
-            start_offset, out = self._correlate_samples(buffer, self.symbol_length, self.sync_threshold)
-            coarse_offset = start_offset
+            start_offset, out = self._correlate_samples(buffer, self.base_sequences_length, self.sync_threshold)
+            if len(start_offset) > 0:
+                coarse_offset = start_offset[0]
             Mn = out
 
-        # 适配返回格式（无检测结果时返回空，否则返回数值）
-        coarse_offset = coarse_offset[0] if isinstance(coarse_offset, (list, np.ndarray)) and len(coarse_offset) > 0 else None
+        # 去除补零影响：裁剪Mn到原始信号长度
+        if len(Mn) > inp_length:
+            Mn = Mn[:inp_length]
+
         return coarse_offset, Mn
 
 # 测试代码
 if __name__ == "__main__":
-    # 模拟PHY参数类（替代实际PHYParams）
-    class PHYParams:
-        pass
-
+    # 初始化参数和发射机
     params = PHYParams()
-    coarse_sync = CoarseSync(params)
+    transmitter = THzTransmitter(params)
+    tx_signal = transmitter.run()
+    tx_symbols = transmitter.tx_symbols
+    tx_preamble = transmitter.preamble_gen
+    # 初始化信道并生成接收信号
+    channel = THzChannel(params)
+    rx_signal = channel.run(tx_signal)
+    # 初始化接收端匹配滤波器
+    rx_matched_filter = RxMatchedFilter(transmitter.pulse_shaper)
+    # 恢复接收符号
+    recovered_symbols = rx_matched_filter.recover_symbols(rx_signal)
+    coarse_sync = CoarseSync(tx_preamble, sync_threshold=0.01, scaling_factor=5)
 
-    # 生成测试信号：含重复a128序列的SYNC + 噪声
-    symbol_length = 128
-    # 生成ZC序列（a128）
-    sync_seq = np.exp(-1j * np.pi * 3 * np.arange(symbol_length) * (np.arange(symbol_length) + 1) / symbol_length)
-    # short SYNC：a128重复14次
-    sync_short = np.tile(sync_seq, 14)
-    # 构造接收信号：前导零 + SYNC + 噪声
-    rx_signal = np.concatenate([
-        np.zeros(500, dtype=np.complex128),  # 前导零（真实偏移500）
-        sync_short,                          # short SYNC序列
-        np.random.randn(1000) + 1j * np.random.randn(1000)  # 噪声
-    ])
+    # 检测SYNC
+    offset, corr_norm = coarse_sync.detect_sync(recovered_symbols[:2000])
+    print(f"粗同步偏移：{offset}")
 
-    # 检测short类型SYNC
-    offset, corr_norm = coarse_sync.detect_sync(rx_signal, sync_type='short')
-    print(f"粗同步偏移：{offset}（真实偏移：500）")
+     # ===================== 5. 可视化结果 =====================
+    plt.figure(figsize=(12, 6))
+    
+    # 子图1：接收信号的幅度
+    plt.subplot(2, 1, 1)
+    plt.plot(np.abs(recovered_symbols[:2000]), label='接收信号幅度')
+    plt.axvline(x=params.get("delay"), color='r', linestyle='--', label=f'真实偏移：{params.get("delay")}')
+    if offset is not None:
+        plt.axvline(x=offset, color='g', linestyle='--', label=f'检测偏移：{offset}')
+    plt.title('接收信号幅度')
+    plt.xlabel('采样点')
+    plt.ylabel('幅度')
+    plt.legend()
+    plt.grid(True)
+    
+    # 子图2：相关性统计值Mn（归一化）
+    plt.subplot(2, 1, 2)
+    plt.plot(corr_norm, label='Mn归一化值')
+    plt.axhline(y=coarse_sync.sync_threshold, color='r', linestyle='-', label=f'阈值：{coarse_sync.sync_threshold}')
+    if offset is not None:
+        plt.axvline(x=offset, color='g', linestyle='--', label=f'检测偏移：{offset}')
+    plt.title('归一化相关性统计值Mn')
+    plt.xlabel('采样点')
+    plt.ylabel('Mn (0~1)')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()

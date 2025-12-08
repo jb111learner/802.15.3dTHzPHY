@@ -5,7 +5,7 @@ import matplotlib as mpl
 from params.PHYParams import PHYParams
 
 # 设置中文字体和编码
-plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
+plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
 class QAMModulator:

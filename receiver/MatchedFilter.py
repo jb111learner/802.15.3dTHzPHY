@@ -72,21 +72,21 @@ if __name__ == "__main__":
     plt.figure(figsize=(10, 8))
 
     # ---- 1. 时域波形（匹配滤波前）----
-    plt.subplot(2, 3, 1)
+    plt.subplot(3, 3, 1)
     plt.plot(np.real(rx_signal[:2000]))
     plt.title("接收信号（匹配滤波前）时域波形（实部）")
     plt.xlabel("样本点")
     plt.ylabel("幅度")
 
     # ---- 2. 时域波形（匹配滤波后）----
-    plt.subplot(2, 3, 2)
+    plt.subplot(3, 3, 2)
     plt.plot(np.real(y_matched[:2000]))
     plt.title("匹配滤波后信号时域波形（实部）")
     plt.xlabel("样本点")
     plt.ylabel("幅度")
 
     # ---- 3. 频域（匹配滤波前）----
-    plt.subplot(2, 3, 3)
+    plt.subplot(3, 3, 3)
     RX = np.fft.fftshift(np.fft.fft(rx_signal))
     plt.plot(20*np.log10(np.abs(RX) + 1e-12))
     plt.title("接收信号（匹配滤波前）频谱")
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     plt.ylabel("幅度 (dB)")
 
     # ---- 4. 频域（匹配滤波后）----
-    plt.subplot(2, 3, 4)
+    plt.subplot(3, 3, 4)
     MF = np.fft.fftshift(np.fft.fft(y_matched))
     plt.plot(20*np.log10(np.abs(MF) + 1e-12))
     plt.title("匹配滤波后信号频谱")
@@ -102,18 +102,19 @@ if __name__ == "__main__":
     plt.ylabel("幅度 (dB)")
 
     # ---- 5. 时域（原始符号）----
-    plt.subplot(2, 3, 5)
+    plt.subplot(3, 3, 5)
     plt.plot(np.real(tx_symbols[:1000]))
     plt.title("发射符号时域波形（实部）")
     plt.xlabel("样本点")
     plt.ylabel("幅度")    
 
     # ---- 6. 时域（恢复符号）----
-    plt.subplot(2, 3, 6)
+    plt.subplot(3, 3, 6)
     plt.plot(np.real(recovered_symbols[:1000]))
     plt.title("恢复符号时域波形（实部）")
     plt.xlabel("样本点")
     plt.ylabel("幅度")
+
 
     plt.tight_layout()
     plt.show()

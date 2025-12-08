@@ -10,6 +10,7 @@ from .CPInserter import CPInserter
 from utils.Coder import RSCoder 
 from .Pulseshaper import TxPulseShaper
 from params.PHYParams import PHYParams
+from utils.Scrambler import Scrambler  # 新增导入扰码器
 
 class THzTransmitter(BaseTransmitter):
     """
@@ -25,6 +26,7 @@ class THzTransmitter(BaseTransmitter):
         self.cp_inserter = CPInserter(params)
         self.testbits_len = int(10e5)  # 测试用数据比特长度
         self.pulse_shaper = TxPulseShaper(params)
+        self.scrambler = Scrambler(params)  # 初始化扰码器
         # self.rotator = Rotator()
 
     def add_header(self, data_bits):
@@ -38,6 +40,11 @@ class THzTransmitter(BaseTransmitter):
         """生成前导码（SYNC+SFD+CES）"""
         sync, sfd, ces = self.preamble_gen.generate()
         self.preamble = np.concatenate([sync, sfd, ces])
+
+    def scramble_data(self, data_bits):
+        # 仅对纯数据扰码
+        scrambled_data = self.scrambler.scramble(data_bits)
+        return scrambled_data
 
     def channel_encode(self, data_bits):
         """信道编码（调用RSCoder）"""
@@ -60,28 +67,74 @@ class THzTransmitter(BaseTransmitter):
         # 2. 添加头部
         data_bits = self.add_header(data_bits)
 
+        # 2.5 扰码数据
+        data_bits = self.scramble_data(data_bits)
+
         # 3. 信道编码
         coded_bits = self.channel_encode(data_bits)
         
         # 4. 调制数据并插入CP
         self.modulated_data = self.modulate(coded_bits)
-        data_with_cp = self.insert_cp(self.modulated_data)
+        self.data_with_cp = self.insert_cp(self.modulated_data)
 
-        # 4. 添加前置延迟
-        # delay = self.params.get("delay")
-        # delay_signal = np.zeros(delay, dtype=complex)
+        # 5. 添加前置延迟
+        delay = self.params.get("delay")
+        delay_signal = np.zeros(delay, dtype=np.complex128)
         
-        # 5. 组装完整信号
+        # 6. 组装完整信号
         self.tx_symbols = np.concatenate([
-            # delay_signal,
+            delay_signal,
             self.preamble,
-            data_with_cp
+            self.data_with_cp
         ])
 
     def pulse_shaping(self):
         """脉冲成型（调用TxPulseShaper）"""
         shaped_signal = self.pulse_shaper.shape_pulse(self.tx_symbols)
         self.tx_signal = shaped_signal
+
+# 新增眼图绘制函数
+def plot_eye_diagram(signal, symbol_period, num_symbols=1000, oversampling=1, ax=None):
+    """
+    绘制眼图
+    参数：
+        signal: 输入的复信号（时域波形）
+        symbol_period: 符号周期（采样点数）
+        num_symbols: 用于绘制眼图的符号数量
+        oversampling: 上采样率
+        ax: 绘图的坐标轴对象
+    """
+    if ax is None:
+        ax = plt.gca()
+    
+    # 提取实部和虚部分别绘制眼图
+    signal_real = np.real(signal)
+    signal_imag = np.imag(signal)
+    
+    # 计算每个符号的采样点数
+    samples_per_symbol = symbol_period * oversampling
+    
+    # 截取有效信号段（跳过前导码和延迟，取数据段）
+    start_idx = int(len(signal) * 0.1)  # 跳过前10%的信号（前导码+延迟）
+    end_idx = start_idx + num_symbols * samples_per_symbol
+    if end_idx > len(signal):
+        end_idx = len(signal)
+    signal_segment = signal_real[start_idx:end_idx]
+    
+    # 重排数据为二维数组：每行一个符号周期的采样点
+    num_rows = len(signal_segment) // samples_per_symbol
+    eye_data = signal_segment[:num_rows * samples_per_symbol].reshape(-1, samples_per_symbol)
+    
+    # 绘制实部眼图
+    for i in range(num_rows):
+        ax.plot(eye_data[i], alpha=0.1, color='blue')
+    
+    # 美化眼图
+    ax.set_title('信号眼图（实部）', fontweight='bold')
+    ax.set_xlabel('符号周期内采样点')
+    ax.set_ylabel('幅值（实部）')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, samples_per_symbol-1)
 
 # 测试
 if __name__ == "__main__":
@@ -124,6 +177,7 @@ if __name__ == "__main__":
     print("\n【2. 执行发射机信号生成流程】")
     # 生成前导码（确保preamble已初始化）
     tx_signal = transmitter.run()
+    
     # 3. 详细信号参数统计
     print("\n【3. 信号详细参数统计】")
     # 基础长度信息
@@ -169,22 +223,24 @@ if __name__ == "__main__":
     for res in verify_results:
         print(f"  {res}")
     
-    # 5. 信号可视化
+    # 5. 信号可视化（修改为5个子图，增加眼图）
     print("\n【5. 信号可视化】")
-    # 创建多子图展示
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-    fig.suptitle('太赫兹发射机信号分析', fontsize=16, fontweight='bold')
+    # 创建2行3列的子图布局（最后一列放眼图）
+    fig = plt.figure(figsize=(18, 10))
+    gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
     
     # 子图1: 时域波形（前1000个采样点）
-    ax1.plot(np.arange(1000), np.real(tx_signal[:1000]), label='实部', alpha=0.8, linewidth=0.8)
-    ax1.plot(np.arange(1000), np.imag(tx_signal[:1000]), label='虚部', alpha=0.8, linewidth=0.8)
-    ax1.set_title('信号时域波形（前1000采样点）')
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.plot(np.arange(5000), np.imag(tx_signal[5000:10000]), label='虚部', alpha=0.8, linewidth=0.1)
+    ax1.plot(np.arange(5000), np.real(tx_signal[5000:10000]), label='实部', alpha=0.6, linewidth=0.8)
+    ax1.set_title('信号时域波形（第5000-10000采样点）')
     ax1.set_xlabel('采样点')
     ax1.set_ylabel('幅值')
     ax1.grid(True, alpha=0.3)
     ax1.legend()
     
     # 子图2: 频域频谱
+    ax2 = fig.add_subplot(gs[0, 1])
     fft_signal = np.fft.fft(tx_signal)
     freq = np.fft.fftfreq(len(fft_signal), 1/(params.get("symbol_rate") * params.get("oversampling")))
     ax2.plot(freq/1e9, 20*np.log10(np.abs(fft_signal)))
@@ -194,27 +250,38 @@ if __name__ == "__main__":
     ax2.grid(True, alpha=0.3)
     
     # 子图3: 调制符号星座图
-    ax3.scatter(transmitter.modulated_data[:1000].real, 
-                transmitter.modulated_data[:1000].imag,
+    ax3 = fig.add_subplot(gs[0, 2])
+    ax3.scatter(transmitter.tx_symbols[9000:10000].real, 
+                transmitter.tx_symbols[9000:10000].imag,
                 s=5, alpha=0.6, c='orange')
-    # ax3.scatter(tx_signal[:1000].real, 
-    #         tx_signal[:1000].imag,
-    #         s=5, alpha=0.6, c='orange')
-    ax3.set_title('调制符号星座图（前1000符号）')
+    ax3.set_title('调制符号星座图')
     ax3.set_xlabel('实部')
     ax3.set_ylabel('虚部')
     ax3.grid(True, alpha=0.3)
     ax3.axis('equal')
     
     # 子图4: 信号功率分布
-    power = np.abs(tx_signal[:1000])**2
-    ax4.plot(np.arange(1000), power, linewidth=0.8, color='green')
-    ax4.set_title('信号功率分布（前1000采样点）')
+    ax4 = fig.add_subplot(gs[1, 0])
+    power = np.abs(tx_signal[5000:10000])**2
+    ax4.plot(np.arange(5000), power, linewidth=0.8, color='green')
+    ax4.set_title('信号功率分布（第5000-10000采样点）')
     ax4.set_xlabel('采样点')
     ax4.set_ylabel('功率 (W)')
     ax4.grid(True, alpha=0.3)
     
-    plt.tight_layout()
+    # 子图5: 眼图（新增）
+    ax5 = fig.add_subplot(gs[1, 1:])  # 占据第2行后两列
+    # 计算符号周期（根据采样率和符号速率）
+    symbol_period = int(params.get("oversampling"))  # 每个符号的采样点数
+    plot_eye_diagram(
+        signal=tx_signal,
+        symbol_period=3,  # 基础符号周期
+        num_symbols=500,  # 绘制500个符号的眼图
+        oversampling=symbol_period,
+        ax=ax5
+    )
+    
+    fig.suptitle('太赫兹发射机信号分析', fontsize=16, fontweight='bold')
     plt.show()
     
     # # 6. 数据保存（可选）

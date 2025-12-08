@@ -18,21 +18,24 @@ class PHYParams(BaseParams):
             "subframe_length": 480,                                                                 # 数据子帧长度
             "cp_length": 32,                                                                        # 循环前缀长度
 
+            "scrambler_init": np.array([1,0,1,1,0,1,0], dtype=int),                                 # 扰码器初始状态（7位）
+
             "rs_nsym": 16,                                                                          # Reed-Solomon校验符号数量
             "rs_c_exp": 8,                                                                          # Reed-Solomon有限域指数
             "rs_packet_size": 192,                                                                  # Reed-Solomon编码包大小
 
             "symbol_rate": 30e9,                                                                    # 符号率
             "oversampling": 4,                                                                      # 采样率
-            "rolloff": 0.2,                                                                         # 滚降系数
-            "filter_type": "rrc",                                                                   # 滤波器类型（根升余弦）
-            "filter_length": 65,                                                                    # 滤波器长度（采样点数）    
+            "rolloff": 0.22,                                                                        # 滚降系数
+            "filter_type": "rrc",                                                                    # 滤波器类型（根升余弦）
+            "filter_length": 8,                                                                    # 滤波器长度（采样点数）    
 
-            "chan_delays": np.array([0, 8, 16, 24]),                                                # 多径时延（采样点单位）
+            "delay": 0,                                                                             # 前置延迟（采样点数）
+            "chan_delays": np.array([0, 8, 16, 24]),                                                # 多径时延（采样点数）
             "chan_gains": np.array([0.9, 0.7, 0.5*np.exp(-1j*np.pi/6), 0.25*np.exp(-1j*np.pi/3)]),  # 多径增益
-            "SNRdB": 10,                                                                            # 信噪比
+            "SNRdB": 30,                                                                            # 信噪比
             "fc": 1000e9,                                                                           # 载波频率（1 THz）
-            "ppm": 0.1,                                                                              # 频偏ppm值（典型值30 ppm）
+            "ppm": 0.1,                                                                             # 频偏ppm值
         }
 
     def validate(self):
