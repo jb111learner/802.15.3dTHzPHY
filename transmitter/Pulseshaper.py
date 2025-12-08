@@ -27,330 +27,256 @@ class TxPulseShaper:
         self.filter_coeffs = self._design_tx_filter()
 
     def _validate_params(self):
-        if self.sample_rate % self.symbol_rate != 0:
-            raise ValueError("采样率必须为符号率整数倍")
+        """参数合法性校验（修复命名+逻辑）"""
+        if self.oversampling < 1 or not isinstance(self.oversampling, int):
+            raise ValueError(f"上采样率必须为正整数，当前值：{self.oversampling}")
         if not (0 <= self.rolloff <= 1):
-            raise ValueError("滚降系数必须在0~1之间")
+            raise ValueError(f"滚降系数必须在0~1之间，当前值：{self.rolloff}")
         if self.filter_type not in ["rc", "rrc", "rect"]:
-            raise ValueError("仅支持 rc/rrc/rect")
-        if self.filter_length % 2 == 0:
-            raise ValueError("滤波器长度必须为奇数个符号")
+            raise ValueError(f"仅支持 rc/rrc/rect，当前值：{self.filter_type}")
 
-    # ----------------------- RC / RRC 数学公式 -----------------------
-    def _raised_cosine(self, t, beta, T):
-        h = np.zeros_like(t)
+    # ----------------------- 核心：RC/RRC 数学公式（带归一化） -----------------------
+    # def _raised_cosine(self, t, beta, T):
+    #     """升余弦滤波器（RC）：时域公式，带鲁棒性处理+能量归一化"""
+    #     h = np.zeros_like(t, dtype=np.float64)
+    #     pi = np.pi
+    #     for i, ti in enumerate(t):
+    #         ti_abs = abs(ti)
+    #         if ti_abs < 1e-12:
+    #             h[i] = 1.0
+    #         elif beta > 1e-12 and abs(1 - (2 * beta * ti / T)**2) < 1e-12:
+    #             h[i] = (pi / 4) * np.sinc(1 / (2 * beta))
+    #         else:
+    #             if beta < 1e-12:
+    #                 h[i] = 1.0 if ti_abs <= T/2 else 0.0
+    #             else:
+    #                 term1 = np.sin(pi * ti / T * (1 - beta))
+    #                 term2 = 4 * beta * ti / T * np.cos(pi * ti / T * (1 + beta))
+    #                 numerator = term1 + term2
+    #                 denominator = pi * ti / T * (1 - (4 * beta * ti / T)**2)
+    #                 h[i] = numerator / denominator if abs(denominator) > 1e-12 else 0.0
+    #     # 能量归一化（关键：保证滤波后信号功率稳定）
+    #     h = h / np.sqrt(np.sum(h**2)) if np.sum(h**2) > 1e-12 else h
+    #     return np.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
 
-        for i, ti in enumerate(t):
+    # def _root_raised_cosine(self, t, beta, T):
+    #     """根升余弦滤波器（RRC）：修复归一化问题"""
+    #     h = np.zeros_like(t, dtype=np.float64)
+    #     pi = np.pi
+    #     for i, ti in enumerate(t):
+    #         ti_abs = abs(ti)
+    #         if ti_abs < 1e-12:
+    #             h[i] = (1 + beta * (4/np.pi - 1)) / np.sqrt(T)
+    #         elif beta > 1e-12 and abs(ti_abs - T/(4*beta)) < 1e-12:
+    #             h[i] = (beta / np.sqrt(2*T)) * (
+    #                 (1 + 2/np.pi) * np.sin(pi/(4*beta)) +
+    #                 (1 - 2/np.pi) * np.cos(pi/(4*beta))
+    #             )
+    #         else:
+    #             if beta < 1e-12:
+    #                 h[i] = 1.0 / np.sqrt(T) if ti_abs <= T/2 else 0.0
+    #             else:
+    #                 numerator = np.sin(pi * ti * (1 - beta)/T) + \
+    #                             4 * beta * ti/T * np.cos(pi * ti * (1 + beta)/T)
+    #                 denominator = pi * ti/T * (1 - (4 * beta * ti/T)**2) * np.sqrt(T)
+    #                 h[i] = numerator / denominator if abs(denominator) > 1e-12 else 0.0
+    #     # 能量归一化（新增：修复眼图幅值异常）
+    #     h = h / np.sqrt(np.sum(h**2)) if np.sum(h**2) > 1e-12 else h
+    #     return np.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # def _design_tx_filter(self):
+    #     """生成滤波器系数（修复矩形滤波器截断）"""
+    #     T = 1.0 / self.symbol_rate  # 符号周期
+    #     # 滤波器抽头数 = 符号长度 × 每符号采样数
+    #     taps = self.filter_length * self.sps
+    #     # 时间向量（对称，单位：秒）
+    #     t = np.arange(-taps//2, taps//2 + 1) / self.sample_rate
+
+    #     if self.filter_type == "rect":
+    #         # 矩形滤波器：时域截断为1个符号周期，避免无限旁瓣
+    #         h = np.where(np.abs(t) <= T/2, 1.0, 0.0)
+    #         h = h / np.sqrt(np.sum(h**2))  # 归一化
+    #     elif self.filter_type == "rc":
+    #         h = self._raised_cosine(t, self.rolloff, T)
+    #     elif self.filter_type == "rrc":
+    #         h = self._root_raised_cosine(t, self.rolloff, T)
+    #     return h
+
+    def _rrc_impulse_response(self, span_symbols, sps, beta, T):
+        """
+        返回长度 = span_symbols*sps + 1 的 RRC (root-raised-cosine) 冲激响应（矢量化）
+        参考标准公式：
+        h(t) = (4*beta / (pi*sqrt(T))) * (cos((1+beta)*pi*t/T) + (sin((1-beta)*pi*t/T) / (4*beta*t/T))) / (1 - (4*beta*t/T)**2)
+        处理 t=0 和 t=±T/(4β) 的极限值
+        """
+        num_taps = int(span_symbols * sps) + 1
+        # time vector centered at 0, step = 1/sample_rate
+        # t in units of seconds
+        # use samples index m = -(num_taps//2) ... +(num_taps//2)
+        m = np.arange(-num_taps//2, num_taps//2 + 1)
+        t = m / (sps * (1.0 / T))  # since sample_rate = sps/T -> t = m / sample_rate = m/(sps/T) = m * T / sps
+        # equivalently: t = m * T / sps
+        t = m * T / sps
+
+        h = np.zeros_like(t, dtype=np.float64)
+        pi = np.pi
+        # Avoid division by zero: handle special points analytically
+        # General formula for RRC (with sqrt(T) normalization) - use stable implementation:
+        for idx, ti in enumerate(t):
             if abs(ti) < 1e-12:
-                # t = 0
-                h[i] = 1.0
-            elif abs(1 - (2 * beta * ti / T)**2) < 1e-12:
-                # t = ± T/(2β)
-                h[i] = (np.pi / 4) * np.sinc(1 / (2 * beta))
-            else:
-                num = np.sin(np.pi * ti / T * (1 - beta)) + \
-                    4 * beta * ti / T * np.cos(np.pi * ti / T * (1 + beta))
-                den = np.pi * ti / T * (1 - (4 * beta * ti / T)**2)
-                h[i] = num / den
-
-        return h
-
-
-    def _root_raised_cosine(self, t, beta, T):
-
-        h = np.zeros_like(t)
-
-        for i, ti in enumerate(t):
-
-            if abs(ti) < 1e-12:   # t = 0
-                h[i] = (1 + beta * (4/np.pi - 1)) / np.sqrt(T)
-
-            elif abs(abs(ti) - T/(4*beta)) < 1e-12:  # t = ±T/(4β)
-                h[i] = (beta / (np.sqrt(2*T))) * (
-                    (1 + 2/np.pi) * np.sin(np.pi/(4*beta)) +
-                    (1 - 2/np.pi) * np.cos(np.pi/(4*beta))
+                # limit t->0
+                h[idx] = (1.0 / np.sqrt(T)) * (1.0 + beta * (4/np.pi - 1.0))
+            elif beta > 0 and abs(abs(ti) - T/(4*beta)) < 1e-12:
+                # t = ± T/(4β) special value
+                h[idx] = (beta / (np.sqrt(2*T))) * (
+                    (1 + 2/np.pi) * np.sin(pi / (4*beta)) +
+                    (1 - 2/np.pi) * np.cos(pi / (4*beta))
                 )
-
             else:
-                num = ( np.sin(np.pi*ti*(1-beta)/T) / (np.pi*ti/T)
-                    + 4*beta*(ti/T)*np.cos(np.pi*ti*(1+beta)/T) /
-                    (1 - (4*beta*ti/T)**2) )
+                numerator = np.sin(pi * ti * (1 - beta) / T) + 4 * beta * ti / T * np.cos(pi * ti * (1 + beta) / T)
+                denominator = pi * ti / T * (1 - (4 * beta * ti / T)**2) * np.sqrt(T)
+                h[idx] = numerator / denominator
 
-                h[i] = num / np.sqrt(T)
+        # L2 normalization to unit energy
+        h = h / np.sqrt(np.sum(h**2) + 1e-15)
+        return np.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
 
-        return h
+
+    def _rc_impulse_response(self, span_symbols, sps, beta, T):
+        """直接由 RRC 卷积得到 RC，或者实现 RC 的标准公式（此处建议用 RRC 与自身卷积得到 RC）"""
+        # RC = convolution(RRC, RRC) in continuous sense; discretely you can convolve sampled RRC with itself.
+        rrc = self._rrc_impulse_response(span_symbols, sps, beta, T)
+        rc = np.convolve(rrc, rrc, mode='full')
+        # crop to desired length (take center part)
+        center = len(rc) // 2
+        desired_len = len(rrc)  # keep same length
+        half = desired_len // 2
+        rc_cropped = rc[center - half : center - half + desired_len]
+        rc_cropped = rc_cropped / np.sqrt(np.sum(rc_cropped**2) + 1e-15)
+        return rc_cropped
 
 
     def _design_tx_filter(self):
-        """根据 filter_type 生成滤波器系数"""
-        taps = self.filter_length * self.sps
-        T = 1.0 / self.symbol_rate  # symbol period
-
-        # 时间向量 (对称抽头)
-        t = np.arange(-taps//2, taps//2 + 1) / self.sample_rate
-
-        if self.filter_type == "rect":
-            h = np.ones_like(t)
-            h = h / np.sqrt(np.sum(h*h))   # 能量归一化
-            return h
-
-        elif self.filter_type == "rc":
-            h = self._raised_cosine(t, self.rolloff, T)
-
-        elif self.filter_type == "rrc":
-            h = self._root_raised_cosine(t, self.rolloff, T)
-
-        # 归一化
-        h = h / np.sqrt(np.sum(h*h))
+        """重新设计：明确 filter_length 表示符号长度 span (in symbols)"""
+        # 解释：self.filter_length 被解释为跨越的符号数（span），必须为正整数
+        span_symbols = int(self.filter_length)
+        sps = self.sps
+        T = 1.0 / self.symbol_rate
+        if self.filter_type == 'rrc':
+            h = self._rrc_impulse_response(span_symbols, sps, self.rolloff, T)
+        elif self.filter_type == 'rc':
+            h = self._rc_impulse_response(span_symbols, sps, self.rolloff, T)
+        elif self.filter_type == 'rect':
+            # rectangle spanning 1 symbol (or span_symbols symbols)
+            num_taps = span_symbols * sps + 1
+            m = np.arange(-num_taps//2, num_taps//2 + 1)
+            t = m * T / sps
+            h = np.where(np.abs(t) <= T/2, 1.0, 0.0)
+            h = h / np.sqrt(np.sum(h**2) + 1e-15)
+        else:
+            raise ValueError("Unsupported filter type")
         return h
 
+
     def upsample_symbols(self, symbols):
+        """上采样：符号间插0"""
         up = np.zeros(len(symbols)*self.sps, dtype=complex)
         up[::self.sps] = symbols
         return up
 
     def shape_pulse(self, symbols):
+        """脉冲成型：上采样 + 卷积 + 对齐延迟"""
         up = self.upsample_symbols(symbols)
+        # 卷积（full模式）+ 延迟对齐（去除滤波器引入的延迟）
         sig = np.convolve(up, self.filter_coeffs, mode="full")
-        delay = len(self.filter_coeffs)//2
+        delay = len(self.filter_coeffs) // 2
+        # 截断到原上采样长度，保证输出长度 = 输入符号数 × 上采样率
         return sig[delay:delay+len(up)]
 
     def get_freq_response(self):
+        """幅频响应（修正频率轴计算）"""
         n_fft = 4096
         H = np.fft.fft(self.filter_coeffs, n_fft)
-        fs_rrc = self.symbol_rate * self.sps  
-        f = np.fft.fftfreq(n_fft, 1/fs_rrc)
-
-        # f = np.fft.fftfreq(n_fft, 1/self.sample_rate)
-        pos = f >= 0
+        f = np.fft.fftfreq(n_fft, 1/self.sample_rate)
+        pos = f >= 0  # 只取正频率
         return f[pos], 20*np.log10(np.abs(H[pos]) + 1e-12)
 
-
-
-# ===================== 测试主程序（全修正版） =====================
+    # 新增：眼图绘制接口（适配发射机代码）
+    def plot_eye_diagram(self, symbols, num_symbols=500):
+        """生成成型信号并绘制眼图"""
+        # 生成测试信号
+        shaped_signal = self.shape_pulse(symbols[:num_symbols])
+        # 绘制眼图
+        fig, ax = plt.subplots(figsize=(8, 6))
+        # 按符号周期重排数据
+        samples_per_symbol = self.sps
+        num_rows = len(shaped_signal) // samples_per_symbol
+        eye_data = shaped_signal[:num_rows*samples_per_symbol].reshape(-1, samples_per_symbol)
+        # 叠加绘制
+        for i in range(num_rows):
+            ax.plot(np.real(eye_data[i]), alpha=0.1, color='blue')
+        ax.set_title(f"{self.filter_type.upper()}滤波器眼图（滚降系数={self.rolloff}）")
+        ax.set_xlabel("符号周期内采样点")
+        ax.set_ylabel("幅值（实部）")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+        return shaped_signal
+    
+# ===================== 简化版主程序（核心：参数调用+绘图） =====================
 if __name__ == "__main__":
-    print("=== 发送端脉冲成型类测试程序（修正版） ===\n")
-
-    # ========== 测试1：参数合法性校验 ==========
-    print("=== 测试1：参数合法性校验 ===")
-    # 测试非法滚降系数
-    try:
-        invalid_rolloff_params = {
-            "symbol_rate": 1e6,
-            "sample_rate": 4e6,
-            "rolloff": 1.5,  # 非法值（>1）
-            "filter_type": "rrc",
-            "filter_length": 63
-        }
-        TxPulseShaper(invalid_rolloff_params)
-    except ValueError as e:
-        print(f"✓ 非法滚降系数校验通过：{e}")
-
-    # 测试非整数倍采样率
-    try:
-        invalid_sample_rate_params = {
-            "symbol_rate": 1e6,
-            "sample_rate": 3e6,  # 非4倍（非法）
-            "rolloff": 0.2,
-            "filter_type": "rrc",
-            "filter_length": 63
-        }
-        TxPulseShaper(invalid_sample_rate_params)
-    except ValueError as e:
-        print(f"✓ 非整数倍采样率校验通过：{e}")
-
-    # 测试偶数滤波器长度
-    try:
-        even_length_params = {
-            "symbol_rate": 1e6,
-            "sample_rate": 4e6,
-            "rolloff": 0.2,
-            "filter_type": "rrc",
-            "filter_length": 64  # 偶数（非法）
-        }
-        TxPulseShaper(even_length_params)
-    except ValueError as e:
-        print(f"✓ 偶数滤波器长度校验通过：{e}")
-    print()
-
-    # ========== 测试2：不同滤波器类型的设计 ==========
-    print("=== 测试2：滤波器设计验证 ===")
-    # 配置参数（RRC滤波器）
-    rrc_params = {
-        "symbol_rate": 1e6,
-        "sample_rate": 4e6,
-        "rolloff": 0.35,
-        "filter_type": "rrc",
-        "filter_length": 63
+    # ========== 1. 定义核心参数（可根据需求修改） ==========
+    pulse_params = {
+        "symbol_rate": 1e6,          # 符号速率 1MHz
+        "oversampling": 8,           # 8倍上采样（眼图更平滑）
+        "rolloff": 0.35,             # 滚降系数（0.35~0.5最优）
+        "filter_type": "rrc",        # 滤波器类型：rrc/rc/rect
+        "filter_length": 63,         # 滤波器长度（奇数个符号）
+        "chan_delays": [0]           # 信道延迟（默认0）
     }
-    tx_rrc = TxPulseShaper(rrc_params)
-    
-    # 配置参数（RC滤波器）
-    rc_params = {
-        "symbol_rate": 1e6,
-        "sample_rate": 4e6,
-        "rolloff": 0.35,
-        "filter_type": "rc",
-        "filter_length": 63
-    }
-    tx_rc = TxPulseShaper(rc_params)
-    
-    # 配置参数（矩形滤波器）
-    rect_params = {
-        "symbol_rate": 1e6,
-        "sample_rate": 4e6,
-        "filter_type": "rect",
-        "filter_length": 63
-    }
-    tx_rect = TxPulseShaper(rect_params)
-    
-    print(f"RRC滤波器抽头数：{len(tx_rrc.filter_coeffs)}（预期：63×4=252）")
-    print(f"RC滤波器抽头数：{len(tx_rc.filter_coeffs)}（预期：252）")
-    print(f"矩形滤波器抽头数：{len(tx_rect.filter_coeffs)}（预期：252）")
-    print(f"每符号采样数：{tx_rrc.sps}（预期：4）")
-    print()
 
-    # ========== 测试3：脉冲成型效果验证 ==========
-    print("=== 测试3：脉冲成型效果验证 ===")
-    # 生成测试符号（QPSK）
-    num_symbols = 50
-    symbols = (np.random.randint(0, 2, num_symbols) * 2 - 1) + \
-              1j * (np.random.randint(0, 2, num_symbols) * 2 - 1)
-    
-    # 上采样测试
-    upsampled = tx_rrc.upsample_symbols(symbols)
-    print(f"原始符号长度：{len(symbols)} → 上采样后长度：{len(upsampled)}（预期：50×4=200）")
-    
-    # 脉冲成型
-    shaped_signal = tx_rrc.shape_pulse(symbols)
-    print(f"成型后信号长度：{len(shaped_signal)}（预期：200）")
-    print()
+    # ========== 2. 初始化脉冲成型器 ==========
+    print("=== 初始化脉冲成型滤波器 ===")
+    print(f"滤波器类型：{pulse_params['filter_type'].upper()}")
+    print(f"滚降系数：{pulse_params['rolloff']}")
+    print(f"上采样率：{pulse_params['oversampling']}")
+    tx_shaper = TxPulseShaper(pulse_params)
 
-    # ========== 测试4：滤波器时域响应可视化 ==========
-    print("=== 测试4：滤波器时域响应可视化 ===")
-    # 创建画布
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    
-    # RRC滤波器脉冲响应
-    t_rrc = np.linspace(-tx_rrc.filter_length/2, tx_rrc.filter_length/2, len(tx_rrc.filter_coeffs))
-    axes[0,0].plot(t_rrc, tx_rrc.filter_coeffs)
-    axes[0,0].set_title("RRC滤波器脉冲响应（滚降系数=0.35）")
-    axes[0,0].set_xlabel("符号周期")
-    axes[0,0].set_ylabel("幅度")
-    axes[0,0].grid(True)
-    
-    # RC滤波器脉冲响应
-    t_rc = np.linspace(-tx_rc.filter_length/2, tx_rc.filter_length/2, len(tx_rc.filter_coeffs))
-    axes[0,1].plot(t_rc, tx_rc.filter_coeffs)
-    axes[0,1].set_title("RC滤波器脉冲响应（滚降系数=0.35）")
-    axes[0,1].set_xlabel("符号周期")
-    axes[0,1].grid(True)
-    
-    # 矩形滤波器脉冲响应
-    t_rect = np.linspace(-tx_rect.filter_length/2, tx_rect.filter_length/2, len(tx_rect.filter_coeffs))
-    axes[1,0].plot(t_rect, tx_rect.filter_coeffs)
-    axes[1,0].set_title("矩形滤波器脉冲响应")
-    axes[1,0].set_xlabel("符号周期")
-    axes[1,0].grid(True)
-    
-    # 原始符号与成型后信号对比
-    axes[1,1].stem(np.real(symbols[:10]), label="原始符号")
-    # 采样点索引对齐
-    axes[1,1].plot(np.arange(40), np.real(shaped_signal[:40]), 'r-', label="成型后信号")
-    axes[1,1].set_title("原始符号与RRC成型后信号对比（实部）")
-    axes[1,1].set_xlabel("符号索引/采样点")
-    axes[1,1].legend()
-    axes[1,1].grid(True)
-    
-    plt.tight_layout()
-    plt.savefig("tx_pulse_shaper_time_domain.png", dpi=300)
-    print("时域响应图已保存为 tx_pulse_shaper_time_domain.png")
-
-    # ========== 测试5：单滤波器幅频响应分析 ==========
-    print("\n=== 测试5：RRC滤波器幅频响应分析 ===")
-    # 获取幅频响应
-    freq_pos, mag_pos = tx_rrc.get_freq_response()
-    # 计算理论截止频率
-    nyquist_freq = tx_rrc.symbol_rate / 2
-    cutoff_freq = nyquist_freq * (1 + tx_rrc.rolloff)
-    
-    # 绘制幅频响应
-    plt.figure(figsize=(10, 4))
-    plt.plot(freq_pos/1e6, mag_pos)
-    plt.title("RRC滤波器幅频响应（滚降系数=0.35）")
-    plt.xlabel("频率 (MHz)")
-    plt.ylabel("幅度 (dB)")
-    plt.xlim(0, 1.5)
-    plt.ylim(-80, 10)
+    # ========== 3. 绘制滤波器幅频响应曲线 ==========
+    print("\n=== 绘制滤波器幅频响应曲线 ===")
+    freq, mag = tx_shaper.get_freq_response()
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(freq/1e6, mag, color='blue', linewidth=1.5)
     # 标注关键频率
-    plt.axvline(nyquist_freq/1e6, color='r', linestyle='--', label=f'奈奎斯特频率 ({nyquist_freq/1e6:.2f}MHz)')
-    plt.axvline(cutoff_freq/1e6, color='g', linestyle='--', label=f'截止频率 ({cutoff_freq/1e6:.2f}MHz)')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig("single_rrc_freq_response.png", dpi=300)
-    print("RRC幅频响应图已保存为 single_rrc_freq_response.png")
+    nyquist_freq = tx_shaper.symbol_rate / 2
+    cutoff_freq = nyquist_freq * (1 + tx_shaper.rolloff)
+    ax.axvline(nyquist_freq/1e6, color='r', linestyle='--', alpha=0.7, 
+               label=f'奈奎斯特频率: {nyquist_freq/1e6:.2f}MHz')
+    ax.axvline(cutoff_freq/1e6, color='g', linestyle='--', alpha=0.7, 
+               label=f'截止频率: {cutoff_freq/1e6:.2f}MHz')
+    # 图表美化
+    ax.set_title(f"{tx_shaper.filter_type.upper()}滤波器幅频响应（滚降系数={tx_shaper.rolloff}）")
+    ax.set_xlabel("频率 (MHz)")
+    ax.set_ylabel("幅度 (dB)")
+    ax.set_xlim(0, 1.5)  # 聚焦0~1.5MHz频段
+    ax.set_ylim(-80, 10)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 
-    # ========== 测试6：不同滚降系数RRC滤波器对比 ==========
-    print("\n=== 测试6：不同滚降系数RRC滤波器对比 ===")
-    rolloff_values = [0.1, 0.5, 1.0]
-    plt.figure(figsize=(10, 6))
-    
-    for alpha in rolloff_values:
-        test_params = {
-            "symbol_rate": 1e6,
-            "sample_rate": 4e6,
-            "rolloff": alpha,
-            "filter_type": "rrc",
-            "filter_length": 63
-        }
-        tx_test = TxPulseShaper(test_params)
-        freq_pos, mag_pos = tx_test.get_freq_response()
-        # 绘制正频率部分
-        plt.plot(freq_pos/1e6, mag_pos, label=f'滚降系数={alpha}')
-        # 标注对应截止频率
-        cutoff = (1 + alpha) * tx_test.symbol_rate / 2
-        plt.axvline(cutoff/1e6, color='gray', linestyle='--', alpha=0.5)
-    
-    plt.title("不同滚降系数的RRC滤波器幅频响应")
-    plt.xlabel("频率 (MHz)")
-    plt.ylabel("幅度 (dB)")
-    plt.xlim(0, 1.5)
-    plt.ylim(-80, 10)
-    plt.legend()
-    plt.grid(True)
-    plt.savefig("rrc_rolloff_comparison.png", dpi=300)
-    print("RRC滚降系数对比图已保存为 rrc_rolloff_comparison.png")
+    # ========== 4. 生成测试符号并绘制眼图 ==========
+    print("\n=== 绘制滤波器眼图 ===")
+    # 生成QPSK测试符号（模拟真实调制符号）
+    num_test_symbols = 2000  # 用于绘制眼图的符号数
+    test_symbols = (np.random.randint(0, 2, num_test_symbols)*2 - 1) + \
+                   1j*(np.random.randint(0, 2, num_test_symbols)*2 - 1)
+    # 绘制眼图并返回成型后的信号
+    shaped_signal = tx_shaper.plot_eye_diagram(test_symbols, num_symbols=1000)
 
-    # ========== 测试7：三种滤波器类型对比 ==========
-    print("\n=== 测试7：RC/RRC/矩形滤波器幅频响应对比 ===")
-    # 统一参数
-    base_params = {
-        "symbol_rate": 1e6,
-        "sample_rate": 4e6,
-        "rolloff": 0.35,
-        "filter_length": 63
-    }
-    
-    plt.figure(figsize=(10, 6))
-    filter_types = ['rrc', 'rc', 'rect']
-    labels = ['根升余弦(RRC)', '升余弦(RC)', '矩形(rect)']
-    colors = ['blue', 'orange', 'green']
-    
-    for ftype, label, color in zip(filter_types, labels, colors):
-        params = base_params.copy()
-        params['filter_type'] = ftype
-        tx = TxPulseShaper(params)
-        freq_pos, mag_pos = tx.get_freq_response()
-        plt.plot(freq_pos/1e6, mag_pos, color=color, label=label)
-    
-    plt.title("RC/RRC/矩形滤波器幅频响应对比（滚降系数=0.35）")
-    plt.xlabel("频率 (MHz)")
-    plt.ylabel("幅度 (dB)")
-    plt.xlim(0, 1.5)
-    plt.ylim(-80, 10)
-    plt.legend()
-    plt.grid(True)
-    plt.savefig("filter_type_comparison.png", dpi=300)
-    print("滤波器类型对比图已保存为 filter_type_comparison.png")
-
-    print("\n=== 所有测试完成！ ===")
+    # ========== 5. 输出核心信息（可选） ==========
+    print(f"\n=== 核心参数汇总 ===")
+    print(f"滤波器抽头数：{len(tx_shaper.filter_coeffs)}")
+    print(f"每符号采样数：{tx_shaper.sps}")
+    print(f"成型后信号长度：{len(shaped_signal)} 采样点")
+    print("=== 绘图完成 ===")

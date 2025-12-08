@@ -32,6 +32,10 @@ class BaseTransmitter:
         """调制（子类必须重写）"""
         raise NotImplementedError("子类必须实现 modulate() 方法")
     
+    def scramble_data(self, data_bits):
+        """扰码数据（子类可选重写）"""
+        return data_bits  # 默认不扰码
+    
     def channel_encode(self, data_bits):
         """信道编码（子类可选重写）"""
         return data_bits  # 默认不编码

@@ -6,6 +6,7 @@ from .CFO import CFO
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
 import matplotlib.pyplot as plt
+
 # 设置中文字体（避免绘图中文乱码）
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
@@ -66,22 +67,62 @@ class THzChannel(BaseChannel):
         self.rx_signal = signal
         return self.rx_signal
 
+def plot_eye_diagram(signal, symbol_period, num_symbols=100, ax=None):
+    """
+    绘制眼图
+    参数：
+        signal: 输入复信号（接收信号）
+        symbol_period: 每个符号的采样点数（符号周期）
+        num_symbols: 用于绘制眼图的符号数量
+        ax: 绘图的坐标轴对象
+    """
+    if ax is None:
+        ax = plt.gca()
+    
+    # 选择信号段（跳过前导码/训练序列，取稳定部分）
+    start_idx = 10000  # 跳过初始过渡部分
+    end_idx = start_idx + num_symbols * symbol_period
+    signal_segment = signal[start_idx:end_idx]
+    
+    # 提取实部（也可以绘制虚部或幅度）
+    signal_real = np.real(signal_segment)
+    
+    # 绘制眼图：将每个符号周期的波形叠加
+    for i in range(num_symbols):
+        start = i * symbol_period
+        end = start + symbol_period
+        if end <= len(signal_real):
+            ax.plot(np.arange(symbol_period), signal_real[start:end], 
+                    color='blue', alpha=0.1, linewidth=0.8)
+    
+    # 美化眼图
+    ax.set_title('接收信号眼图（实部）', fontweight='bold')
+    ax.set_xlabel('符号周期内采样点')
+    ax.set_ylabel('信号幅度（实部）')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, symbol_period)
+
 # 测试
 if __name__ == "__main__":
     # 初始化参数和发射机
     params = PHYParams()
     transmitter = THzTransmitter(params)
     tx_signal = transmitter.run()
+    
     # 初始化信道并生成接收信号
     channel = THzChannel(params)
     rx_signal = channel.run(tx_signal)
     print(f"发射信号长度：{len(tx_signal)}, 接收信号长度：{len(rx_signal)}")
     # print(f"真实信道频域响应：{np.abs(channel.chan_true_fft)[:10]}")  # 打印前10个点
 
-    # 信号可视化
-    # 创建多子图展示
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-    fig.suptitle('太赫兹接受信号分析', fontsize=16, fontweight='bold')
+    # 计算符号周期（每个符号的采样点数）
+    symbol_rate = params.get("symbol_rate")  # 默认1G符号/秒
+    sampling_rate = symbol_rate * params.get("oversampling")  # 过采样率
+    symbol_period = int(sampling_rate / symbol_rate)  # 每个符号的采样点数
+    
+    # 信号可视化（调整布局为2x3，增加眼图子图）
+    fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle('太赫兹接收信号分析', fontsize=16, fontweight='bold')
     
     # 子图1: 时域波形（前1000个采样点）
     ax1.plot(np.arange(1000), np.real(rx_signal[:1000]), label='实部', alpha=0.8, linewidth=0.8)
@@ -102,22 +143,43 @@ if __name__ == "__main__":
     ax2.grid(True, alpha=0.3)
     
     # 子图3: 调制符号星座图
-    ax3.scatter(np.real(transmitter.modulated_data[:1000]), 
-                np.imag(transmitter.modulated_data[:1000]), 
+    ax3.scatter(np.real(rx_signal[10000:20000]), 
+                np.imag(rx_signal[10000:20000]), 
                 s=5, alpha=0.6, c='orange')
-    ax3.set_title('调制符号星座图（前1000符号）')
+    ax3.set_title('接收星座图')
     ax3.set_xlabel('实部')
     ax3.set_ylabel('虚部')
     ax3.grid(True, alpha=0.3)
     ax3.axis('equal')
     
     # 子图4: 信号功率分布
-    power = np.abs(rx_signal[:1000])**2
+    power = np.abs(rx_signal[10000:11000])**2
     ax4.plot(np.arange(1000), power, linewidth=0.8, color='green')
     ax4.set_title('信号功率分布（前1000采样点）')
     ax4.set_xlabel('采样点')
     ax4.set_ylabel('功率 (W)')
     ax4.grid(True, alpha=0.3)
     
+    # 子图5: 接收信号眼图（实部）
+    plot_eye_diagram(rx_signal, symbol_period, num_symbols=2000, ax=ax5)
+    
+    # 子图6: 虚部眼图（可选）
+    # 重新定义虚部眼图绘制
+    start_idx = 10000
+    end_idx = start_idx + 2000 * symbol_period
+    signal_segment = rx_signal[start_idx:end_idx]
+    signal_imag = np.imag(signal_segment)
+    for i in range(2000):
+        start = i * symbol_period
+        end = start + symbol_period
+        if end <= len(signal_imag):
+            ax6.plot(np.arange(symbol_period), signal_imag[start:end], 
+                    color='red', alpha=0.1, linewidth=0.8)
+    ax6.set_title('接收信号眼图（虚部）', fontweight='bold')
+    ax6.set_xlabel('符号周期内采样点')
+    ax6.set_ylabel('信号幅度（虚部）')
+    ax6.grid(True, alpha=0.3)
+    ax6.set_xlim(0, symbol_period)
+
     plt.tight_layout()
     plt.show()
