@@ -13,7 +13,7 @@ class CoarseSync:
     """
     def __init__(self, tx_preamble, sync_threshold=0.1, scaling_factor=5):
         # 核心参数（对齐MATLAB）
-        self.base_sequences_length = len(tx_preamble.a128)  # a128序列长度
+        self.base_sequences_length = len(tx_preamble.a128) * tx_preamble.params.get("oversampling")
         self.sync_threshold = sync_threshold  # 相关性阈值（0~1）
         self.scaling_factor = scaling_factor    # 连续高相关区间长度阈值（倍base_sequences_length）
         self.sync_type = tx_preamble.preamble_type  # SYNC类型 'short'/'long'
@@ -219,11 +219,11 @@ if __name__ == "__main__":
     # 初始化接收端匹配滤波器
     rx_matched_filter = RxMatchedFilter(transmitter.pulse_shaper)
     # 恢复接收符号
-    recovered_symbols = rx_matched_filter.recover_symbols(rx_signal)
-    coarse_sync = CoarseSync(tx_preamble, sync_threshold=0.01, scaling_factor=5)
+    recovered_symbols = rx_matched_filter.matched_filter(rx_signal)
+    coarse_sync = CoarseSync(tx_preamble, sync_threshold=0.4, scaling_factor=5)
 
     # 检测SYNC
-    offset, corr_norm = coarse_sync.detect_sync(recovered_symbols[:2000])
+    offset, corr_norm = coarse_sync.detect_sync(recovered_symbols)
     print(f"粗同步偏移：{offset}")
 
      # ===================== 5. 可视化结果 =====================

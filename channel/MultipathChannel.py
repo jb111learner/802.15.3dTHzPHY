@@ -1,5 +1,6 @@
 import numpy as np
-
+from transmitter.THzTransmitter import THzTransmitter
+from params.PHYParams import PHYParams
 class MultipathChannel:
     """
     多径信道模型：生成信道冲激响应（CIR），实现信号的多径卷积
@@ -43,10 +44,11 @@ class MultipathChannel:
 
 # 测试
 if __name__ == "__main__":
-    from params.PHYParams import PHYParams
+    # 初始化参数和发射机
     params = PHYParams()
+    transmitter = THzTransmitter(params)
+    tx_signal = transmitter.run()
     multipath_chan = MultipathChannel(params)
-    signal = np.random.randn(1000) + 1j * np.random.randn(1000)
-    signal_with_multipath = multipath_chan.apply_multipath(signal)
+    signal_with_multipath = multipath_chan.apply_multipath(tx_signal)
     print(f"信道冲激响应：{multipath_chan.chan_impulse}")
-    print(f"原始信号长度：{len(signal)}, 多径后长度：{len(signal_with_multipath)}")
+    print(f"原始信号长度：{len(tx_signal)}, 多径后长度：{len(signal_with_multipath)}")
