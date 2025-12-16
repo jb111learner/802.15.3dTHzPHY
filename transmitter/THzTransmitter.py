@@ -2,13 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 from core.BaseTransmitter import BaseTransmitter
-from .HeaderGenerator import HeaderGenerator
-from .PreambleGenerator import PreambleGenerator
-from .Modulator import QAMModulator as Modulator
-from .CPInserter import CPInserter
+from transmitter.HeaderGenerator import HeaderGenerator
+from transmitter.PreambleGenerator import PreambleGenerator
+from transmitter.Modulator import QAMModulator as Modulator
+from transmitter.CPInserter import CPInserter
 # from utils.Rotator import Rotator  # 信号旋转工具
 from utils.Coder import RSCoder 
-from .Pulseshaper import TxPulseShaper
+from transmitter.Pulseshaper import TxPulseShaper
 from params.PHYParams import PHYParams
 from utils.Scrambler import Scrambler  # 新增导入扰码器
 
@@ -77,13 +77,13 @@ class THzTransmitter(BaseTransmitter):
         self.modulated_data = self.modulate(coded_bits)
         self.data_with_cp = self.insert_cp(self.modulated_data)
 
-        # 5. 添加前置延迟
-        delay = self.params.get("delay")
-        delay_signal = np.zeros(delay, dtype=np.complex128)
+        # # 5. 添加前置延迟
+        # delay = self.params.get("delay")
+        # delay_signal = np.zeros(delay, dtype=np.complex128)
         
-        # 6. 组装完整信号
+        # 5. 组装完整信号
         self.tx_symbols = np.concatenate([
-            delay_signal,
+            # delay_signal,
             self.preamble,
             self.data_with_cp
         ])

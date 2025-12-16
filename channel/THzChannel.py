@@ -1,8 +1,8 @@
 import numpy as np
 from core.BaseChannel import BaseChannel
-from .MultipathChannel import MultipathChannel
-from .AWGN import AWGN
-from .CFO import CFO
+from channel.MultipathChannel import MultipathChannel
+from channel.AWGN import AWGN
+from channel.CFO import CFO
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
 import matplotlib.pyplot as plt
@@ -22,7 +22,7 @@ class THzChannel(BaseChannel):
         self.multipath_chan = MultipathChannel(params)
         self.awgn = AWGN(params)
         self.cfo = CFO(params)
-        self.chan_true_fft = None  # 真实信道频域响应（用于校验估计精度）
+        self.chan_true = self.multipath_chan.chan_impulse  # 真实信道频域响应（用于校验估计精度）
 
     def apply_multipath(self, signal):
         """应用多径效应（调用MultipathChannel）"""
@@ -43,11 +43,11 @@ class THzChannel(BaseChannel):
     #     signal_with_phase_noise = signal * np.exp(1j * phase_noise)
     #     return signal_with_phase_noise
 
-    # def apply_delay(self, signal):
-    #     """可选：添加传输时延（前置零符号）"""
-    #     delay = self.params.get("delay", 500)  # 与发射机延迟区分，可选
-    #     signal_with_delay = np.concatenate([np.zeros(delay, dtype=complex), signal])
-    #     return signal_with_delay
+    def apply_delay(self, signal):
+        """可选：添加传输时延（前置零符号）"""
+        delay = self.params.get("delay")
+        signal_with_delay = np.concatenate([np.zeros(delay, dtype=complex), signal])
+        return signal_with_delay
 
     def run(self, tx_signal):
         """执行完整信道流程：多径→噪声→频偏（可选添加相位噪声/时延）"""
@@ -60,9 +60,8 @@ class THzChannel(BaseChannel):
         # # 4. 可选：添加相位噪声
         # if self.params.get("enable_phase_noise", False):
         #     signal = self.apply_phase_noise(signal)
-        # # 5. 可选：添加传输时延
-        # if self.params.get("enable_delay", False):
-        #     signal = self.apply_delay(signal)
+        # 5. 添加传输时延
+        signal = self.apply_delay(signal)
         # 保存接收信号
         self.rx_signal = signal
         return self.rx_signal

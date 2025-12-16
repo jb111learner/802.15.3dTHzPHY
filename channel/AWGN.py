@@ -1,5 +1,8 @@
 import numpy as np
-
+import numpy as np
+from transmitter.THzTransmitter import THzTransmitter
+from params.PHYParams import PHYParams
+from channel.MultipathChannel import MultipathChannel
 class AWGN:
     """
     加性高斯白噪声（AWGN）模型：根据信噪比（SNR）添加噪声
@@ -29,13 +32,16 @@ class AWGN:
 
 # 测试
 if __name__ == "__main__":
-    from params.PHYParams import PHYParams
+    # 初始化参数和发射机
     params = PHYParams()
+    transmitter = THzTransmitter(params)
+    tx_signal = transmitter.run()
+    multipath_chan = MultipathChannel(params)
+    signal_with_multipath = multipath_chan.apply_multipath(tx_signal)
     awgn = AWGN(params)
-    signal = np.random.randn(1000) + 1j * np.random.randn(1000)
-    signal_with_noise = awgn.add_awgn(signal)
+    signal_with_noise = awgn.add_awgn(signal_with_multipath)
     # 计算实际SNR（验证）
-    signal_power = np.mean(np.abs(signal) ** 2)
-    noise_power = np.mean(np.abs(signal_with_noise - signal) ** 2)
+    signal_power = np.mean(np.abs(signal_with_multipath) ** 2)
+    noise_power = np.mean(np.abs(signal_with_noise - signal_with_multipath) ** 2)
     actual_snr_db = 10 * np.log10(signal_power / noise_power)
     print(f"目标SNR：{params.get('SNRdB')} dB, 实际SNR：{actual_snr_db:.2f} dB")

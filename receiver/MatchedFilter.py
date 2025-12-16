@@ -38,10 +38,10 @@ class RxMatchedFilter:
         start = (self.upsample - 1)
         return y[start::self.upsample]
 
-    def recover_symbols(self, rx_signal):
-        y = self.matched_filter(rx_signal)
-        s = self.downsample(y)
-        return s
+    # def recover_symbols(self, rx_signal):
+    #     y = self.matched_filter(rx_signal)
+    #     s = self.downsample(y)
+    #     return s
 
 
 # 测试
@@ -56,14 +56,10 @@ if __name__ == "__main__":
     rx_signal = channel.run(tx_signal)
     # 初始化接收端匹配滤波器
     rx_matched_filter = RxMatchedFilter(transmitter.pulse_shaper)
-    # 恢复接收符号
-    recovered_symbols = rx_matched_filter.recover_symbols(rx_signal)
-    print(f"发射信号长度：{len(tx_signal)}, 接收信号长度：{len(rx_signal)}")
-    print(f"发射符号长度：{len(tx_symbols)}, 接收符号长度：{len(recovered_symbols)}")
-
     # === 进行匹配滤波并获得中间信号 ===
     y_matched = rx_matched_filter.matched_filter(rx_signal)
-    y_down = rx_matched_filter.downsample(y_matched)
+    print(f"发射信号长度：{len(tx_signal)}, 接收信号长度：{len(y_matched)}")
+
 
     # ================================
     #        可视化绘图部分
@@ -101,19 +97,19 @@ if __name__ == "__main__":
     plt.xlabel("频率Bin")
     plt.ylabel("幅度 (dB)")
 
-    # ---- 5. 时域（原始符号）----
-    plt.subplot(3, 3, 5)
-    plt.plot(np.real(tx_symbols[:1000]))
-    plt.title("发射符号时域波形（实部）")
-    plt.xlabel("样本点")
-    plt.ylabel("幅度")    
+    # # ---- 5. 时域（原始符号）----
+    # plt.subplot(3, 3, 5)
+    # plt.plot(np.real(tx_symbols[:1000]))
+    # plt.title("发射符号时域波形（实部）")
+    # plt.xlabel("样本点")
+    # plt.ylabel("幅度")    
 
-    # ---- 6. 时域（恢复符号）----
-    plt.subplot(3, 3, 6)
-    plt.plot(np.real(recovered_symbols[:1000]))
-    plt.title("恢复符号时域波形（实部）")
-    plt.xlabel("样本点")
-    plt.ylabel("幅度")
+    # # ---- 6. 时域（恢复符号）----
+    # plt.subplot(3, 3, 6)
+    # plt.plot(np.real(recovered_symbols[:1000]))
+    # plt.title("恢复符号时域波形（实部）")
+    # plt.xlabel("样本点")
+    # plt.ylabel("幅度")
 
 
     plt.tight_layout()
