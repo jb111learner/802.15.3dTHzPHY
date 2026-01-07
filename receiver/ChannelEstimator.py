@@ -20,7 +20,7 @@ class ChannelEstimator:
     3. 转换为频域信道响应（CSI）
     4. 兼容原有LS/MMSE估计接口
     """
-    def __init__(self, tx_preamble, Lh=128, nfft=128):
+    def __init__(self, tx_preamble, Lh=256, nfft=256):
         self.params = tx_preamble.params
         self.oversampling = tx_preamble.params.get("oversampling")
         self.N_ces = len(tx_preamble.a512) * self.oversampling # a512/b512序列长度（协议固定）
@@ -163,7 +163,7 @@ if __name__ == "__main__":
 
     # 信道估计测试
     # 获取真实信道参数（用于对比）
-    nfft = 128  # 与ChannelEstimator默认nfft一致
+    nfft = 256  # 与ChannelEstimator默认nfft一致
     channel_estimator = ChannelEstimator(tx_preamble, nfft=nfft)
     
     # 1. 获取真实信道的时域冲激响应h_true

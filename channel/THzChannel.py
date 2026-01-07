@@ -49,19 +49,19 @@ class THzChannel(BaseChannel):
         signal_with_delay = np.concatenate([np.zeros(delay, dtype=complex), signal])
         return signal_with_delay
 
-    def run(self, tx_signal):
+    def run(self, signal):
         """执行完整信道流程：多径→噪声→频偏（可选添加相位噪声/时延）"""
-        # 1. 多径效应
-        signal = self.apply_multipath(tx_signal)
+        # # 1. 多径效应
+        # signal = self.apply_multipath(signal)
         # 2. 添加AWGN噪声
         signal = self.add_awgn(signal)
-        # 3. 应用频偏
-        signal = self.add_cfo(signal)
+        # # 3. 应用频偏
+        # signal = self.add_cfo(signal)
         # # 4. 可选：添加相位噪声
         # if self.params.get("enable_phase_noise", False):
         #     signal = self.apply_phase_noise(signal)
         # 5. 添加传输时延
-        signal = self.apply_delay(signal)
+        # signal = self.apply_delay(signal)
         # 保存接收信号
         self.rx_signal = signal
         return self.rx_signal

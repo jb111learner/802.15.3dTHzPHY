@@ -16,7 +16,7 @@ class BaseTransmitter:
         self.preamble = None  # 前导码（SYNC+SFD+CES）
         self.modulated_data = None  # 调制后数据
 
-    def add_header(self, data_bits):
+    def add_header(self):
         """生成头部（子类必须重写）"""
         raise NotImplementedError("子类必须实现 add_header() 方法")
 
@@ -24,23 +24,23 @@ class BaseTransmitter:
         """生成前导码（子类必须重写）"""
         raise NotImplementedError("子类必须实现 generate_preamble() 方法")
 
-    def _generate_random_data(self, length=int(10e5)):
+    def _generate_random_data(self, length=int(73728)):
         """生成随机二进制数据（内部辅助方法）"""
         return np.random.randint(0, 2, length, dtype=np.uint8)
 
-    def modulate(self, data_bits):
+    def modulate(self):
         """调制（子类必须重写）"""
         raise NotImplementedError("子类必须实现 modulate() 方法")
     
-    def scramble_data(self, data_bits):
+    def scramble_data(self):
         """扰码数据（子类可选重写）"""
-        return data_bits  # 默认不扰码
+        pass
     
-    def channel_encode(self, data_bits):
+    def channel_encode(self):
         """信道编码（子类可选重写）"""
-        return data_bits  # 默认不编码
+        pass
 
-    def insert_cp(self, data):
+    def insert_cp(self):
         """插入循环前缀（子类必须重写）"""
         raise NotImplementedError("子类必须实现 insert_cp() 方法")
     
@@ -56,10 +56,11 @@ class BaseTransmitter:
         self.generate_preamble()
         if data_bits is None:
             data_bits = self._generate_random_data()
-        data_bits = self.add_header(data_bits)
-        data_bits = self.channel_encode(data_bits)
-        self.modulated_data = self.modulate(data_bits)
-        data_with_cp = self.insert_cp(self.modulated_data)
+        # data_bits = self.add_header(data_bits)
+        self.scramble_data()
+        self.channel_encode()
+        self.modulate()
+        self.insert_cp()
         self.assemble_signal()
         self.pulse_shaping()
         return self.tx_signal
