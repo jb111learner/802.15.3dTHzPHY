@@ -10,14 +10,14 @@ class BaseReceiver:
               estimate_noise_var() 噪声方差估计
               equalize() 均衡
     """
-    def __init__(self, params, preamble):
+    def __init__(self, params, transmitter):
         self.params = params  # 参数对象
-        self.preamble = preamble  # 发射端生成的前导码
+        self.transmitter = transmitter  # 发射机对象（用于获取前导码等）
         self.rx_signal = None  # 接收信号
-        self.sync_offset = None  # 总同步偏移（粗+细）
-        self.chan_est = None  # 估计的信道响应
-        self.noise_var = None  # 估计的噪声方差
-        self.equalized_data = None  # 均衡后数据
+    
+    def matched_filter(self):
+        """匹配滤波（子类必须重写）"""
+        raise NotImplementedError("子类必须实现 matched_filter() 方法或初始化 rx_matched_filter 对象")
 
     def coarse_sync(self):
         """粗同步（子类必须重写）"""
@@ -43,16 +43,32 @@ class BaseReceiver:
         """均衡（子类必须重写）"""
         raise NotImplementedError("子类必须实现 equalize() 方法")
 
+    def demodulate(self):
+        """解调（子类必须重写）"""
+        raise NotImplementedError("子类必须实现 demodulate() 方法或初始化 demodulator 对象")
+    
+    def decision(self):
+        """判决（子类可选重写）"""
+        pass  # 默认不实现
+
+    def decode(self):
+        """解码（子类可选重写）"""
+        pass  # 默认不实现
+
     def run(self, rx_signal):
         """执行完整接收流程（统一调度）"""
         self.rx_signal = rx_signal
+        self.matched_filter()
         self.coarse_sync()
         self.estimate_and_compensate_cfo()
         self.fine_sync()
         self.estimate_channel()
         self.estimate_noise_var()
-        self.equalized_data = self.equalize()
-        return self.equalized_data
+        self.equalize()
+        self.demodulate()
+        self.decision()
+        data = self.decode()
+        return data
 
 # # 使用示例（子类实现）
 # class THzReceiver(BaseReceiver):

@@ -19,7 +19,7 @@ class HeaderGenerator:
 
     def __init__(self, params: PHYParams):
         self.params = params
-        self.mcs = self.params.get("mcs")  # 默认MCS=5
+        self.mcs = self.params.get("MCS")  # 默认MCS=5
         self.bandwidth = self.params.get("bandwidth")    # 默认带宽2.16GHz
         self.scrambler_seed_id = self.params.get("scrambler_seed_id")  # 默认种子ID=3
         self.ppre = self.params.get("ppre")  # 默认PPRE=1

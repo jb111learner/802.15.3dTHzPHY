@@ -4,7 +4,7 @@ import json
 from core.BaseTransmitter import BaseTransmitter
 from transmitter.HeaderGenerator import HeaderGenerator
 from transmitter.PreambleGenerator import PreambleGenerator
-from transmitter.Modulator import QAMModulator as Modulator
+from transmitter.Modulator import THzModulator as Modulator
 from transmitter.CPInserter import CPInserter
 # from utils.Rotator import Rotator  # 信号旋转工具
 from utils.Coder import RSCoder 
@@ -22,11 +22,12 @@ class THzTransmitter(BaseTransmitter):
         self.header_gen = HeaderGenerator(params)
         self.preamble_gen = PreambleGenerator(params)
         self.modulator = Modulator(params)
-        self.rscoder = RSCoder(params)
+        self.coder = RSCoder(params)
         self.cp_inserter = CPInserter(params)
-        self.testbits_len = int(10e5)  # 测试用数据比特长度
+        self.testbits_len = int(73728)  # 测试用数据比特长度
         self.pulse_shaper = TxPulseShaper(params)
         self.scrambler = Scrambler(params)  # 初始化扰码器
+        self.data_scrambled = None  # 扰码后数据
         # self.rotator = Rotator()
 
     def add_header(self, data_bits):
@@ -38,44 +39,46 @@ class THzTransmitter(BaseTransmitter):
 
     def generate_preamble(self):
         """生成前导码（SYNC+SFD+CES）"""
-        sync, sfd, ces = self.preamble_gen.generate()
-        self.preamble = np.concatenate([sync, sfd, ces])
+        self.sync, self.sfd, self.ces = self.preamble_gen.generate()
+        self.preamble = np.concatenate([self.sync, self.sfd, self.ces])
 
-    def scramble_data(self, data_bits):
-        # 仅对纯数据扰码
-        scrambled_data = self.scrambler.scramble(data_bits)
-        return scrambled_data
+    def scramble_data(self):
+        """扰码数据（调用Scrambler）"""
+        self.data_scrambled = self.scrambler.scramble(self.data_bits)
+        return self.data_scrambled
 
-    def channel_encode(self, data_bits):
+    def channel_encode(self):
         """信道编码（调用RSCoder）"""
-        coded_bits = self.rscoder.encode(data_bits)
-        return coded_bits  
+        self.coded_bits = self.coder.encode(self.data_scrambled)
+        return self.coded_bits
 
-    def modulate(self, data_bits):
+    def modulate(self):
         """调制数据（调用Modulator）"""
-        return self.modulator.modulate(data_bits)
-
-    def insert_cp(self, data):
+        self.modulated_data = self.modulator.modulate(self.coded_bits)
+        return self.modulated_data
+    
+    def insert_cp(self):
         """插入CP（调用CPInserter）"""
-        return self.cp_inserter.insert_cp(data)
+        self.data_with_cp = self.cp_inserter.insert_cp(self.modulated_data)
+        return self.data_with_cp
 
     def assemble_signal(self):
         """组装发射信号：延迟 + 前导码 + 调制头部 + 带CP数据"""
         # 1. 生成随机数据比特
-        data_bits = self._generate_random_data(self.testbits_len)
+        self.data_bits = self._generate_random_data(self.testbits_len)
 
-        # 2. 添加头部
-        data_bits = self.add_header(data_bits)
+        # # 2. 添加头部
+        # data_bits = self.add_header(data_bits)
 
         # 2.5 扰码数据
-        data_bits = self.scramble_data(data_bits)
+        self.scramble_data()
 
         # 3. 信道编码
-        coded_bits = self.channel_encode(data_bits)
+        self.channel_encode()
         
         # 4. 调制数据并插入CP
-        self.modulated_data = self.modulate(coded_bits)
-        self.data_with_cp = self.insert_cp(self.modulated_data)
+        self.modulate()
+        self.insert_cp()
 
         # # 5. 添加前置延迟
         # delay = self.params.get("delay")
@@ -84,7 +87,7 @@ class THzTransmitter(BaseTransmitter):
         # 5. 组装完整信号
         self.tx_symbols = np.concatenate([
             # delay_signal,
-            self.preamble,
+            # self.preamble,
             self.data_with_cp
         ])
 
@@ -92,6 +95,21 @@ class THzTransmitter(BaseTransmitter):
         """脉冲成型（调用TxPulseShaper）"""
         shaped_signal = self.pulse_shaper.shape_pulse(self.tx_symbols)
         self.tx_signal = shaped_signal
+
+    def run(self, data_bits=None):
+        """执行完整发射流程（统一调度）"""
+        if data_bits is None:
+            self.data_bits = self._generate_random_data()
+        else:
+            self.data_bits = data_bits
+        self.generate_preamble()
+        self.scramble_data()
+        self.channel_encode()
+        self.modulate()
+        self.insert_cp()
+        self.assemble_signal()
+        self.pulse_shaping()
+        return self.tx_signal
 
 # 新增眼图绘制函数
 def plot_eye_diagram(signal, symbol_period, num_symbols=1000, oversampling=1, ax=None):
@@ -151,13 +169,13 @@ if __name__ == "__main__":
     # 打印基础参数信息
     print("\n【1. 基础参数配置】")
     basic_params = {
-        "调制阶数": params.get("M"),
+        "每符号比特数": params.get("NCBPS"),
         "是否使用CP": params.get("is_cp"),
         "加扰器种子ID": params.get("scrambler_seed_id"),
         "PPRE字段": params.get("ppre"),
         "PW字段": params.get("pw"),
         "前导码类型": params.get("Preamble_type"),
-        "调制编码方案(MCS)": params.get("mcs"),
+        "调制编码方案(MCS)": params.get("MCS"),
         "系统带宽": params.get("bandwidth"),
         "子帧长度": params.get("subframe_length"),
         "CP长度": params.get("cp_length"),
@@ -250,15 +268,21 @@ if __name__ == "__main__":
     ax2.grid(True, alpha=0.3)
     
     # 子图3: 调制符号星座图
+    # 子图3: 调制符号星座图（修复）
     ax3 = fig.add_subplot(gs[0, 2])
-    ax3.scatter(transmitter.tx_symbols[9000:10000].real, 
-                transmitter.tx_symbols[9000:10000].imag,
-                s=5, alpha=0.6, c='orange')
-    ax3.set_title('调制符号星座图')
+    # 取纯调制数据符号（跳过前导码，取前200个调制符号）
+    pure_mod_symbols = transmitter.modulated_data[:2000]  # 直接取调制器输出的纯数据符号
+    ax3.scatter(pure_mod_symbols.real, 
+                pure_mod_symbols.imag,
+                s=10, alpha=0.8, c='orange')
+    ax3.set_title('16QAM调制符号星座图')
     ax3.set_xlabel('实部')
     ax3.set_ylabel('虚部')
     ax3.grid(True, alpha=0.3)
     ax3.axis('equal')
+    # 限制坐标范围（16QAM标准范围是±0.9左右）
+    ax3.set_xlim(-1.2, 1.2)
+    ax3.set_ylim(-1.2, 1.2)
     
     # 子图4: 信号功率分布
     ax4 = fig.add_subplot(gs[1, 0])
@@ -275,39 +299,11 @@ if __name__ == "__main__":
     symbol_period = int(params.get("oversampling"))  # 每个符号的采样点数
     plot_eye_diagram(
         signal=tx_signal,
-        symbol_period=3,  # 基础符号周期
-        num_symbols=500,  # 绘制500个符号的眼图
+        symbol_period=6,  # 基础符号周期
+        num_symbols=1000,  # 绘制500个符号的眼图
         oversampling=symbol_period,
         ax=ax5
     )
     
     fig.suptitle('太赫兹发射机信号分析', fontsize=16, fontweight='bold')
     plt.show()
-    
-    # # 6. 数据保存（可选）
-    # save_choice = input("\n【6. 数据保存】是否保存测试数据？(y/n): ")
-    # if save_choice.lower() == 'y':
-    #     # 保存信号数据
-    #     np.save('thz_tx_signal.npy', tx_signal)
-    #     # 保存参数信息
-    #     signal_info = {
-    #         "测试时间": np.datetime64('now').astype(str),
-    #         "基础参数": basic_params,
-    #         "信号长度": len(tx_signal),
-    #         "前导码长度": len(transmitter.preamble),
-    #         "调制符号数": len(transmitter.modulated_data),
-    #         "CP长度": cp_length,
-    #         "信号平均功率": float(np.mean(np.abs(tx_signal)**2)),
-    #         "信号峰值功率": float(np.max(np.abs(tx_signal)**2))
-    #     }
-    #     with open('thz_tx_signal_info.json', 'w', encoding='utf-8') as f:
-    #         json.dump(signal_info, f, ensure_ascii=False, indent=4)
-    #     print("  ✅ 信号数据已保存为: thz_tx_signal.npy")
-    #     print("  ✅ 信号信息已保存为: thz_tx_signal_info.json")
-    
-    # # 7. 测试总结
-    # print("\n【7. 测试总结】")
-    # print(f"  📊 发射信号总长度: {len(tx_signal)} 采样点")
-    # print(f"  📡 信号有效带宽: {np.ptp(freq[np.where(20*np.log10(np.abs(fft_signal)) > np.max(20*np.log10(np.abs(fft_signal))) - 3)]):.2f} Hz")
-    # print(f"  ✅ 所有验证项: {'全部通过' if all('✓' in res for res in verify_results) else '部分异常'}")
-    # print("\n测试完成！")

@@ -35,73 +35,6 @@ class TxPulseShaper:
         if self.filter_type not in ["rc", "rrc", "rect"]:
             raise ValueError(f"仅支持 rc/rrc/rect，当前值：{self.filter_type}")
 
-    # ----------------------- 核心：RC/RRC 数学公式（带归一化） -----------------------
-    # def _raised_cosine(self, t, beta, T):
-    #     """升余弦滤波器（RC）：时域公式，带鲁棒性处理+能量归一化"""
-    #     h = np.zeros_like(t, dtype=np.float64)
-    #     pi = np.pi
-    #     for i, ti in enumerate(t):
-    #         ti_abs = abs(ti)
-    #         if ti_abs < 1e-12:
-    #             h[i] = 1.0
-    #         elif beta > 1e-12 and abs(1 - (2 * beta * ti / T)**2) < 1e-12:
-    #             h[i] = (pi / 4) * np.sinc(1 / (2 * beta))
-    #         else:
-    #             if beta < 1e-12:
-    #                 h[i] = 1.0 if ti_abs <= T/2 else 0.0
-    #             else:
-    #                 term1 = np.sin(pi * ti / T * (1 - beta))
-    #                 term2 = 4 * beta * ti / T * np.cos(pi * ti / T * (1 + beta))
-    #                 numerator = term1 + term2
-    #                 denominator = pi * ti / T * (1 - (4 * beta * ti / T)**2)
-    #                 h[i] = numerator / denominator if abs(denominator) > 1e-12 else 0.0
-    #     # 能量归一化（关键：保证滤波后信号功率稳定）
-    #     h = h / np.sqrt(np.sum(h**2)) if np.sum(h**2) > 1e-12 else h
-    #     return np.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # def _root_raised_cosine(self, t, beta, T):
-    #     """根升余弦滤波器（RRC）：修复归一化问题"""
-    #     h = np.zeros_like(t, dtype=np.float64)
-    #     pi = np.pi
-    #     for i, ti in enumerate(t):
-    #         ti_abs = abs(ti)
-    #         if ti_abs < 1e-12:
-    #             h[i] = (1 + beta * (4/np.pi - 1)) / np.sqrt(T)
-    #         elif beta > 1e-12 and abs(ti_abs - T/(4*beta)) < 1e-12:
-    #             h[i] = (beta / np.sqrt(2*T)) * (
-    #                 (1 + 2/np.pi) * np.sin(pi/(4*beta)) +
-    #                 (1 - 2/np.pi) * np.cos(pi/(4*beta))
-    #             )
-    #         else:
-    #             if beta < 1e-12:
-    #                 h[i] = 1.0 / np.sqrt(T) if ti_abs <= T/2 else 0.0
-    #             else:
-    #                 numerator = np.sin(pi * ti * (1 - beta)/T) + \
-    #                             4 * beta * ti/T * np.cos(pi * ti * (1 + beta)/T)
-    #                 denominator = pi * ti/T * (1 - (4 * beta * ti/T)**2) * np.sqrt(T)
-    #                 h[i] = numerator / denominator if abs(denominator) > 1e-12 else 0.0
-    #     # 能量归一化（新增：修复眼图幅值异常）
-    #     h = h / np.sqrt(np.sum(h**2)) if np.sum(h**2) > 1e-12 else h
-    #     return np.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # def _design_tx_filter(self):
-    #     """生成滤波器系数（修复矩形滤波器截断）"""
-    #     T = 1.0 / self.symbol_rate  # 符号周期
-    #     # 滤波器抽头数 = 符号长度 × 每符号采样数
-    #     taps = self.filter_length * self.sps
-    #     # 时间向量（对称，单位：秒）
-    #     t = np.arange(-taps//2, taps//2 + 1) / self.sample_rate
-
-    #     if self.filter_type == "rect":
-    #         # 矩形滤波器：时域截断为1个符号周期，避免无限旁瓣
-    #         h = np.where(np.abs(t) <= T/2, 1.0, 0.0)
-    #         h = h / np.sqrt(np.sum(h**2))  # 归一化
-    #     elif self.filter_type == "rc":
-    #         h = self._raised_cosine(t, self.rolloff, T)
-    #     elif self.filter_type == "rrc":
-    #         h = self._root_raised_cosine(t, self.rolloff, T)
-    #     return h
-
     def _rrc_impulse_response(self, span_symbols, sps, beta, T):
         """
         返回长度 = span_symbols*sps + 1 的 RRC (root-raised-cosine) 冲激响应（矢量化）
@@ -109,11 +42,11 @@ class TxPulseShaper:
         h(t) = (4*beta / (pi*sqrt(T))) * (cos((1+beta)*pi*t/T) + (sin((1-beta)*pi*t/T) / (4*beta*t/T))) / (1 - (4*beta*t/T)**2)
         处理 t=0 和 t=±T/(4β) 的极限值
         """
-        num_taps = int(span_symbols * sps) + 1
+        num = int(span_symbols * sps)
         # time vector centered at 0, step = 1/sample_rate
         # t in units of seconds
-        # use samples index m = -(num_taps//2) ... +(num_taps//2)
-        m = np.arange(-num_taps//2, num_taps//2 + 1)
+        # use samples index m = -(num//2) ... +(num//2)
+        m = np.arange(-num//2, num//2 + 1)
         t = m / (sps * (1.0 / T))  # since sample_rate = sps/T -> t = m / sample_rate = m/(sps/T) = m * T / sps
         # equivalently: t = m * T / sps
         t = m * T / sps
