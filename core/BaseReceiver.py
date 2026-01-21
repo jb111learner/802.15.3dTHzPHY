@@ -13,51 +13,54 @@ class BaseReceiver:
     def __init__(self, params, transmitter):
         self.params = params  # 参数对象
         self.transmitter = transmitter  # 发射机对象（用于获取前导码等）
-        self.rx_signal = None  # 接收信号
     
     def matched_filter(self):
-        """匹配滤波（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 matched_filter() 方法或初始化 rx_matched_filter 对象")
+        """匹配滤波"""
+        pass
+
+    def remove_gi(self):
+        """去除GI"""
+        pass
 
     def coarse_sync(self):
-        """粗同步（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 coarse_sync() 方法")
+        """粗同步"""
+        pass
 
     def fine_sync(self):
-        """细同步（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 fine_sync() 方法")
+        """细同步"""
+        pass
 
     def estimate_and_compensate_cfo(self):
-        """频偏估计与补偿（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 estimate_and_compensate_cfo() 方法")
+        """频偏估计与补偿"""
+        pass
 
     def estimate_channel(self):
-        """信道估计（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 estimate_channel() 方法")
+        """信道估计"""
+        pass
 
     def estimate_noise_var(self):
-        """噪声方差估计（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 estimate_noise_var() 方法")
+        """噪声方差估计"""
+        pass
 
     def equalize(self):
-        """均衡（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 equalize() 方法")
+        """均衡"""
+        pass
 
     def demodulate(self):
-        """解调（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 demodulate() 方法或初始化 demodulator 对象")
+        """解调"""
+        pass
     
     def decision(self):
-        """判决（子类可选重写）"""
+        """判决"""
         pass  # 默认不实现
 
     def decode(self):
-        """解码（子类可选重写）"""
+        """解码"""
         pass  # 默认不实现
 
-    def run(self, rx_signal):
-        """执行完整接收流程（统一调度）"""
-        self.rx_signal = rx_signal
+    def run(self, rx_signal_dict):
+        """执行完整接收流程"""
+        self.rx_signal_dict = rx_signal_dict
         self.matched_filter()
         self.coarse_sync()
         self.estimate_and_compensate_cfo()

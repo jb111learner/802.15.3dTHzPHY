@@ -5,19 +5,148 @@ from transmitter.THzTransmitter import THzTransmitter
 from params.PHYParams import PHYParams
 from channel.THzChannel import THzChannel
 from receiver.MatchedFilter import RxMatchedFilter
+from receiver.GIremover import GIRemover
 plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
 class THzDemodulator:
-    """保留你原有的解调器类代码（无需修改）"""
+    """解调器类"""
     def __init__(self, params):
         self.params = params
         self.MCS = self.params.get("MCS")
         self.NCBPS = self.params.get("NCBPS")
         self.Rate = self.params.get("Rate")
         
-        if self.NCBPS not in [1,2,3,4,6] and self.MCS != "0":
-            raise ValueError(f"NCBPS仅支持[1,2,3,4,6]")
+        if self.MCS == 1:
+            if self.NCBPS not in [1,2,3,4,6,8] and self.MCS != "0":
+                raise ValueError(f"NCBPS仅支持[1,2,3,4,6,8] for QAM")
+        elif self.MCS == 2:
+            # APSK 缓存（只在 APSK 模式时生效）
+            rings = self.params.get("APSK_RINGS")
+            offsets = self.params.get("APSK_PHASE_OFFSETS")
+            if rings is None or offsets is None:
+                rings, offsets = self._default_apsk_rings(2 ** int(self.NCBPS))
+            total_pts = sum(int(n) for n, _ in rings)
+            if total_pts != int(2 ** int(self.NCBPS)):
+                raise ValueError(f"APSK_RINGS 点数总和({total_pts}) 必须等于 2**NCBPS({self.NCBPS})")
+            if len(offsets) != len(rings):
+                raise ValueError(f"APSK_PHASE_OFFSETS 数量({len(offsets)}) 必须等于 rings 数量({len(rings)})") 
+
+            const, bits, k = self._build_apsk_table_from(2 ** int(self.NCBPS), rings, offsets)
+            self._apsk_const = const
+            self._apsk_bits = bits
+            self._apsk_k = int(k)      
+
+            # 预切片，避免 demodulate 时反复筛选
+            self._apsk_S0 = []
+            self._apsk_S1 = []
+            for j in range(self._apsk_k):
+                mask1 = (bits[:, j] == 1)
+                mask0 = ~mask1
+                self._apsk_S1.append(const[mask1])
+                self._apsk_S0.append(const[mask0])
+        
+        # 输出参数      
+        self.sample_rate = None  # 采样率
+        self.duration = None  # 时长
+        self.bit_length = None  # 比特长度
+        self.padding_bit_num = 0   # 补零的比特数
+
+    @staticmethod
+    def _gray_int(x: np.ndarray) -> np.ndarray:
+        return x ^ (x >> 1)
+
+    @staticmethod
+    def _int_to_bits(idx: np.ndarray, k: int) -> np.ndarray:
+        idx = idx.astype(np.int64)
+        return ((idx[:, None] >> np.arange(k - 1, -1, -1)) & 1).astype(np.uint8)
+    
+    def _find_min(self, A, B):
+        """
+        A: (N,) complex
+        B: (M,) complex
+        return: (N,) min |A - B|^2
+        """
+        A_exp = A[:, np.newaxis]
+        B_exp = B[np.newaxis, :]
+        D = A_exp - B_exp
+        M = np.abs(D) ** 2
+        return np.min(M, axis=1)
+        
+    def _verification_data(self, data_dict):
+        """
+        校验输入数据字典合法性
+        :param data_dict: 输入数据字典，包含以下键值：
+            "symbol_stream": 符号流,
+            "sample_rate_Hz": 采样率,
+            "duration_seconds": 时长,
+            "symbol_length": 符号长度,
+            "padding_bit_num": 补零比特数,
+        """
+        # 校验输入字典完整性
+        required_keys = [
+            "symbol_stream", "sample_rate_Hz", "duration_seconds", "symbol_length","padding_bit_num"
+        ]
+        for key in required_keys:
+            if key not in data_dict:
+                raise KeyError(f"输入数据字典缺少必要键值：{key}")
+            
+        # 校验分帧信息一致性
+        if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["symbol_length"]:
+            raise ValueError("输入数据字典中的采样率与时长不匹配")  
+        
+
+        if self.MCS == "0":
+            self.sample_rate = data_dict["sample_rate_Hz"]
+            self.bit_length = data_dict["symbol_length"]
+        else:
+            self.sample_rate = data_dict["sample_rate_Hz"] * self.NCBPS
+            self.bit_length = data_dict["symbol_length"] * self.NCBPS
+        self.duration = data_dict["duration_seconds"]
+        self.padding_bit_num = data_dict["padding_bit_num"]  
+
+    # -------------------- APSK (A/B) --------------------
+    def _default_apsk_rings(self, M: int):
+        """
+        默认 rings/offsets（可按你需要调整半径比）
+        """
+        if M == 16:
+            rings = [(4, 1.0), (12, 2.85)]
+        elif M == 32:
+            rings = [(4, 1.0), (12, 2.84), (16, 5.27)]
+        elif M == 64:
+            rings = [(4, 1.0), (12, 2.73), (20, 4.52), (28, 6.31)]
+        else:
+            raise ValueError(f"未提供 APSK_RINGS，且无 {M}APSK 默认 rings。请手动设置 APSK_RINGS/APSK_PHASE_OFFSETS")
+        offsets = [0.0] * len(rings)
+        return rings, offsets 
+
+    def _build_apsk_table_from(self, M: int, rings, offsets):
+        """
+        构造 APSK constellation + (binary index -> constellation) + labels
+        - 先按 ring 顺序拼接 const
+        - 归一化到 Es=1
+        - 用 Gray permute：symbols_by_b[b] = const[gray(b)]
+        - bits_by_b[b] = binary bits of b
+        """
+        k = int(np.log2(M))
+        if 2 ** k != M:
+            raise ValueError("APSK_M 必须是 2 的幂（16/32/64/256...）")
+
+        const = []
+        for (n, r), phi0 in zip(rings, offsets):
+            ang = phi0 + 2 * np.pi * np.arange(int(n)) / int(n)
+            const.append(float(r) * np.exp(1j * ang))
+        const = np.concatenate(const).astype(np.complex128)
+
+        # Es 归一化到 1
+        const = const / np.sqrt(np.mean(np.abs(const) ** 2))
+
+        b = np.arange(M, dtype=np.int64)
+        g = self._gray_int(b)                 # gray index
+        symbols_by_b = const[g]               # binary index -> symbol
+        bits_by_b = self._int_to_bits(b, k)   # binary index -> bits label
+        return symbols_by_b, bits_by_b, k    
 
     def _find_min(self, A, B):
         A_exp = A[:, np.newaxis]
@@ -175,9 +304,85 @@ class THzDemodulator:
         
         return llr
 
-    def demodulate(self, rx_symbols, sigma):
-        if self.MCS == "0":
+    @staticmethod
+    def _gray_labels_16():
+        """
+        返回 16 个电平对应的 Gray 码比特标签（MSB->LSB）
+        """
+        i = np.arange(16, dtype=np.int32)
+        g = i ^ (i >> 1)
+        b0 = (g >> 3) & 1
+        b1 = (g >> 2) & 1
+        b2 = (g >> 1) & 1
+        b3 = (g >> 0) & 1
+        return np.vstack([b0, b1, b2, b3]).T.astype(np.int8)
+
+    @staticmethod
+    def _min_masked(dist2, mask):
+        tmp = np.where(mask[None, :], dist2, np.inf)
+        return np.min(tmp, axis=1)
+
+    def _256qam_demodulate(self, rx_symbols, sigma):
+        L_sym = len(rx_symbols)
+        phase = np.exp(-1j * np.pi * np.arange(L_sym) / 2)
+        s = rx_symbols * phase
+
+        P = np.sqrt(170.0)
+        levels = (2 * np.arange(16) - 15) / P
+        labels = self._gray_labels_16()
+
+        br = np.real(s)
+        bi = np.imag(s)
+
+        distI = (br[:, None] - levels[None, :]) ** 2
+        distQ = (bi[:, None] - levels[None, :]) ** 2
+
+        llrI, llrQ = [], []
+        for kk in range(4):
+            mask1 = labels[:, kk] == 1
+            mask0 = ~mask1
+
+            d1I = self._min_masked(distI, mask1)
+            d0I = self._min_masked(distI, mask0)
+            llrI.append((d1I - d0I) / (sigma ** 2))
+
+            d1Q = self._min_masked(distQ, mask1)
+            d0Q = self._min_masked(distQ, mask0)
+            llrQ.append((d1Q - d0Q) / (sigma ** 2))
+
+        llr = np.vstack((llrI[0], llrI[1], llrI[2], llrI[3],
+                         llrQ[0], llrQ[1], llrQ[2], llrQ[3])).T.reshape(-1)
+        return llr
+
+    # -------------------- APSK demodulate (cached) --------------------
+    def _apsk_demodulate(self, rx_symbols, sigma):
+        """
+        Max-Log LLR:
+          llr_j = (min_{s in S1} |y-s|^2 - min_{s in S0} |y-s|^2) / sigma^2
+        与你的 llr_to_bits 规则一致：llr<0 => bit=1
+        """
+
+        L_sym = len(rx_symbols)
+        phase = np.exp(-1j * np.pi * np.arange(L_sym) / 2)
+        y = rx_symbols * phase
+
+        llrs = []
+        for j in range(self._apsk_k):
+            S1 = self._apsk_S1[j]
+            S0 = self._apsk_S0[j]
+            d1 = self._find_min(y, S1)
+            d0 = self._find_min(y, S0)
+            llrs.append((d1 - d0) / (sigma ** 2))
+
+        return np.vstack(llrs).T.reshape(-1)
+
+    def demodulate(self, rx_symbols_dict, sigma):
+        self._verification_data(rx_symbols_dict)
+        rx_symbols = rx_symbols_dict["symbol_stream"]
+        if self.MCS == 0:
             llr = self._dbpsk_demodulate(rx_symbols, sigma)
+        elif self.MCS == 2:
+            llr = self._apsk_demodulate(rx_symbols, sigma)
         else:
             if self.NCBPS == 1:
                 llr = self._bpsk_demodulate(rx_symbols, sigma)
@@ -189,24 +394,47 @@ class THzDemodulator:
                 llr = self._16qam_demodulate(rx_symbols, sigma)
             elif self.NCBPS == 6:
                 llr = self._64qam_demodulate(rx_symbols, sigma)
+            elif self.NCBPS == 8:
+                llr = self._256qam_demodulate(rx_symbols, sigma)
             else:
                 raise ValueError(f"不支持的NCBPS：{self.NCBPS}")
         
         if np.isclose(self.Rate, 13/16):
             llr = llr / 2
-        
-        return llr
 
-    def llr_to_bits(self, llr):
-        bits = (llr < 0).astype(np.uint8)
-        return bits
+        if len(llr) != self.bit_length:
+            raise ValueError(f"解调后比特长度不匹配:预期长度={self.bit_length}, 实际长度={len(llr)}")
+
+        result_dict = {
+            "bit_llr": llr,
+            "sample_rate_Hz": self.sample_rate,
+            "duration_seconds": self.duration,
+            "bit_length": self.bit_length,
+            "padding_bit_num": self.padding_bit_num
+        }
+        
+        return result_dict
+
+    def llr_to_bits(self, llr_dict):
+        if round(llr_dict["sample_rate_Hz"] * llr_dict["duration_seconds"]) != llr_dict["bit_length"]:
+            raise ValueError("输入数据字典中的采样率与时长不匹配")   
+        if len(llr_dict["bit_llr"]) != llr_dict["bit_length"]:
+            raise ValueError(f"输入LLR长度不匹配:预期长度={llr_dict['bit_length']}, 实际长度={len(llr_dict['bit_llr'])}")     
+        bits = (llr_dict["bit_llr"] < 0).astype(np.uint8)
+        result_dict = {
+            "bit_stream": bits,
+            "sample_rate_Hz": llr_dict["sample_rate_Hz"],
+            "duration_seconds": llr_dict["duration_seconds"],
+            "bit_length": llr_dict["bit_length"],
+            "padding_bit_num": llr_dict["padding_bit_num"]
+        }
+        return result_dict
 
 def snr_to_sigma(snr_db, signal_power=1.0):
     snr_linear = 10 ** (snr_db / 10)
     sigma = np.sqrt(signal_power / (2 * snr_linear))
     return sigma
 
-# ========== 新增：全链路波形分析函数 ==========
 def analyze_link_waveforms(tx_symbols, tx_signal, rx_signal, y_matched, y_cp_del, params):
     """
     可视化全链路关键节点波形/星座图，定位误码原因
@@ -335,47 +563,36 @@ def analyze_link_waveforms(tx_symbols, tx_signal, rx_signal, y_matched, y_cp_del
 if __name__ == "__main__":
     # 初始化参数和发射机
     params = PHYParams()
-    transmitter = THzTransmitter(params)
-    tx_signal = transmitter.run()
-    tx_symbols = transmitter.tx_symbols
-    
+    transmitter = THzTransmitter(params)    
+    # 执行完整发射流程  
+    tx_signal_dict = transmitter.run() 
     # 初始化信道并生成接收信号
     channel = THzChannel(params)
-    rx_signal = channel.run(tx_signal)
-    print(f"发射信号长度：{len(tx_signal)}, 接收信号长度：{len(rx_signal)}")
-
+    rx_signal_dict = channel.run(tx_signal_dict)
     # 初始化接收端匹配滤波器
     rx_matched_filter = RxMatchedFilter(transmitter.pulse_shaper)
-    y_matched = rx_matched_filter.recover_symbols(rx_signal)
-    print(f"发射符号长度：{len(tx_symbols)}, 接收符号长度：{len(y_matched)}")
-
-    # 去除GI
-    y_cp_del = transmitter.cp_inserter.remove_cp(y_matched)
-    print(f"去除循环前缀后符号长度：{len(y_cp_del)}")
-    
-    # ========== 新增：全链路波形分析 ==========
-    analyze_link_waveforms(tx_symbols, tx_signal,rx_signal, y_matched, y_cp_del, params)
+    # === 进行匹配滤波并获得中间信号 ===
+    rx_matched_dict = rx_matched_filter.recover_symbols(rx_signal_dict)
+    # 初始化GI移除器
+    gi_remover = GIRemover(params)
+    # === 进行GI移除 ===
+    rx_data_no_gi_dict = gi_remover.remove_gi(rx_matched_dict)
     
     # 解调
     snr_db = params.get("SNRdB")    
-    # 修正sigma计算（匹配信号功率）
-    tx_power_mean = np.mean(np.abs(tx_symbols)**2)
-    print(f"发射符号平均功率用于sigma计算：{tx_power_mean:.6f}")
-    sigma = snr_to_sigma(snr_db, tx_power_mean)  # 改用归一化后的sigma计算
-    
+    sigma = snr_to_sigma(snr_db)  # 改用归一化后的sigma计算
     demodulator = THzDemodulator(params)
-    llr = demodulator.demodulate(y_cp_del, sigma)
-
+    llr_dict = demodulator.demodulate(rx_data_no_gi_dict, sigma)
     # LLR转比特
-    rec_bits = demodulator.llr_to_bits(llr)
+    rec_bits_dict = demodulator.llr_to_bits(llr_dict)
 
     # 截断比特到相同长度（避免维度不匹配）
-    min_bit_len = min(len(transmitter.coded_bits), len(rec_bits))
-    tx_bits_trunc = transmitter.coded_bits[:min_bit_len]
-    rec_bits_trunc = rec_bits[:min_bit_len]
+    min_bit_len = min(len(transmitter.coded_bits_dict["bit_stream"]), len(rec_bits_dict["bit_stream"]))
+    tx_bits_trunc = transmitter.coded_bits_dict["bit_stream"][:min_bit_len]
+    rec_bits_trunc = rec_bits_dict["bit_stream"][:min_bit_len]
     
     print(f"\n===== 解调结果分析 =====")
-    print(f"接收比特长度：{len(rec_bits)}, 原始比特长度：{len(transmitter.coded_bits)}")
+    print(f"接收比特长度：{len(rec_bits_dict['bit_stream'])}, 原始比特长度：{len(transmitter.coded_bits_dict['bit_stream']  )}")
     print(f"原始比特（前10）：{tx_bits_trunc[0:10]}")
     print(f"解调比特（前10）：{rec_bits_trunc[0:10]}")
     print(f"比特错误数：{np.sum(tx_bits_trunc != rec_bits_trunc)}")
@@ -383,8 +600,8 @@ if __name__ == "__main__":
     
     # 额外：LLR分布分析
     plt.figure(figsize=(8, 4))
-    plt.hist(llr, bins=50, color='purple', alpha=0.7)
-    plt.title(f'LLR值分布（均值：{np.mean(llr):.4f}，标准差：{np.std(llr):.4f}）')
+    plt.hist(llr_dict["bit_llr"], bins=50, color='purple', alpha=0.7)
+    plt.title(f'LLR值分布（均值：{np.mean(llr_dict["bit_llr"]):.4f}，标准差：{np.std(llr_dict["bit_llr"]):.4f}）')
     plt.xlabel('LLR值')
     plt.ylabel('频次')
     plt.grid(True)

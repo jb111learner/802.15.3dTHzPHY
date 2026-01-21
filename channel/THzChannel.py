@@ -6,15 +6,12 @@ from channel.CFO import CFO
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
 import matplotlib.pyplot as plt
-
-# 设置中文字体（避免绘图中文乱码）
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
 class THzChannel(BaseChannel):
     """
-    THz信道主类：调度子模块完成“多径→噪声→频偏”的非理想效应叠加
-    可选添加相位噪声、时延等其他信道特性
+    THz信道主类
     """
     def __init__(self, params):
         super().__init__(params)
@@ -24,37 +21,40 @@ class THzChannel(BaseChannel):
         self.cfo = CFO(params)
         self.chan_true = self.multipath_chan.chan_impulse  # 真实信道频域响应（用于校验估计精度）
 
-    def apply_multipath(self, signal):
-        """应用多径效应（调用MultipathChannel）"""
-        return self.multipath_chan.apply_multipath(signal)
+    def apply_multipath(self, signal_dict):
+        """应用多径效应"""
+        self.signal_mulipath_dict = self.multipath_chan.apply_multipath(signal_dict)
+        return self.signal_mulipath_dict
 
-    def add_awgn(self, signal):
-        """添加AWGN噪声（调用AWGN）"""
-        return self.awgn.add_awgn(signal)
+    def add_awgn(self, signal_dict):
+        """添加AWGN噪声"""
+        self.signal_awgn_dict = self.awgn.add_awgn(signal_dict)
+        return self.signal_awgn_dict
 
-    def add_cfo(self, signal):
-        """应用频偏（调用CFO）"""
-        return self.cfo.apply_cfo(signal)
+    def add_cfo(self, signal_dict):
+        """应用频偏"""
+        self.signa_cfo_dict = self.cfo.apply_cfo(signal_dict)
+        return self.signa_cfo_dict
 
     # def apply_phase_noise(self, signal):
-    #     """可选：添加相位噪声（简化版）"""
+    #     """添加相位噪声"""
     #     phase_noise_std = self.params.get("phase_noise_std", 0.01)  # 相位噪声标准差
     #     phase_noise = np.random.randn(len(signal)) * phase_noise_std
     #     signal_with_phase_noise = signal * np.exp(1j * phase_noise)
     #     return signal_with_phase_noise
 
     def apply_delay(self, signal):
-        """可选：添加传输时延（前置零符号）"""
+        """添加传输时延（前置零符号）"""
         delay = self.params.get("delay")
         signal_with_delay = np.concatenate([np.zeros(delay, dtype=complex), signal])
         return signal_with_delay
 
-    def run(self, signal):
+    def run(self, signal_dict):
         """执行完整信道流程：多径→噪声→频偏（可选添加相位噪声/时延）"""
         # # 1. 多径效应
         # signal = self.apply_multipath(signal)
         # 2. 添加AWGN噪声
-        signal = self.add_awgn(signal)
+        self.add_awgn(signal_dict)
         # # 3. 应用频偏
         # signal = self.add_cfo(signal)
         # # 4. 可选：添加相位噪声
@@ -63,8 +63,8 @@ class THzChannel(BaseChannel):
         # 5. 添加传输时延
         # signal = self.apply_delay(signal)
         # 保存接收信号
-        self.rx_signal = signal
-        return self.rx_signal
+        self.rx_signal_dict = self.signal_awgn_dict
+        return self.rx_signal_dict
 
 def plot_eye_diagram(signal, symbol_period, num_symbols=100, ax=None):
     """
@@ -105,19 +105,21 @@ def plot_eye_diagram(signal, symbol_period, num_symbols=100, ax=None):
 if __name__ == "__main__":
     # 初始化参数和发射机
     params = PHYParams()
-    transmitter = THzTransmitter(params)
-    tx_signal = transmitter.run()
-    
+    transmitter = THzTransmitter(params)    
+    # 执行完整发射流程  
+    tx_signal_dict = transmitter.run() 
     # 初始化信道并生成接收信号
     channel = THzChannel(params)
-    rx_signal = channel.run(tx_signal)
-    print(f"发射信号长度：{len(tx_signal)}, 接收信号长度：{len(rx_signal)}")
-    # print(f"真实信道频域响应：{np.abs(channel.chan_true_fft)[:10]}")  # 打印前10个点
+    rx_signal_dict = channel.run(tx_signal_dict)
+    print(f"发射信号长度：{len(tx_signal_dict['signal_stream'])}, 接收信号长度：{len(rx_signal_dict['signal_stream'])}")
+    print(f"采样率：{rx_signal_dict['sample_rate_Hz']} Hz，时长：{rx_signal_dict['duration_seconds']} 秒")
+    print(f"实际SNR：{rx_signal_dict['SNRdB']:.2f} dB")
+    print(f"噪声功率：{rx_signal_dict['noise_power']:.2e} W")
+    print(f"信号功率：{rx_signal_dict['signal_power']:.2e} W")
+    rx_signal = rx_signal_dict['signal_stream']
 
     # 计算符号周期（每个符号的采样点数）
-    symbol_rate = params.get("symbol_rate")  # 默认1G符号/秒
-    sampling_rate = symbol_rate * params.get("oversampling")  # 过采样率
-    symbol_period = int(sampling_rate / symbol_rate)  # 每个符号的采样点数
+    symbol_period = params.get("oversampling") # 每个符号的采样点数
     
     # 信号可视化（调整布局为2x3，增加眼图子图）
     fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(18, 10))
@@ -134,7 +136,7 @@ if __name__ == "__main__":
     
     # 子图2: 频域频谱
     fft_signal = np.fft.fft(rx_signal)
-    freq = np.fft.fftfreq(len(fft_signal), 1/(params.get("symbol_rate") * params.get("oversampling")))
+    freq = np.fft.fftfreq(len(fft_signal), 1/(rx_signal_dict.get("sample_rate_Hz")))
     ax2.plot(freq/1e9, 20*np.log10(np.abs(fft_signal)))
     ax2.set_title('信号频域频谱')
     ax2.set_xlabel('频率 (GHz)')
