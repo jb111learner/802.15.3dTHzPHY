@@ -5,113 +5,83 @@ from core.BaseTransmitter import BaseTransmitter
 from transmitter.HeaderGenerator import HeaderGenerator
 from transmitter.PreambleGenerator import PreambleGenerator
 from transmitter.Modulator import THzModulator as Modulator
-from transmitter.CPInserter import CPInserter
-# from utils.Rotator import Rotator  # 信号旋转工具
-from utils.Coder import RSCoder 
+from transmitter.GIInserter import GIInserter
+from transmitter.DataProcesser import BitStreamProcessor
+# from utils.Rotator import Rotator 
+from transmitter.Encoder import Encoder 
 from transmitter.Pulseshaper import TxPulseShaper
 from params.PHYParams import PHYParams
-from utils.Scrambler import Scrambler  # 新增导入扰码器
+from transmitter.Scrambler import Scrambler 
 
 class THzTransmitter(BaseTransmitter):
     """
-    THz发射机主类：调度子模块完成“头部生成→前导码生成→数据调制→CP插入→信号组装”全流程
+    THz发射机主类
     """
     def __init__(self, params):
         super().__init__(params)
         # 初始化子模块
-        self.header_gen = HeaderGenerator(params)
         self.preamble_gen = PreambleGenerator(params)
         self.modulator = Modulator(params)
-        self.coder = RSCoder(params)
-        self.cp_inserter = CPInserter(params)
-        self.testbits_len = int(73728)  # 测试用数据比特长度
+        self.coder = Encoder(params)
+        self.gi_inserter = GIInserter(params)
         self.pulse_shaper = TxPulseShaper(params)
         self.scrambler = Scrambler(params)  # 初始化扰码器
-        self.data_scrambled = None  # 扰码后数据
-        # self.rotator = Rotator()
-
-    def add_header(self, data_bits):
-        """生成PHY+MAC头部（调用HeaderGenerator）"""
-        self.header_bits = self.header_gen.generate()
-        # 添加头部到数据前面
-        combined_bits = np.concatenate([self.header_bits, data_bits])
-        return combined_bits    
+        self.assembler = BitStreamProcessor(params)  # 初始化比特流处理器
+        # self.rotator = Rotator()  
 
     def generate_preamble(self):
         """生成前导码（SYNC+SFD+CES）"""
         self.sync, self.sfd, self.ces = self.preamble_gen.generate()
         self.preamble = np.concatenate([self.sync, self.sfd, self.ces])
+    
+    def assemble_frame(self):
+        """组装帧"""
+        self.data_bits_dict = self.assembler.run()
+        return self.data_bits_dict
 
     def scramble_data(self):
-        """扰码数据（调用Scrambler）"""
-        self.data_scrambled = self.scrambler.scramble(self.data_bits)
-        return self.data_scrambled
+        """扰码数据"""
+        self.data_scrambled_dict = self.scrambler.scramble(self.data_bits_dict)
+        return self.data_scrambled_dict
 
     def channel_encode(self):
         """信道编码（调用RSCoder）"""
-        self.coded_bits = self.coder.encode(self.data_scrambled)
-        return self.coded_bits
+        self.coded_bits_dict = self.coder.encode(self.data_scrambled_dict)
+        return self.coded_bits_dict
 
     def modulate(self):
-        """调制数据（调用Modulator）"""
-        self.modulated_data = self.modulator.modulate(self.coded_bits)
-        return self.modulated_data
-    
-    def insert_cp(self):
-        """插入CP（调用CPInserter）"""
-        self.data_with_cp = self.cp_inserter.insert_cp(self.modulated_data)
-        return self.data_with_cp
+        """调制数据"""
+        self.modulated_data_dict = self.modulator.modulate(self.coded_bits_dict)
+        return self.modulated_data_dict
 
-    def assemble_signal(self):
-        """组装发射信号：延迟 + 前导码 + 调制头部 + 带CP数据"""
-        # 1. 生成随机数据比特
-        self.data_bits = self._generate_random_data(self.testbits_len)
-
-        # # 2. 添加头部
-        # data_bits = self.add_header(data_bits)
-
-        # 2.5 扰码数据
-        self.scramble_data()
-
-        # 3. 信道编码
-        self.channel_encode()
-        
-        # 4. 调制数据并插入CP
-        self.modulate()
-        self.insert_cp()
-
-        # # 5. 添加前置延迟
-        # delay = self.params.get("delay")
-        # delay_signal = np.zeros(delay, dtype=np.complex128)
-        
-        # 5. 组装完整信号
-        self.tx_symbols = np.concatenate([
-            # delay_signal,
-            # self.preamble,
-            self.data_with_cp
-        ])
+    def insert_gi(self):
+        """插入GI"""
+        self.data_with_gi_dict = self.gi_inserter.insert_gi(self.modulated_data_dict)
+        return self.data_with_gi_dict
 
     def pulse_shaping(self):
-        """脉冲成型（调用TxPulseShaper）"""
-        shaped_signal = self.pulse_shaper.shape_pulse(self.tx_symbols)
-        self.tx_signal = shaped_signal
+        """脉冲成型"""
+        shaped_signal_dict = self.pulse_shaper.shape_pulse(self.data_with_gi_dict)
+        self.tx_signal_dict = shaped_signal_dict
+        return self.tx_signal_dict
 
-    def run(self, data_bits=None):
-        """执行完整发射流程（统一调度）"""
-        if data_bits is None:
-            self.data_bits = self._generate_random_data()
-        else:
-            self.data_bits = data_bits
+    def run(self):
+        """执行完整发射流程"""
+        self.assemble_frame()
         self.generate_preamble()
         self.scramble_data()
         self.channel_encode()
         self.modulate()
-        self.insert_cp()
-        self.assemble_signal()
+        self.insert_gi()
         self.pulse_shaping()
-        return self.tx_signal
+        return self.tx_signal_dict
 
-# 新增眼图绘制函数
+
+
+
+
+
+
 def plot_eye_diagram(signal, symbol_period, num_symbols=1000, oversampling=1, ax=None):
     """
     绘制眼图
@@ -160,7 +130,7 @@ if __name__ == "__main__":
     plt.rcParams['font.sans-serif'] = ['SimHei']
     plt.rcParams['axes.unicode_minus'] = False
     
-    # 1. 初始化参数和发射机
+    # 初始化参数和发射机
     print("="*50)
     print("          太赫兹发射机信号测试程序")
     print("="*50)
@@ -169,17 +139,16 @@ if __name__ == "__main__":
     # 打印基础参数信息
     print("\n【1. 基础参数配置】")
     basic_params = {
+        "数据时长": params.get("duration"),
+        "采样率": params.get("sample_rate"),
+        "采样点数": params.get("bit_length"),
         "每符号比特数": params.get("NCBPS"),
         "是否使用CP": params.get("is_cp"),
-        "加扰器种子ID": params.get("scrambler_seed_id"),
-        "PPRE字段": params.get("ppre"),
-        "PW字段": params.get("pw"),
-        "前导码类型": params.get("Preamble_type"),
-        "调制编码方案(MCS)": params.get("MCS"),
-        "系统带宽": params.get("bandwidth"),
+        "扰码器cinit": params.get("c_init"),
         "子帧长度": params.get("subframe_length"),
-        "CP长度": params.get("cp_length"),
-        "符号速率": params.get("symbol_rate"),
+        "GI长度": params.get("gi_length"),
+        "校验符号数": params.get("rs_nsym"),
+        "编码包大小": params.get("rs_packet_size"),
         "上采样率": params.get("oversampling"),
         "滚降系数": params.get("rolloff"),
         "滤波器类型": params.get("filter_type"),
@@ -187,65 +156,71 @@ if __name__ == "__main__":
     }
     for key, value in basic_params.items():
         print(f"  {key}: {value}")
-    
+
+
     # 初始化发射机
-    transmitter = THzTransmitter(params)
+    transmitter = THzTransmitter(params)    
+    # 执行完整发射流程  
+    tx_signal_dict = transmitter.run() 
+
+
+    print("\n【2. 组帧输出】")     
+    data_bits_dict = transmitter.data_bits_dict
+    print(f"前100比特流：{data_bits_dict['bit_stream'][:100] if not data_bits_dict['is_big_bitstream'] else '超大比特流，已保存为文件'}")
+    print(f"比特流长度：{data_bits_dict['bit_length']} bit")
+    print(f"分帧配置：每帧{data_bits_dict['frame_bit_num']}bit，共{data_bits_dict['frame_num']}帧")
+    print(f"采样率：{data_bits_dict['sample_rate_Hz']} Hz，时长：{data_bits_dict['duration_seconds']} 秒")
+    print(f"补零数量：{data_bits_dict['padding_bit_num']} bit")
+    print(f"是否超大比特流：{data_bits_dict['is_big_bitstream']}")
+
+    print("\n【3. 扰码输出】")
+    data_scrambled_dict = transmitter.data_scrambled_dict
+    print(f"前100扰码比特流：{data_scrambled_dict['bit_stream'][:100]}")
+    print(f"扰码后比特流长度：{data_scrambled_dict['bit_length']} bit")
+    print(f"采样率：{data_scrambled_dict['sample_rate_Hz']} Hz，时长：{data_scrambled_dict['duration_seconds']} 秒")
+    print(f"补零数量：{data_scrambled_dict['padding_bit_num']} bit")
+
+    print("\n【4. 信道编码输出】")
+    coded_bits_dict = transmitter.coded_bits_dict
+    print(f"前100编码比特流：{coded_bits_dict['bit_stream'][:100]}")
+    print(f"编码后比特流长度：{coded_bits_dict['bit_length']} bit")
+    print(f"采样率：{coded_bits_dict['sample_rate_Hz']} Hz，时长：{coded_bits_dict['duration_seconds']} 秒")
+    print(f"补零数量：{coded_bits_dict['padding_bit_num']} bit")
+    print(f"编码增益：{coded_bits_dict['bit_length']/data_scrambled_dict['bit_length']:.2f}x")
+
+    print("\n【5. 调制输出】")
+    modulated_data_dict = transmitter.modulated_data_dict
+    print(f"前100调制符号：{modulated_data_dict['symbol_stream'][:100]}")
+    print(f"调制后符号长度：{modulated_data_dict['symbol_length']}")
+    print(f"采样率：{modulated_data_dict['sample_rate_Hz']} Hz，时长：{modulated_data_dict['duration_seconds']} 秒")
+    print(f"补零数量：{modulated_data_dict['padding_bit_num']} bit")
+    print(f"每符号比特数：{params.get('NCBPS')} bit")
+    transmitter.modulator.plot_constellation(modulated_data_dict["symbol_stream"][:200], use_english=True)
+
+    print("\n【6. GI插入输出】")
+    data_with_gi_dict = transmitter.data_with_gi_dict
+    print(f"前100带GI符号：{data_with_gi_dict['symbol_stream'][:100]}")
+    print(f"带GI符号长度：{data_with_gi_dict['symbol_length']}")
+    print(f"采样率：{data_with_gi_dict['sample_rate_Hz']} Hz，时长：{data_with_gi_dict['duration_seconds']} 秒")
+    print(f"补零数量：{data_with_gi_dict['padding_bit_num']} bit")
+
+    print("\n【7. 脉冲成型输出】")
+    tx_signal_dict = transmitter.tx_signal_dict
+    tx_signal = tx_signal_dict['signal_stream']
+    print(f"前100成型信号点：{tx_signal[:100]}")
+    print(f"成型信号长度：{tx_signal_dict['signal_length']}")
+    print(f"采样率：{tx_signal_dict['sample_rate_Hz']} Hz，时长：{tx_signal_dict['duration_seconds']} 秒")
     
-    # 2. 执行完整发射流程
-    print("\n【2. 执行发射机信号生成流程】")
-    # 生成前导码（确保preamble已初始化）
-    tx_signal = transmitter.run()
-    
-    # 3. 详细信号参数统计
-    print("\n【3. 信号详细参数统计】")
-    # 基础长度信息
-    print(f"  最终发射信号总长度: {len(tx_signal)} 采样点")
-    print(f"  前导码长度: {len(transmitter.preamble)} 采样点")
-    print(f"  调制后数据符号数: {len(transmitter.modulated_data)} 个")
-    
-    # 计算CP相关长度
-    data_with_cp = transmitter.insert_cp(transmitter.modulated_data)
-    cp_length = len(data_with_cp) - len(transmitter.modulated_data)
-    print(f"  CP长度: {cp_length} 采样点 (比例: {cp_length/len(transmitter.modulated_data):.2f})")
-    print(f"  带CP数据总长度: {len(data_with_cp)} 采样点")
-    
-    # 比特数统计
-    if hasattr(transmitter, 'header_bits') and transmitter.header_bits is not None:
-        print(f"  头部比特长度: {len(transmitter.header_bits)} bit")
-    raw_data_len = transmitter.testbits_len
-    print(f"  原始数据比特长度: {raw_data_len} bit")
-    total_bits = len(transmitter.header_bits) + raw_data_len if transmitter.header_bits is not None else raw_data_len
-    coded_bits = transmitter.channel_encode(np.random.randint(0,2,total_bits, dtype=np.uint8))
-    print(f"  信道编码后比特长度: {len(coded_bits)} bit (编码增益: {len(coded_bits)/total_bits:.2f}x)")
-    
-    # 信号特性分析
+    print("\n【8. 信号核心参数】")
     print(f"\n  信号幅值范围: {np.min(np.abs(tx_signal)):.4f} ~ {np.max(np.abs(tx_signal)):.4f}")
     print(f"  信号平均功率: {np.mean(np.abs(tx_signal)**2):.4f} W")
     print(f"  信号峰值功率: {np.max(np.abs(tx_signal)**2):.4f} W")
     print(f"  信号类型: {'复数' if np.iscomplexobj(tx_signal) else '实数'}")
-    
-    # 4. 信号完整性验证
-    print("\n【4. 信号完整性验证】")
-    verify_results = []
-    # 验证前导码
-    verify_results.append(f"前导码生成: {'✓ 正常' if len(transmitter.preamble) > 0 else '✗ 异常'}")
-    # 验证调制数据
-    verify_results.append(f"调制数据: {'✓ 正常' if len(transmitter.modulated_data) > 0 else '✗ 异常'}")
-    # 验证CP插入
-    verify_results.append(f"CP插入: {'✓ 正常' if len(data_with_cp) > len(transmitter.modulated_data) else '✗ 异常'}")
-    # 验证最终信号
-    verify_results.append(f"最终信号: {'✓ 正常' if len(tx_signal) > 0 else '✗ 异常'}")
-    # 验证信号类型
-    verify_results.append(f"信号类型: {'✓ 复数(符合要求)' if np.iscomplexobj(tx_signal) else '✗ 非复数(不符合要求)'}")
-    
-    for res in verify_results:
-        print(f"  {res}")
-    
-    # 5. 信号可视化（修改为5个子图，增加眼图）
-    print("\n【5. 信号可视化】")
+
+    print("\n【9. 信号可视化】")
     # 创建2行3列的子图布局（最后一列放眼图）
     fig = plt.figure(figsize=(18, 10))
-    gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
+    gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
     
     # 子图1: 时域波形（前1000个采样点）
     ax1 = fig.add_subplot(gs[0, 0])
@@ -260,31 +235,14 @@ if __name__ == "__main__":
     # 子图2: 频域频谱
     ax2 = fig.add_subplot(gs[0, 1])
     fft_signal = np.fft.fft(tx_signal)
-    freq = np.fft.fftfreq(len(fft_signal), 1/(params.get("symbol_rate") * params.get("oversampling")))
+    freq = np.fft.fftfreq(len(fft_signal), 1/(tx_signal_dict.get("sample_rate_Hz")))
     ax2.plot(freq/1e9, 20*np.log10(np.abs(fft_signal)))
     ax2.set_title('信号频域频谱')
     ax2.set_xlabel('频率 (GHz)')
     ax2.set_ylabel('幅度 (dB)')
     ax2.grid(True, alpha=0.3)
     
-    # 子图3: 调制符号星座图
-    # 子图3: 调制符号星座图（修复）
-    ax3 = fig.add_subplot(gs[0, 2])
-    # 取纯调制数据符号（跳过前导码，取前200个调制符号）
-    pure_mod_symbols = transmitter.modulated_data[:2000]  # 直接取调制器输出的纯数据符号
-    ax3.scatter(pure_mod_symbols.real, 
-                pure_mod_symbols.imag,
-                s=10, alpha=0.8, c='orange')
-    ax3.set_title('16QAM调制符号星座图')
-    ax3.set_xlabel('实部')
-    ax3.set_ylabel('虚部')
-    ax3.grid(True, alpha=0.3)
-    ax3.axis('equal')
-    # 限制坐标范围（16QAM标准范围是±0.9左右）
-    ax3.set_xlim(-1.2, 1.2)
-    ax3.set_ylim(-1.2, 1.2)
-    
-    # 子图4: 信号功率分布
+    # 子图3: 信号功率分布
     ax4 = fig.add_subplot(gs[1, 0])
     power = np.abs(tx_signal[5000:10000])**2
     ax4.plot(np.arange(5000), power, linewidth=0.8, color='green')
@@ -293,8 +251,8 @@ if __name__ == "__main__":
     ax4.set_ylabel('功率 (W)')
     ax4.grid(True, alpha=0.3)
     
-    # 子图5: 眼图（新增）
-    ax5 = fig.add_subplot(gs[1, 1:])  # 占据第2行后两列
+    # 子图4: 眼图
+    ax5 = fig.add_subplot(gs[1, 1])  # 占据第2行后两列
     # 计算符号周期（根据采样率和符号速率）
     symbol_period = int(params.get("oversampling"))  # 每个符号的采样点数
     plot_eye_diagram(
