@@ -1,0 +1,1178 @@
+[
+  {
+    "snr": 0.0,
+    "result": [
+      {
+        "run_index": 1,
+        "params": {
+          "_params": {
+            "bit_source": "PRBS",
+            "file_path": null,
+            "duration": 1,
+            "sample_rate": 44100.0,
+            "bit_depth": 8,
+            "bit_length": null,
+            "random_seed": 2,
+            "seed_strategy": "递增种子",
+            "fc": 1000000000000.0,
+            "bandwidth": 100000000000.0,
+            "subframe_num": 51,
+            "subframe_length": 480,
+            "gi_length": 32,
+            "c_init": 305419896,
+            "NCBPS": 4,
+            "APSK_RINGS": [
+              "(4, 1.0)",
+              "(12, 2.85)"
+            ],
+            "APSK_PHASE_OFFSETS": [
+              0.7853981633974483,
+              0.2617993877991494
+            ],
+            "code_type": "RS",
+            "rs_nsym": 63,
+            "rs_c_exp": 8,
+            "rs_packet_size": 192,
+            "oversampling": 4,
+            "rolloff": 0.22,
+            "filter_type": "rrc",
+            "filter_length": 8,
+            "scramble": true,
+            "ppre": 1,
+            "pw": 0,
+            "Preamble_type": "short",
+            "phase_rotation": 0.7853981633974483,
+            "MCS": 1,
+            "noise_temperature": null,
+            "noise_figure_db": null,
+            "SNRdB": 0.0,
+            "decode_mode": "hard",
+            "run_times": 1,
+            "save_intermediate": false,
+            "Rate": 1
+          }
+        },
+        "result": {
+          "params": {
+            "_params": {
+              "bit_source": "PRBS",
+              "file_path": null,
+              "duration": 1,
+              "sample_rate": 44100.0,
+              "bit_depth": 8,
+              "bit_length": null,
+              "random_seed": 2,
+              "seed_strategy": "递增种子",
+              "fc": 1000000000000.0,
+              "bandwidth": 100000000000.0,
+              "subframe_num": 51,
+              "subframe_length": 480,
+              "gi_length": 32,
+              "c_init": 305419896,
+              "NCBPS": 4,
+              "APSK_RINGS": [
+                "(4, 1.0)",
+                "(12, 2.85)"
+              ],
+              "APSK_PHASE_OFFSETS": [
+                0.7853981633974483,
+                0.2617993877991494
+              ],
+              "code_type": "RS",
+              "rs_nsym": 63,
+              "rs_c_exp": 8,
+              "rs_packet_size": 192,
+              "oversampling": 4,
+              "rolloff": 0.22,
+              "filter_type": "rrc",
+              "filter_length": 8,
+              "scramble": true,
+              "ppre": 1,
+              "pw": 0,
+              "Preamble_type": "short",
+              "phase_rotation": 0.7853981633974483,
+              "MCS": 1,
+              "noise_temperature": null,
+              "noise_figure_db": null,
+              "SNRdB": 0.0,
+              "decode_mode": "hard",
+              "run_times": 1,
+              "save_intermediate": false,
+              "Rate": 1
+            }
+          },
+          "seed": 2,
+          "tx_assembled": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "frame_num": 5,
+            "padding_bit_num": 15840,
+            "is_big_bitstream": false,
+            "frame_bit_num": 73728
+          },
+          "tx_preamble": null,
+          "tx_scrambled": {
+            "signal_stream": "[0 0 0 ... 1 1 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "tx_encoded": {
+            "signal_stream": "[0 0 0 ... 0 1 1]",
+            "sample_rate_Hz": 468562.5,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600,
+            "padding_bit_num": 15840
+          },
+          "tx_modulated": {
+            "signal_stream": "[-0.9486833 -0.31622777j -0.31622777+0.31622777j -0.31622777+0.9486833j\n ...  0.9486833 -0.31622777j -0.31622777-0.31622777j\n  0.31622777+0.9486833j ]",
+            "sample_rate_Hz": 117140.625,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400,
+            "padding_bit_num": 15840
+          },
+          "tx_with_gi": {
+            "signal_stream": "[ 1.+0.j  1.+0.j  1.+0.j ...  1.+0.j -1.-0.j  1.+0.j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592,
+            "padding_bit_num": 15840
+          },
+          "tx_signal": {
+            "signal_stream": "[0.5581534 +0.j 0.5550328 +0.j 0.48211044+0.j ... 0.59347388+0.j\n 0.42602483+0.j 0.16574475+0.j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "padding_bit_num": 15840
+          },
+          "rx_signal": {
+            "signal_stream": "[0.6896872 +0.1399405j  0.18968393-0.20598162j 0.86062912-0.33713826j ...\n 0.599879  -0.27445492j 0.57648099+0.67749845j 0.1648835 +0.31726311j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "signal_power": 0.2503942978040577,
+            "noise_power": 0.2503942978040577,
+            "SNRdB": 0.0,
+            "padding_bit_num": 15840
+          },
+          "rx_filtered": "[0.71116349-0.14584987j 0.94596787-0.13045495j 1.1010368 -0.08005094j ...\n 1.20605594+0.14917161j 0.96401953+0.22161082j 0.56570491+0.2939651j ]",
+          "rx_matched": {
+            "signal_stream": "[ 0.71116349-0.14584987j  1.2483813 -0.04221103j  0.67795121+0.15020699j\n ...  1.32236702-0.20661634j -0.37674136+0.20167362j\n  1.15802401+0.12588442j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592.0,
+            "padding_bit_num": 15840
+          },
+          "rx_no_gi": {
+            "signal_stream": "[-0.88909606-0.52581211j  0.1860492 +0.46347994j -0.26221152+0.80845795j\n ...  0.53991999-0.64350036j -0.2903535 -0.58323882j\n -0.03618408+0.78380022j]",
+            "sample_rate_Hz": 117140.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400.0,
+            "padding_bit_num": 15840
+          },
+          "rx_demodulated": {
+            "signal_stream": "[ 2.89850978  0.64925489  1.3302111  ...  0.38287513  0.09153928\n -1.50846072]",
+            "sample_rate_Hz": 468562.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600.0,
+            "padding_bit_num": 15840
+          },
+          "rx_decoded": {
+            "signal_stream": "[1 0 0 ... 0 0 1]",
+            "sample_rate_Hz": 352799.99999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "ber": 0.14119466145833334
+        },
+        "metrics": {
+          "ber": 0.14119466145833334
+        }
+      }
+    ]
+  },
+  {
+    "snr": 2.0,
+    "result": [
+      {
+        "run_index": 1,
+        "params": {
+          "_params": {
+            "bit_source": "PRBS",
+            "file_path": null,
+            "duration": 1,
+            "sample_rate": 44100.0,
+            "bit_depth": 8,
+            "bit_length": null,
+            "random_seed": 2,
+            "seed_strategy": "递增种子",
+            "fc": 1000000000000.0,
+            "bandwidth": 100000000000.0,
+            "subframe_num": 51,
+            "subframe_length": 480,
+            "gi_length": 32,
+            "c_init": 305419896,
+            "NCBPS": 4,
+            "APSK_RINGS": [
+              "(4, 1.0)",
+              "(12, 2.85)"
+            ],
+            "APSK_PHASE_OFFSETS": [
+              0.7853981633974483,
+              0.2617993877991494
+            ],
+            "code_type": "RS",
+            "rs_nsym": 63,
+            "rs_c_exp": 8,
+            "rs_packet_size": 192,
+            "oversampling": 4,
+            "rolloff": 0.22,
+            "filter_type": "rrc",
+            "filter_length": 8,
+            "scramble": true,
+            "ppre": 1,
+            "pw": 0,
+            "Preamble_type": "short",
+            "phase_rotation": 0.7853981633974483,
+            "MCS": 1,
+            "noise_temperature": null,
+            "noise_figure_db": null,
+            "SNRdB": 2.0,
+            "decode_mode": "hard",
+            "run_times": 1,
+            "save_intermediate": false,
+            "Rate": 1
+          }
+        },
+        "result": {
+          "params": {
+            "_params": {
+              "bit_source": "PRBS",
+              "file_path": null,
+              "duration": 1,
+              "sample_rate": 44100.0,
+              "bit_depth": 8,
+              "bit_length": null,
+              "random_seed": 2,
+              "seed_strategy": "递增种子",
+              "fc": 1000000000000.0,
+              "bandwidth": 100000000000.0,
+              "subframe_num": 51,
+              "subframe_length": 480,
+              "gi_length": 32,
+              "c_init": 305419896,
+              "NCBPS": 4,
+              "APSK_RINGS": [
+                "(4, 1.0)",
+                "(12, 2.85)"
+              ],
+              "APSK_PHASE_OFFSETS": [
+                0.7853981633974483,
+                0.2617993877991494
+              ],
+              "code_type": "RS",
+              "rs_nsym": 63,
+              "rs_c_exp": 8,
+              "rs_packet_size": 192,
+              "oversampling": 4,
+              "rolloff": 0.22,
+              "filter_type": "rrc",
+              "filter_length": 8,
+              "scramble": true,
+              "ppre": 1,
+              "pw": 0,
+              "Preamble_type": "short",
+              "phase_rotation": 0.7853981633974483,
+              "MCS": 1,
+              "noise_temperature": null,
+              "noise_figure_db": null,
+              "SNRdB": 2.0,
+              "decode_mode": "hard",
+              "run_times": 1,
+              "save_intermediate": false,
+              "Rate": 1
+            }
+          },
+          "seed": 2,
+          "tx_assembled": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "frame_num": 5,
+            "padding_bit_num": 15840,
+            "is_big_bitstream": false,
+            "frame_bit_num": 73728
+          },
+          "tx_preamble": null,
+          "tx_scrambled": {
+            "signal_stream": "[0 0 0 ... 1 1 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "tx_encoded": {
+            "signal_stream": "[0 0 0 ... 0 1 1]",
+            "sample_rate_Hz": 468562.5,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600,
+            "padding_bit_num": 15840
+          },
+          "tx_modulated": {
+            "signal_stream": "[-0.9486833 -0.31622777j -0.31622777+0.31622777j -0.31622777+0.9486833j\n ...  0.9486833 -0.31622777j -0.31622777-0.31622777j\n  0.31622777+0.9486833j ]",
+            "sample_rate_Hz": 117140.625,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400,
+            "padding_bit_num": 15840
+          },
+          "tx_with_gi": {
+            "signal_stream": "[ 1.+0.j  1.+0.j  1.+0.j ...  1.+0.j -1.-0.j  1.+0.j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592,
+            "padding_bit_num": 15840
+          },
+          "tx_signal": {
+            "signal_stream": "[0.5581534 +0.j 0.5550328 +0.j 0.48211044+0.j ... 0.59347388+0.j\n 0.42602483+0.j 0.16574475+0.j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "padding_bit_num": 15840
+          },
+          "rx_signal": {
+            "signal_stream": "[0.89924642+0.11732061j 0.72653834+0.23143602j 0.84205791+0.64731887j ...\n 0.59360867-0.32304087j 0.43941732+0.27758475j 0.68716764-0.37626468j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "signal_power": 0.2503942978040577,
+            "noise_power": 0.1579881212154309,
+            "SNRdB": 2.000000000000001,
+            "padding_bit_num": 15840
+          },
+          "rx_filtered": "[1.00646467+0.36482722j 1.21911155+0.54248678j 1.2992554 +0.67197197j ...\n 1.38109471-0.26936745j 1.24097329-0.2855151j  0.85410856-0.23555091j]",
+          "rx_matched": {
+            "signal_stream": "[ 1.00646467+0.36482722j  1.21358556+0.7039072j   0.57772691-0.19693845j\n ...  1.04337461-0.1544276j  -1.03709531-0.07240997j\n  1.17537402-0.19751304j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592.0,
+            "padding_bit_num": 15840
+          },
+          "rx_no_gi": {
+            "signal_stream": "[-1.20012561-0.7596159j   0.45231289+0.31970236j -0.41312393+0.77058373j\n ...  0.88754008+0.07109901j -0.7177354 -0.15502371j\n  0.48510364+1.105898j  ]",
+            "sample_rate_Hz": 117140.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400.0,
+            "padding_bit_num": 15840
+          },
+          "rx_demodulated": {
+            "signal_stream": "[ 7.08797307  2.27607198  3.55552755 ...  1.89826656 -1.945022\n -0.59080711]",
+            "sample_rate_Hz": 468562.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600.0,
+            "padding_bit_num": 15840
+          },
+          "rx_decoded": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352799.99999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "ber": 0.09705132378472223
+        },
+        "metrics": {
+          "ber": 0.09705132378472223
+        }
+      }
+    ]
+  },
+  {
+    "snr": 4.0,
+    "result": [
+      {
+        "run_index": 1,
+        "params": {
+          "_params": {
+            "bit_source": "PRBS",
+            "file_path": null,
+            "duration": 1,
+            "sample_rate": 44100.0,
+            "bit_depth": 8,
+            "bit_length": null,
+            "random_seed": 2,
+            "seed_strategy": "递增种子",
+            "fc": 1000000000000.0,
+            "bandwidth": 100000000000.0,
+            "subframe_num": 51,
+            "subframe_length": 480,
+            "gi_length": 32,
+            "c_init": 305419896,
+            "NCBPS": 4,
+            "APSK_RINGS": [
+              "(4, 1.0)",
+              "(12, 2.85)"
+            ],
+            "APSK_PHASE_OFFSETS": [
+              0.7853981633974483,
+              0.2617993877991494
+            ],
+            "code_type": "RS",
+            "rs_nsym": 63,
+            "rs_c_exp": 8,
+            "rs_packet_size": 192,
+            "oversampling": 4,
+            "rolloff": 0.22,
+            "filter_type": "rrc",
+            "filter_length": 8,
+            "scramble": true,
+            "ppre": 1,
+            "pw": 0,
+            "Preamble_type": "short",
+            "phase_rotation": 0.7853981633974483,
+            "MCS": 1,
+            "noise_temperature": null,
+            "noise_figure_db": null,
+            "SNRdB": 4.0,
+            "decode_mode": "hard",
+            "run_times": 1,
+            "save_intermediate": false,
+            "Rate": 1
+          }
+        },
+        "result": {
+          "params": {
+            "_params": {
+              "bit_source": "PRBS",
+              "file_path": null,
+              "duration": 1,
+              "sample_rate": 44100.0,
+              "bit_depth": 8,
+              "bit_length": null,
+              "random_seed": 2,
+              "seed_strategy": "递增种子",
+              "fc": 1000000000000.0,
+              "bandwidth": 100000000000.0,
+              "subframe_num": 51,
+              "subframe_length": 480,
+              "gi_length": 32,
+              "c_init": 305419896,
+              "NCBPS": 4,
+              "APSK_RINGS": [
+                "(4, 1.0)",
+                "(12, 2.85)"
+              ],
+              "APSK_PHASE_OFFSETS": [
+                0.7853981633974483,
+                0.2617993877991494
+              ],
+              "code_type": "RS",
+              "rs_nsym": 63,
+              "rs_c_exp": 8,
+              "rs_packet_size": 192,
+              "oversampling": 4,
+              "rolloff": 0.22,
+              "filter_type": "rrc",
+              "filter_length": 8,
+              "scramble": true,
+              "ppre": 1,
+              "pw": 0,
+              "Preamble_type": "short",
+              "phase_rotation": 0.7853981633974483,
+              "MCS": 1,
+              "noise_temperature": null,
+              "noise_figure_db": null,
+              "SNRdB": 4.0,
+              "decode_mode": "hard",
+              "run_times": 1,
+              "save_intermediate": false,
+              "Rate": 1
+            }
+          },
+          "seed": 2,
+          "tx_assembled": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "frame_num": 5,
+            "padding_bit_num": 15840,
+            "is_big_bitstream": false,
+            "frame_bit_num": 73728
+          },
+          "tx_preamble": null,
+          "tx_scrambled": {
+            "signal_stream": "[0 0 0 ... 1 1 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "tx_encoded": {
+            "signal_stream": "[0 0 0 ... 0 1 1]",
+            "sample_rate_Hz": 468562.5,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600,
+            "padding_bit_num": 15840
+          },
+          "tx_modulated": {
+            "signal_stream": "[-0.9486833 -0.31622777j -0.31622777+0.31622777j -0.31622777+0.9486833j\n ...  0.9486833 -0.31622777j -0.31622777-0.31622777j\n  0.31622777+0.9486833j ]",
+            "sample_rate_Hz": 117140.625,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400,
+            "padding_bit_num": 15840
+          },
+          "tx_with_gi": {
+            "signal_stream": "[ 1.+0.j  1.+0.j  1.+0.j ...  1.+0.j -1.-0.j  1.+0.j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592,
+            "padding_bit_num": 15840
+          },
+          "tx_signal": {
+            "signal_stream": "[0.5581534 +0.j 0.5550328 +0.j 0.48211044+0.j ... 0.59347388+0.j\n 0.42602483+0.j 0.16574475+0.j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "padding_bit_num": 15840
+          },
+          "rx_signal": {
+            "signal_stream": "[0.54973475-0.29259518j 0.64215831+0.03612033j 1.10905015+0.20371252j ...\n 0.69797083-0.05975815j 0.01877034-0.25393894j 0.07740156+0.03248326j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "signal_power": 0.2503942978040577,
+            "noise_power": 0.09968376542150317,
+            "SNRdB": 4.0,
+            "padding_bit_num": 15840
+          },
+          "rx_filtered": "[0.96611042-0.08962066j 1.22076405+0.01818962j 1.29768025+0.14127893j ...\n 0.95110353-0.04840575j 0.70656845-0.09995413j 0.34758183-0.11115441j]",
+          "rx_matched": {
+            "signal_stream": "[ 0.96611042-0.08962066j  1.16346458+0.21543262j  1.13848483-0.05342219j\n ...  0.32616746-0.09677298j -0.84967735+0.24107309j\n  0.93657154+0.03934973j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592.0,
+            "padding_bit_num": 15840
+          },
+          "rx_no_gi": {
+            "signal_stream": "[-1.08424858-0.26184857j -0.04912021+0.60735582j -0.49664507+1.16472149j\n ...  0.11920931-0.10104685j -0.67429198-0.18703068j\n  0.08572258+1.01023498j]",
+            "sample_rate_Hz": 117140.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400.0,
+            "padding_bit_num": 15840
+          },
+          "rx_demodulated": {
+            "signal_stream": "[ 9.7609699   2.8709758   1.66394968 ...  2.40064708 -0.54473492\n -3.47428337]",
+            "sample_rate_Hz": 468562.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600.0,
+            "padding_bit_num": 15840
+          },
+          "rx_decoded": {
+            "signal_stream": "[1 0 0 ... 1 0 0]",
+            "sample_rate_Hz": 352799.99999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "ber": 0.059586588541666666
+        },
+        "metrics": {
+          "ber": 0.059586588541666666
+        }
+      }
+    ]
+  },
+  {
+    "snr": 6.0,
+    "result": [
+      {
+        "run_index": 1,
+        "params": {
+          "_params": {
+            "bit_source": "PRBS",
+            "file_path": null,
+            "duration": 1,
+            "sample_rate": 44100.0,
+            "bit_depth": 8,
+            "bit_length": null,
+            "random_seed": 2,
+            "seed_strategy": "递增种子",
+            "fc": 1000000000000.0,
+            "bandwidth": 100000000000.0,
+            "subframe_num": 51,
+            "subframe_length": 480,
+            "gi_length": 32,
+            "c_init": 305419896,
+            "NCBPS": 4,
+            "APSK_RINGS": [
+              "(4, 1.0)",
+              "(12, 2.85)"
+            ],
+            "APSK_PHASE_OFFSETS": [
+              0.7853981633974483,
+              0.2617993877991494
+            ],
+            "code_type": "RS",
+            "rs_nsym": 63,
+            "rs_c_exp": 8,
+            "rs_packet_size": 192,
+            "oversampling": 4,
+            "rolloff": 0.22,
+            "filter_type": "rrc",
+            "filter_length": 8,
+            "scramble": true,
+            "ppre": 1,
+            "pw": 0,
+            "Preamble_type": "short",
+            "phase_rotation": 0.7853981633974483,
+            "MCS": 1,
+            "noise_temperature": null,
+            "noise_figure_db": null,
+            "SNRdB": 6.0,
+            "decode_mode": "hard",
+            "run_times": 1,
+            "save_intermediate": false,
+            "Rate": 1
+          }
+        },
+        "result": {
+          "params": {
+            "_params": {
+              "bit_source": "PRBS",
+              "file_path": null,
+              "duration": 1,
+              "sample_rate": 44100.0,
+              "bit_depth": 8,
+              "bit_length": null,
+              "random_seed": 2,
+              "seed_strategy": "递增种子",
+              "fc": 1000000000000.0,
+              "bandwidth": 100000000000.0,
+              "subframe_num": 51,
+              "subframe_length": 480,
+              "gi_length": 32,
+              "c_init": 305419896,
+              "NCBPS": 4,
+              "APSK_RINGS": [
+                "(4, 1.0)",
+                "(12, 2.85)"
+              ],
+              "APSK_PHASE_OFFSETS": [
+                0.7853981633974483,
+                0.2617993877991494
+              ],
+              "code_type": "RS",
+              "rs_nsym": 63,
+              "rs_c_exp": 8,
+              "rs_packet_size": 192,
+              "oversampling": 4,
+              "rolloff": 0.22,
+              "filter_type": "rrc",
+              "filter_length": 8,
+              "scramble": true,
+              "ppre": 1,
+              "pw": 0,
+              "Preamble_type": "short",
+              "phase_rotation": 0.7853981633974483,
+              "MCS": 1,
+              "noise_temperature": null,
+              "noise_figure_db": null,
+              "SNRdB": 6.0,
+              "decode_mode": "hard",
+              "run_times": 1,
+              "save_intermediate": false,
+              "Rate": 1
+            }
+          },
+          "seed": 2,
+          "tx_assembled": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "frame_num": 5,
+            "padding_bit_num": 15840,
+            "is_big_bitstream": false,
+            "frame_bit_num": 73728
+          },
+          "tx_preamble": null,
+          "tx_scrambled": {
+            "signal_stream": "[0 0 0 ... 1 1 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "tx_encoded": {
+            "signal_stream": "[0 0 0 ... 0 1 1]",
+            "sample_rate_Hz": 468562.5,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600,
+            "padding_bit_num": 15840
+          },
+          "tx_modulated": {
+            "signal_stream": "[-0.9486833 -0.31622777j -0.31622777+0.31622777j -0.31622777+0.9486833j\n ...  0.9486833 -0.31622777j -0.31622777-0.31622777j\n  0.31622777+0.9486833j ]",
+            "sample_rate_Hz": 117140.625,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400,
+            "padding_bit_num": 15840
+          },
+          "tx_with_gi": {
+            "signal_stream": "[ 1.+0.j  1.+0.j  1.+0.j ...  1.+0.j -1.-0.j  1.+0.j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592,
+            "padding_bit_num": 15840
+          },
+          "tx_signal": {
+            "signal_stream": "[0.5581534 +0.j 0.5550328 +0.j 0.48211044+0.j ... 0.59347388+0.j\n 0.42602483+0.j 0.16574475+0.j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "padding_bit_num": 15840
+          },
+          "rx_signal": {
+            "signal_stream": "[0.73585578-0.14844188j 0.41604946-0.36521912j 0.55084021+0.16187016j ...\n 0.61282381-0.10990174j 0.46724769+0.0330851j  0.0221622 +0.10800909j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "signal_power": 0.2503942978040577,
+            "noise_power": 0.06289620391813816,
+            "SNRdB": 6.0,
+            "padding_bit_num": 15840
+          },
+          "rx_filtered": "[0.72418917-0.22188692j 0.93570631-0.33048091j 1.07771034-0.39519187j ...\n 1.24173852+0.00920877j 1.02069814+0.03896369j 0.56244688+0.04465497j]",
+          "rx_matched": {
+            "signal_stream": "[ 0.72418917-0.22188692j  1.20176465-0.32908235j  0.71947555+0.08213182j\n ...  1.3011353 +0.19567267j -1.38136804+0.03857902j\n  1.057609  -0.03603535j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592.0,
+            "padding_bit_num": 15840
+          },
+          "rx_no_gi": {
+            "signal_stream": "[-1.19547527-0.54556337j -0.60978679-0.01819804j -0.36845956+1.06528022j\n ...  1.09829716-0.10732305j -0.05072209-0.3348975j\n  0.45485079+0.8540077j ]",
+            "sample_rate_Hz": 117140.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400.0,
+            "padding_bit_num": 15840
+          },
+          "rx_demodulated": {
+            "signal_stream": "[17.71051233  5.6703988   5.49458871 ...  2.23134127 -4.5809857\n -1.78872903]",
+            "sample_rate_Hz": 468562.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600.0,
+            "padding_bit_num": 15840
+          },
+          "rx_decoded": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352799.99999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "ber": 0.0277587890625
+        },
+        "metrics": {
+          "ber": 0.0277587890625
+        }
+      }
+    ]
+  },
+  {
+    "snr": 8.0,
+    "result": [
+      {
+        "run_index": 1,
+        "params": {
+          "_params": {
+            "bit_source": "PRBS",
+            "file_path": null,
+            "duration": 1,
+            "sample_rate": 44100.0,
+            "bit_depth": 8,
+            "bit_length": null,
+            "random_seed": 2,
+            "seed_strategy": "递增种子",
+            "fc": 1000000000000.0,
+            "bandwidth": 100000000000.0,
+            "subframe_num": 51,
+            "subframe_length": 480,
+            "gi_length": 32,
+            "c_init": 305419896,
+            "NCBPS": 4,
+            "APSK_RINGS": [
+              "(4, 1.0)",
+              "(12, 2.85)"
+            ],
+            "APSK_PHASE_OFFSETS": [
+              0.7853981633974483,
+              0.2617993877991494
+            ],
+            "code_type": "RS",
+            "rs_nsym": 63,
+            "rs_c_exp": 8,
+            "rs_packet_size": 192,
+            "oversampling": 4,
+            "rolloff": 0.22,
+            "filter_type": "rrc",
+            "filter_length": 8,
+            "scramble": true,
+            "ppre": 1,
+            "pw": 0,
+            "Preamble_type": "short",
+            "phase_rotation": 0.7853981633974483,
+            "MCS": 1,
+            "noise_temperature": null,
+            "noise_figure_db": null,
+            "SNRdB": 8.0,
+            "decode_mode": "hard",
+            "run_times": 1,
+            "save_intermediate": false,
+            "Rate": 1
+          }
+        },
+        "result": {
+          "params": {
+            "_params": {
+              "bit_source": "PRBS",
+              "file_path": null,
+              "duration": 1,
+              "sample_rate": 44100.0,
+              "bit_depth": 8,
+              "bit_length": null,
+              "random_seed": 2,
+              "seed_strategy": "递增种子",
+              "fc": 1000000000000.0,
+              "bandwidth": 100000000000.0,
+              "subframe_num": 51,
+              "subframe_length": 480,
+              "gi_length": 32,
+              "c_init": 305419896,
+              "NCBPS": 4,
+              "APSK_RINGS": [
+                "(4, 1.0)",
+                "(12, 2.85)"
+              ],
+              "APSK_PHASE_OFFSETS": [
+                0.7853981633974483,
+                0.2617993877991494
+              ],
+              "code_type": "RS",
+              "rs_nsym": 63,
+              "rs_c_exp": 8,
+              "rs_packet_size": 192,
+              "oversampling": 4,
+              "rolloff": 0.22,
+              "filter_type": "rrc",
+              "filter_length": 8,
+              "scramble": true,
+              "ppre": 1,
+              "pw": 0,
+              "Preamble_type": "short",
+              "phase_rotation": 0.7853981633974483,
+              "MCS": 1,
+              "noise_temperature": null,
+              "noise_figure_db": null,
+              "SNRdB": 8.0,
+              "decode_mode": "hard",
+              "run_times": 1,
+              "save_intermediate": false,
+              "Rate": 1
+            }
+          },
+          "seed": 2,
+          "tx_assembled": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "frame_num": 5,
+            "padding_bit_num": 15840,
+            "is_big_bitstream": false,
+            "frame_bit_num": 73728
+          },
+          "tx_preamble": null,
+          "tx_scrambled": {
+            "signal_stream": "[0 0 0 ... 1 1 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "tx_encoded": {
+            "signal_stream": "[0 0 0 ... 0 1 1]",
+            "sample_rate_Hz": 468562.5,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600,
+            "padding_bit_num": 15840
+          },
+          "tx_modulated": {
+            "signal_stream": "[-0.9486833 -0.31622777j -0.31622777+0.31622777j -0.31622777+0.9486833j\n ...  0.9486833 -0.31622777j -0.31622777-0.31622777j\n  0.31622777+0.9486833j ]",
+            "sample_rate_Hz": 117140.625,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400,
+            "padding_bit_num": 15840
+          },
+          "tx_with_gi": {
+            "signal_stream": "[ 1.+0.j  1.+0.j  1.+0.j ...  1.+0.j -1.-0.j  1.+0.j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592,
+            "padding_bit_num": 15840
+          },
+          "tx_signal": {
+            "signal_stream": "[0.5581534 +0.j 0.5550328 +0.j 0.48211044+0.j ... 0.59347388+0.j\n 0.42602483+0.j 0.16574475+0.j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "padding_bit_num": 15840
+          },
+          "rx_signal": {
+            "signal_stream": "[0.59047136+0.12279764j 0.29534215-0.07485469j 0.29863489-0.09731684j ...\n 0.68861935-0.11292267j 0.36728242+0.05038526j 0.15010395-0.01103851j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "signal_power": 0.2503942978040577,
+            "noise_power": 0.039684821802073174,
+            "SNRdB": 8.0,
+            "padding_bit_num": 15840
+          },
+          "rx_filtered": "[0.50119565-0.00871092j 0.63180228-0.08296091j 0.75997981-0.15638321j ...\n 1.04950868+0.04115046j 0.88951322-0.03333678j 0.54236196-0.05804396j]",
+          "rx_matched": {
+            "signal_stream": "[ 0.50119565-0.00871092j  1.08054431-0.2109933j   0.67382722+0.05928741j\n ...  1.07573981-0.16124896j -0.96968579+0.25650731j\n  0.89802501+0.15037285j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592.0,
+            "padding_bit_num": 15840
+          },
+          "rx_no_gi": {
+            "signal_stream": "[-0.81430558-0.29291869j -0.09685587+0.34830406j -0.4760841 +0.89676308j\n ...  1.00723639-0.50184713j -0.32911576-0.10448681j\n  0.22749383+0.780467j  ]",
+            "sample_rate_Hz": 117140.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400.0,
+            "padding_bit_num": 15840
+          },
+          "rx_demodulated": {
+            "signal_stream": "[15.90073428  2.90270838  4.67559692 ...  2.36257369 -3.63127891\n -6.4640386 ]",
+            "sample_rate_Hz": 468562.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600.0,
+            "padding_bit_num": 15840
+          },
+          "rx_decoded": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352799.99999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "ber": 0.0
+        },
+        "metrics": {
+          "ber": 0.0
+        }
+      }
+    ]
+  },
+  {
+    "snr": 10.0,
+    "result": [
+      {
+        "run_index": 1,
+        "params": {
+          "_params": {
+            "bit_source": "PRBS",
+            "file_path": null,
+            "duration": 1,
+            "sample_rate": 44100.0,
+            "bit_depth": 8,
+            "bit_length": null,
+            "random_seed": 2,
+            "seed_strategy": "递增种子",
+            "fc": 1000000000000.0,
+            "bandwidth": 100000000000.0,
+            "subframe_num": 51,
+            "subframe_length": 480,
+            "gi_length": 32,
+            "c_init": 305419896,
+            "NCBPS": 4,
+            "APSK_RINGS": [
+              "(4, 1.0)",
+              "(12, 2.85)"
+            ],
+            "APSK_PHASE_OFFSETS": [
+              0.7853981633974483,
+              0.2617993877991494
+            ],
+            "code_type": "RS",
+            "rs_nsym": 63,
+            "rs_c_exp": 8,
+            "rs_packet_size": 192,
+            "oversampling": 4,
+            "rolloff": 0.22,
+            "filter_type": "rrc",
+            "filter_length": 8,
+            "scramble": true,
+            "ppre": 1,
+            "pw": 0,
+            "Preamble_type": "short",
+            "phase_rotation": 0.7853981633974483,
+            "MCS": 1,
+            "noise_temperature": null,
+            "noise_figure_db": null,
+            "SNRdB": 10.0,
+            "decode_mode": "hard",
+            "run_times": 1,
+            "save_intermediate": false,
+            "Rate": 1
+          }
+        },
+        "result": {
+          "params": {
+            "_params": {
+              "bit_source": "PRBS",
+              "file_path": null,
+              "duration": 1,
+              "sample_rate": 44100.0,
+              "bit_depth": 8,
+              "bit_length": null,
+              "random_seed": 2,
+              "seed_strategy": "递增种子",
+              "fc": 1000000000000.0,
+              "bandwidth": 100000000000.0,
+              "subframe_num": 51,
+              "subframe_length": 480,
+              "gi_length": 32,
+              "c_init": 305419896,
+              "NCBPS": 4,
+              "APSK_RINGS": [
+                "(4, 1.0)",
+                "(12, 2.85)"
+              ],
+              "APSK_PHASE_OFFSETS": [
+                0.7853981633974483,
+                0.2617993877991494
+              ],
+              "code_type": "RS",
+              "rs_nsym": 63,
+              "rs_c_exp": 8,
+              "rs_packet_size": 192,
+              "oversampling": 4,
+              "rolloff": 0.22,
+              "filter_type": "rrc",
+              "filter_length": 8,
+              "scramble": true,
+              "ppre": 1,
+              "pw": 0,
+              "Preamble_type": "short",
+              "phase_rotation": 0.7853981633974483,
+              "MCS": 1,
+              "noise_temperature": null,
+              "noise_figure_db": null,
+              "SNRdB": 10.0,
+              "decode_mode": "hard",
+              "run_times": 1,
+              "save_intermediate": false,
+              "Rate": 1
+            }
+          },
+          "seed": 2,
+          "tx_assembled": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "frame_num": 5,
+            "padding_bit_num": 15840,
+            "is_big_bitstream": false,
+            "frame_bit_num": 73728
+          },
+          "tx_preamble": null,
+          "tx_scrambled": {
+            "signal_stream": "[0 0 0 ... 1 1 0]",
+            "sample_rate_Hz": 352800.0,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "tx_encoded": {
+            "signal_stream": "[0 0 0 ... 0 1 1]",
+            "sample_rate_Hz": 468562.5,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600,
+            "padding_bit_num": 15840
+          },
+          "tx_modulated": {
+            "signal_stream": "[-0.9486833 -0.31622777j -0.31622777+0.31622777j -0.31622777+0.9486833j\n ...  0.9486833 -0.31622777j -0.31622777-0.31622777j\n  0.31622777+0.9486833j ]",
+            "sample_rate_Hz": 117140.625,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400,
+            "padding_bit_num": 15840
+          },
+          "tx_with_gi": {
+            "signal_stream": "[ 1.+0.j  1.+0.j  1.+0.j ...  1.+0.j -1.-0.j  1.+0.j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592,
+            "padding_bit_num": 15840
+          },
+          "tx_signal": {
+            "signal_stream": "[0.5581534 +0.j 0.5550328 +0.j 0.48211044+0.j ... 0.59347388+0.j\n 0.42602483+0.j 0.16574475+0.j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "padding_bit_num": 15840
+          },
+          "rx_signal": {
+            "signal_stream": "[0.58363514-0.09196205j 0.53108026-0.05642612j 0.55215659+0.09600762j ...\n 0.69666881-0.10353814j 0.29707984+0.01072754j 0.24804545+0.01382808j]",
+            "sample_rate_Hz": 499922.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 522368,
+            "signal_power": 0.2503942978040577,
+            "noise_power": 0.02503942978040577,
+            "SNRdB": 10.0,
+            "padding_bit_num": 15840
+          },
+          "rx_filtered": "[0.67152927-0.04102051j 0.82675726-0.04977926j 0.93319602-0.05589555j ...\n 1.09504241-0.07909728j 0.96200659-0.04072507j 0.60854215-0.00982787j]",
+          "rx_matched": {
+            "signal_stream": "[ 0.67152927-0.04102051j  1.14136481-0.07225088j  0.9148162 +0.0527859j\n ...  1.09285214-0.0859892j  -1.0119587 -0.22035683j\n  0.89248252-0.11848925j]",
+            "sample_rate_Hz": 124980.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 130592.0,
+            "padding_bit_num": 15840
+          },
+          "rx_no_gi": {
+            "signal_stream": "[-1.00047666-0.38125413j -0.0701198 +0.33388799j -0.39277709+1.27988602j\n ...  0.87996292-0.30922543j -0.28288104-0.23133566j\n  0.60977526+0.91528221j]",
+            "sample_rate_Hz": 117140.62499999999,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 122400.0,
+            "padding_bit_num": 15840
+          },
+          "rx_demodulated": {
+            "signal_stream": "[ 34.62055984   9.31027992   9.64505142 ...   7.15501196 -15.42622945\n  -0.57377055]",
+            "sample_rate_Hz": 468562.49999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 489600.0,
+            "padding_bit_num": 15840
+          },
+          "rx_decoded": {
+            "signal_stream": "[1 0 0 ... 0 0 0]",
+            "sample_rate_Hz": 352799.99999999994,
+            "duration_seconds": 1.0448979591836736,
+            "signal_length": 368640,
+            "padding_bit_num": 15840
+          },
+          "ber": 0.0
+        },
+        "metrics": {
+          "ber": 0.0
+        }
+      }
+    ]
+  }
+]

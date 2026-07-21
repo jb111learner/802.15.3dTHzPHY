@@ -6,8 +6,7 @@ from transmitter.DataProcesser import BitStreamProcessor
 
 class Generator:
     """
-    扰码器/解扰码器：严格遵循3GPP TS 38.211标准实现
-    核心：两个31阶m序列异或生成Gold序列，完全匹配5G NR物理层规范
+    完成3GPP标准Gold序列生成、802.15.3d前导码基础序列和扩展序列生成
     """
     def __init__(self, params):
         self.params = params
@@ -23,6 +22,9 @@ class Generator:
         self.x1_poly = [31, 3]
         # x2的反馈抽头：x^31 = x^3 + x^2 + x^1 + x^0 → 对应索引[30, 2, 1, 0]（0基）
         self.x2_poly = [31, 3, 2, 1]
+
+        self.phase_rot = self.params.get("phase_rotation")  # 相位旋转角度（弧度）
+
 
     def _cinit_to_x2_init(self, c_init):
         """
@@ -58,6 +60,41 @@ class Generator:
         # 跳过前Nc个比特，异或得到Gold序列
         c_seq = (x1_seq[self.Nc:] ^ x2_seq[self.Nc:]) % 2
         return c_seq
+
+    def _apply_phase_rotation(self, seq):
+        """对复数序列应用相位旋转：seq * exp(j*phase_rot)"""
+        rot_factor = np.exp(1j * self.phase_rot)  # 旋转因子 e^jθ
+        return seq * rot_factor
+
+    def _hex_to_bpsk(self, hex_str):
+        """十六进制字符串转复数BPSK符号序列，应用相位旋转"""
+        bin_str = bin(int(hex_str, 16))[2:].zfill(len(hex_str)*4)
+        bpsk_real = np.array([1 if bit == '1' else -1 for bit in bin_str], dtype=np.float64)
+        bpsk_complex = bpsk_real.astype(np.complex128)
+        bpsk_rot = self._apply_phase_rotation(bpsk_complex)
+        return bpsk_rot    
+    
+    def generate_base_sequences(self):
+        """生成128位基础序列a128和b128"""
+        hex_a128 = '5A5599963C33FFF00F00CCC36966AAA5'
+        hex_b128 = 'A5AA6669C3CC000F0F00CCC36966AAA5'
+        a128 = self._hex_to_bpsk(hex_a128)
+        b128 = self._hex_to_bpsk(hex_b128)
+        return a128, b128
+
+    def generate_256_sequences(self):
+        """生成256位序列a256和b256"""
+        a128, b128 = self.generate_base_sequences()
+        a256 = np.concatenate([b128, a128])
+        b256 = np.concatenate([-b128, a128])
+        return a256, b256
+
+    def generate_512_sequences(self):
+        """生成512位序列a512和b512"""
+        a256, b256 = self.generate_256_sequences()
+        a512 = np.concatenate([b256, a256])
+        b512 = np.concatenate([-b256, a256])
+        return a512, b512
 
 
 

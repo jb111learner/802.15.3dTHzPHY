@@ -1,61 +1,76 @@
 import numpy as np
-from scipy.signal import find_peaks
-from scipy.signal import resample
+from scipy.signal import find_peaks, resample_poly
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
 from channel.THzChannel import THzChannel
 from receiver.MatchedFilter import RxMatchedFilter
-from receiver.sync.CoarseSync import CoarseSync
-from receiver.sync.CFOEstimator import CFOEstimator
+# from receiver.CFOEstimator import CFOEstimator
 import matplotlib.pyplot as plt
 
 class FineSync:
     """
-    细同步：基于SFD序列的互相关检测（适配“仅符号级SFD序列”场景）
-    核心改进：
-    1. 自动对符号级SFD序列做上采样，匹配接收信号采样率
-    2. 完全对齐MATLAB的共轭翻转、卷积、峰值筛选逻辑
-    3. 兼容符号级/采样级SFD序列输入
-    4. 新增卷积结果可视化，定位偏移异常问题
+    细同步与定时恢复（支持 SC‑FDE / OFDM 双模式）
+
+    SC‑FDE 模式：基于 SFD 互相关获得最佳采样点，进行下采样。
+    OFDM  模式：仅执行抗混叠低通滤波 + 抽取，恢复符号速率。
     """
-    def __init__(self, tx_preamble, search_window=100, min_peak_ratio=0.5):
-        self.params = tx_preamble.params
-        self.search_window = search_window          # 粗峰值前后搜索范围
-        self.sfd_symbol_sequence = tx_preamble.sfd  # 符号级SFD序列
-        self.sfd_symbol_length = len(self.sfd_symbol_sequence)    # SFD符号长度
-        self.min_peak_ratio = min_peak_ratio       # MATLAB中的MinPeakHeight=0.5*max(abs(Mn))
-        self.oversampling = self.params.get("oversampling")  
-        self.sync_length = len(tx_preamble.sync) * self.oversampling
 
-    def _upsample_sfd(self, sfd_symbol_seq):
-        """符号级SFD序列上采样（匹配接收信号的采样率）"""
-        upsampled_length = self.sfd_symbol_length * self.oversampling
-        upsampled = resample(sfd_symbol_seq, upsampled_length)
-        return upsampled
+    def __init__(self, transmitter, search_window=50, min_peak_ratio=0.5):
+        self.params = transmitter.params
+        self.oversampling = self.params.get("oversampling")
+        self.link_mode = self.params.get("link_mode").lower()  # 新增
+        self.search_window = search_window
+        self.min_peak_ratio = min_peak_ratio
+        self.sfd_upsampled = transmitter.sfd_upsampled
+        self.sync_upsampled_length = len(transmitter.sync_upsampled)
+        self.sfd_upsampled_length = len(transmitter.sfd_upsampled)
 
-    def detect_sfd(self, rx_signal, coarse_offset, plot_flag=True):
+        # 输出参数（两种模式共用）
+        self.sample_rate = None
+        self.duration = None
+        self.signal_length = None
+        self.padding_bit_num = 0
+   
+    def _verification_data(self, data_dict):
+        """
+        校验输入数据字典，并根据模式计算输出参数
+        """
+        required_keys = [
+            "signal_stream", "sample_rate_Hz", "duration_seconds",
+            "signal_length", "padding_bit_num"
+        ]
+        for key in required_keys:
+            if key not in data_dict:
+                raise KeyError(f"输入数据字典缺少必要键值：{key}")
+
+        if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["signal_length"]:
+            raise ValueError("输入数据字典中的采样率与时长不匹配")
+
+        # 考虑滤波延迟
+        self.sample_rate = data_dict["sample_rate_Hz"]
+        self.signal_length = data_dict["signal_length"]
+        self.duration = data_dict["duration_seconds"]
+        self.padding_bit_num = data_dict["padding_bit_num"]
+
+    def detect_sfd(self, rx_signal, plot_flag=False):
         """
         检测SFD序列位置（输入为符号级SFD序列）
         :param rx_signal: 接收信号（已上采样，如4倍）
-        :param coarse_offset: 粗同步偏移（基于采样级的SYNC起始位置）
+        :param sfd_seq: SFD序列（已上采样）
         :param plot_flag: 是否绘制卷积结果可视化图
         :return: 细同步修正量（整体偏移=粗同步+该值）
         """
-        # ========== 1. SFD序列上采样（核心适配） ==========
-        sfd_seq = self._upsample_sfd(self.sfd_symbol_sequence)
-        sfd_sample_length = len(sfd_seq)
-
-        # ========== 2. 截取SFD候选段（采样级，对齐MATLAB逻辑） ==========
-        sfd_candidate_start = coarse_offset + self.sync_length
-        sfd_candidate_len = sfd_sample_length + 2 * self.search_window
+        # ========== 1. 截取SFD候选段（采样级，对齐MATLAB逻辑） ==========
+        sfd_candidate_start = self.sync_upsampled_length
+        sfd_candidate_len = self.sfd_upsampled_length + 2 * self.search_window
         start_idx = max(0, sfd_candidate_start - self.search_window)
-        end_idx = min(len(rx_signal), sfd_candidate_start + sfd_candidate_len)
+        end_idx = min(len(rx_signal), start_idx + sfd_candidate_len)
         rx_segment = rx_signal[start_idx:end_idx]
 
         # ========== 3. 构造匹配滤波器 + 卷积 ==========
-        sfd_rev = np.flip(np.conj(sfd_seq))
+        sfd_rev = np.flip(np.conj(self.sfd_upsampled))
         Mn = np.convolve(rx_segment, sfd_rev, mode="full")
-        Mn = Mn[sfd_sample_length:]  # 截断前导无效区
+        Mn = Mn[self.sfd_upsampled_length:]  # 截断前导无效区
         abs_Mn = np.abs(Mn)
 
         # ========== 4. 异常保护 ==========
@@ -84,7 +99,8 @@ class FineSync:
             peak_pos_in_segment = search_start + peaks[0]
 
         # ========== 6. 计算细同步修正量 ==========
-        fine_offset = peaks[0] - self.search_window + idx_peak - 1
+        # fine_offset = peaks[0] - self.search_window + idx_peak - 1
+        fine_offset = peak_pos_in_segment + 1 - self.search_window
 
         # ========== 7. 可视化卷积结果（核心定位问题） ==========
         if plot_flag:
@@ -92,8 +108,70 @@ class FineSync:
                 abs_Mn, idx_peak, search_start, search_end,
                 peaks, peak_pos_in_segment, start_idx, sfd_candidate_start
             )
-
         return fine_offset
+    
+    # def downsample(self, y, symbol_length=None, start_index=None):
+    #     """
+    #     下采样：从匹配滤波后的信号中抽取符号
+    #     :param y: 输入已上采样的接收信号（匹配滤波后）。
+    #     :param symbol_length: 期望符号长度(可选)。
+    #     :param start_index: 自定义下采样起始索引（即第一个符号的最佳采样点在 y 中的位置）。
+    #     :return: downsampled: 抽取后的符号序列，长度 = symbol_length（若指定）。
+    #     """
+    #     # ===== 使用外部指定的最佳采样点 =====
+    #     # 确保起始索引在有效范围内
+    #     if start_index < 0 or start_index >= len(y):
+    #         raise ValueError(f"start_index ({start_index}) 超出信号范围 [0, {len(y)})")
+
+    #     downsampled = y[start_index::self.oversampling]
+    #     # 当已知确切起点时，多余符号一定在尾部，只需截断尾部或补零
+    #     if symbol_length is not None:
+    #         if len(downsampled) > symbol_length:
+    #             # 只保留前 symbol_length 个符号，保持起始对齐
+    #             downsampled = downsampled[:symbol_length]
+    #         elif len(downsampled) < symbol_length:
+    #             pad_length = symbol_length - len(downsampled)
+    #             downsampled = np.pad(downsampled, (0, pad_length), mode='constant')
+
+    #     return downsampled
+
+    # # ---------- OFDM 模式：抗混叠下采样 ----------
+    # def ofdm_downsample(self, y, start_index=0):
+    #     """
+    #     OFDM 专用下采样：抗混叠低通滤波 + 抽取
+    #     恢复至原始符号速率，无匹配滤波概念。
+    #     """
+    #     # 确保长度为 oversampling 整数倍
+    #     y_sfd = y[start_index:]
+    #     num_symbols = len(y_sfd) // self.oversampling
+    #     y_trunc = y_sfd[:num_symbols * self.oversampling]
+    #     # resample_poly 内置抗混叠滤波和抽取，输出长度精确为 num_symbols
+    #     downsampled = resample_poly(y_trunc, 1, self.oversampling)
+    #     return downsampled    
+    
+    # ---------- 统一入口 ----------
+    def fine_sync(self, signal_dict):
+        """
+        SFD互相关帧定界（SC-FDE / OFDM 通用）
+
+        CoarseSync 已将信号对齐到 SYNC 起始，SFD 在固定偏移处。
+        detect_sfd 搜索 SFD 位置并返回微调偏移量：
+          - 若 CoarseSync 对齐准确 → offset ≈ 0
+          - 若有残余偏差 → offset 自动补偿
+        """
+        self._verification_data(signal_dict)
+        y = signal_dict["signal_stream"]
+
+        offset = self.detect_sfd(y, plot_flag=False)
+        result_dict = {
+            "signal_stream": y[offset:],
+            "sample_rate_Hz": self.sample_rate,
+            "duration_seconds": (self.signal_length - offset) / self.sample_rate,
+            "signal_length": self.signal_length - offset,
+            "padding_bit_num": self.padding_bit_num,
+            "sync_offset": offset,
+        }
+        return result_dict
 
     def _plot_convolution_result(self, abs_Mn, idx_peak, search_start, search_end, peaks, peak_pos_in_segment, start_idx, sfd_candidate_start):
         """
@@ -143,49 +221,87 @@ class FineSync:
         plt.show()
 
 if __name__ == "__main__": 
-    # 初始化参数和发射机
+    # # # 初始化参数和发射机
+    # params = PHYParams()
+    # transmitter = THzTransmitter(params)    
+    # # 执行完整发射流程  
+    # tx_signal_dict = transmitter.run() 
+    # # 初始化信道并生成接收信号
+    # channel = THzChannel(params)
+    # rx_signal_dict = channel.run(tx_signal_dict)
+
+    # # 初始化接收端匹配滤波器
+    # rx_matched_filter = RxMatchedFilter(transmitter)
+    # # === 进行匹配滤波并获得中间信号 ===
+    # rx_matched_signal_dict = rx_matched_filter.matched_filter(rx_signal_dict)
+    # fine_sync = FineSync(transmitter)
+    # rx_sampled_signal_dict = fine_sync.recover_symbol(rx_matched_signal_dict)
+    # print(f"定时采样后信号长度：{len(rx_sampled_signal_dict['signal_stream'])}, 预期长度：{fine_sync.signal_length}")
+    # print(f"采样率：{rx_sampled_signal_dict['sample_rate_Hz']} Hz，时长：{rx_sampled_signal_dict['duration_seconds']} 秒")
+    # print(f"细同步修正量（采样点数）：{rx_sampled_signal_dict['fine_offset']}")
+
+    # fig, axes = plt.subplots(1, 2, figsize=(15, 4))
+    # axes[0].plot(transmitter.data_with_preamble_dict['signal_stream'][:100])
+    # axes[0].set_title("发射端原始符号（前500点）")
+    # axes[0].set_xlabel("符号索引")
+    # axes[0].set_ylabel("幅度")
+    # axes[0].grid(True)
+    # axes[1].plot(rx_sampled_signal_dict['signal_stream'][:100], color='orange')
+    # axes[1].set_title("定时同步采样的符号（前500点）")
+    # axes[1].set_xlabel("符号索引")
+    # axes[1].set_ylabel("幅度")
+    # axes[1].grid(True)
+    # plt.tight_layout()
+    # plt.show()
+
+    # OFDM测试
     params = PHYParams()
-    transmitter = THzTransmitter(params)
-    tx_signal = transmitter.run()
-    tx_symbols = transmitter.tx_symbols
-    tx_preamble = transmitter.preamble_gen
-    
+    # params.update(link_mode = "ofdm")
+    # params.update(enable_window_filter = False)
+
+    transmitter = THzTransmitter(params)    
+    # 执行完整发射流程  
+    tx_signal_dict = transmitter.run() 
     # 初始化信道并生成接收信号
     channel = THzChannel(params)
-    rx_signal = channel.run(tx_signal)
-    
-    # 初始化接收端匹配滤波器
-    rx_matched_filter = RxMatchedFilter(transmitter.pulse_shaper)
-    recovered_symbols = rx_matched_filter.matched_filter(rx_signal)
-    
-    # 粗同步
-    coarse_sync = CoarseSync(tx_preamble, sync_threshold=0.5, scaling_factor=5)
-    coarse_offset, corr_norm = coarse_sync.detect_sync(recovered_symbols)
-    
-    # CFO估计与补偿
-    cfo_estimator = CFOEstimator(tx_preamble, params)
-    sync_start = coarse_offset
-    sync_field = recovered_symbols[sync_start:sync_start + len(tx_preamble.sync) * params.get("oversampling")]
-    cfo_est = cfo_estimator.estimate_cfo(sync_field)
-    rx_signal_compensated = cfo_estimator.compensate_cfo(recovered_symbols, cfo_est)
-    
-    # 再次估计频偏（验证补偿效果）
-    sync_field_comp = rx_signal_compensated[sync_start:sync_start + len(tx_preamble.sync) * params.get("oversampling")]
-    cfo_est_again = cfo_estimator.estimate_cfo(sync_field_comp)
-    
-    # 结果验证
-    print(f"\n=== 频偏估计与补偿结果 ===")
-    print(f"真实频偏：{channel.cfo.freq_offset} Hz")
-    print(f"估计频偏：{cfo_est:.2f} Hz")
-    print(f"频偏估计误差：{abs(cfo_est - channel.cfo.freq_offset):.2f} Hz") 
-    print(f"补偿后再次估计频偏：{cfo_est_again:.2f} Hz")   
-    
-    # 细同步（开启可视化）
-    fine_sync = FineSync(tx_preamble, search_window=16, min_peak_ratio=0.5) 
-    fine_correction = fine_sync.detect_sfd(rx_signal_compensated, coarse_offset, plot_flag=True)
-    total_offset = coarse_offset + fine_correction
+    rx_signal_dict = channel.run(tx_signal_dict)
+    # 初始化接收端滤波器
+    rx_matched_filter = RxMatchedFilter(transmitter)
+    rx_matched_signal_dict = rx_matched_filter.matched_filter(rx_signal_dict)
 
-    print(f"\n=== 同步偏移结果 ===")
-    print(f"粗同步偏移：{coarse_offset}")
-    print(f"细同步修正量：{fine_correction}")
-    print(f"最终整体同步偏移：{total_offset}")
+    fine_sync = FineSync(transmitter)
+    rx_sampled_signal_dict = fine_sync.fine_sync(rx_matched_signal_dict)
+    print(f"定时采样后信号长度：{len(rx_sampled_signal_dict['signal_stream'])}, 预期长度：{fine_sync.signal_length}")
+    print(f"采样率：{rx_sampled_signal_dict['sample_rate_Hz']} Hz，时长：{rx_sampled_signal_dict['duration_seconds']} 秒")
+    print(f"细同步修正量（采样点数）：{rx_sampled_signal_dict['fine_offset']}")
+    preamble = transmitter.preamble
+    fig, axes = plt.subplots(1, 2, figsize=(15, 4))
+    axes[0].plot(transmitter.tx_signal_dict['signal_stream'][len(preamble)*4:len(preamble)*4+500])
+    axes[0].set_title("发射信号（前500点）")
+    axes[0].set_xlabel("采样点索引")
+    axes[0].set_ylabel("幅度")
+    axes[0].grid(True)
+    axes[1].plot(rx_signal_dict['signal_stream'][len(preamble)*4:len(preamble)*4+500], color='orange')
+    axes[1].set_title("接受信号（前500点）")
+    axes[1].set_xlabel("采样点索引")
+    axes[1].set_ylabel("幅度")
+    axes[1].grid(True)
+    plt.tight_layout()
+    plt.show()
+
+    fig, axes = plt.subplots(1, 2, figsize=(15, 4))
+    axes[0].plot(transmitter.data_with_preamble_dict['signal_stream'][:1000])
+    axes[0].set_title("发射端原始符号（前1000点）")
+    axes[0].set_xlabel("符号索引")
+    axes[0].set_ylabel("幅度")
+    axes[0].grid(True)
+    axes[1].plot(rx_sampled_signal_dict['signal_stream'][:1000], color='orange')
+    axes[1].set_title("定时同步采样的符号（前1000点）")
+    axes[1].set_xlabel("符号索引")
+    axes[1].set_ylabel("幅度")
+    axes[1].grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+

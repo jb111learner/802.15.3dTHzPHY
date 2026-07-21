@@ -1,256 +1,661 @@
 import numpy as np
-from reedsolo import RSCodec, ReedSolomonError
-from reedsolo import rs_correct_msg
+import galois
 from typing import List, Optional, Tuple
-from params.PHYParams import PHYParams
-from transmitter.DataProcesser import BitStreamProcessor
-from transmitter.Scrambler import Scrambler 
+from itertools import product
+from utils.LDPCMatrix import (
+    build_ieee802153d_1440_h,
+    ieee802153d_1440_dimensions,
+    ieee802153d_1440_encoder_matrices,
+    ieee802153d_1440_matrix_metadata,
+    ieee802153d_rate11_direction_note,
+    ieee802153d_standard_confirmation_status,
+    normalize_ieee802153d_rate11_direction,
+    RATE11_PLUS_SYSTEMATIC_CANDIDATE,
+)
+
 
 class RSCoder:
     """
-    支持按字节分包编码/解码。
+    高性能 RS 编译码器：比特流 ↔ GF域 直接转换
+    已修复编码长度不匹配问题，严格保证输出比特长度正确
     """
     def __init__(self, params):
         self.params = params
-        self.nsym = self.params.get("rs_nsym")          # 校验符号数量（bytes）
-        self.c_exp = self.params.get("rs_c_exp")        # 有限域指数，默认GF(2^8)
-        self.packet_size = self.params.get("rs_packet_size")  # 单个数据包原始大小（字节）
-        self.efficiency = self.packet_size / (self.packet_size + self.nsym)  # 编码效率
-        
-        # 初始化RS编解码器
-        self.rsc = RSCodec(self.nsym, c_exp=self.c_exp)
-        # 编码后每个包的大小 = 原始包大小 + 校验符号数
-        self.encoded_packet_size = self.packet_size + self.nsym
-        
-        # 保存编码时的原始长度信息（用于解码后对齐）
-        self._original_bit_len = 0
+        self.nsym = params.get("rs_nsym")
+        self.c_exp = params.get("rs_c_exp")
+        self.packet_size = params.get("rs_packet_size")  # k, 单位：符号（字节）
+        self.efficiency = self.packet_size / (self.packet_size + self.nsym)
+
+        self.GF = galois.GF(2 ** self.c_exp)
+        self.n = self.packet_size + self.nsym
+        self.k = self.packet_size
+
+        self.rs = galois.ReedSolomon(self.n, self.k, field=self.GF)
+
         self._pad_bits = 0
+        self._original_bit_len = 0
+        self._original_sym_len = 0
+        self._num_packets = 0
 
-    
-    # ---------------------------------------------------------
-    # 工具函数：bit <-> byte 转换（严格对齐，避免填充干扰误码率）
-    # ---------------------------------------------------------
-    @staticmethod
-    def bits_to_bytes(bits: np.ndarray) -> Tuple[bytes, int]:
-        """
-        输入：bit数组 (0/1, uint8)
-        输出：(转换后的bytes, 填充的比特数)
-        """
-        if bits.dtype != np.uint8:
-            raise TypeError("bits 必须是 np.uint8 类型")
-        if bits.ndim != 1:
-            raise ValueError("bits 必须是一维数组")
-        
-        # 补齐到8的倍数，记录填充数
-        pad_bits = (-len(bits)) % 8
-        if pad_bits != 0:
+    # =================================================================
+    # 比特流 ↔ GF 符号（直接转换，超快）
+    # =================================================================
+    # def bits_to_gf(self, bits: np.ndarray) -> galois.FieldArray:
+    #     bits = bits.astype(np.uint8)
+    #     self._original_bit_len = len(bits)
+
+    #     pad_bits = (self.c_exp - (len(bits) % self.c_exp)) % self.c_exp
+    #     if pad_bits > 0:
+    #         bits = np.concatenate([bits, np.zeros(pad_bits, dtype=np.uint8)])
+    #     self._pad_bits = pad_bits
+    #     bits_array = bits.reshape(-1, self.c_exp)
+
+    #     # 转符号
+    #     symbols = np.packbits(bits_array, bitorder='little')
+    #     self._original_sym_len = len(symbols)
+    #     return self.GF(symbols)
+    def bits_to_gf(self, bits: np.ndarray) -> galois.FieldArray:
+        bits = bits.astype(np.uint8)
+        self._original_bit_len = len(bits)
+
+        pad_bits = (self.c_exp - (len(bits) % self.c_exp)) % self.c_exp
+        if pad_bits > 0:
             bits = np.concatenate([bits, np.zeros(pad_bits, dtype=np.uint8)])
+        self._pad_bits = pad_bits
+        bits_array = bits.reshape(-1, self.c_exp)
+
+        # 将每行 c_exp 个比特转换为符号（LSB first）
+        weights = 1 << np.arange(self.c_exp)          # [1, 2, 4, ...]
+        symbols = bits_array.dot(weights)             # 结果范围 [0, 2^c_exp - 1]
+
+        self._original_sym_len = len(symbols)
+        return self.GF(symbols)    
+
+    # def gf_to_bits(self, gf_arr: galois.FieldArray) -> np.ndarray:
+    #     arr = gf_arr.view(np.ndarray).astype(np.uint8)
+    #     bits = np.unpackbits(arr).ravel()
+    #     return bits
+    def gf_to_bits(self, gf_arr: galois.FieldArray) -> np.ndarray:
+        # 获取整数值
+        values = gf_arr.view(np.ndarray).astype(np.uint8)
         
-        bits_2d = bits.reshape(-1, 8)
-        vals = np.packbits(bits_2d, axis=1)
-        return vals.flatten().tobytes(), pad_bits
+        # 提取每个符号的低 c_exp 位，按 LSB first 排列
+        # 构造形状 (N, c_exp) 的比特矩阵，每行是一个符号的二进制位（低位在前）
+        bits_matrix = (values[:, None] >> np.arange(self.c_exp)) & 1
+        bits = bits_matrix.ravel().astype(np.uint8)
+        
+        # # （可选）如果保存了原始比特长度，可裁剪掉填充的零
+        # if hasattr(self, '_original_bit_len'):
+        #     bits = bits[:self._original_bit_len]
+        
+        return bits    
 
-    @staticmethod
-    def bytes_to_bits(b: bytes, pad_bits: int = 0) -> np.ndarray:
-        """
-        输入：bytes + 填充比特数
-        输出：去除填充后的bit数组
-        """
-        arr = np.frombuffer(b, dtype=np.uint8)
-        bits = np.unpackbits(arr)
-        # 去除填充的比特
-        if pad_bits > 0 and len(bits) >= pad_bits:
-            bits = bits[:-pad_bits]
-        return bits
-
-    # ---------------------------------------------------------
-    # 工具函数：字节数据分包/合包
-    # ---------------------------------------------------------
-    def split_bytes_to_packets(self, data_bytes: bytes) -> List[bytes]:
-        """将字节数据按包大小拆分，最后一包不足时补0填充"""
+    # =================================================================
+    # 分包 / 组包（严格长度，保证编码后比特数正确）
+    # =================================================================
+    def split_to_packets(self, gf_arr: galois.FieldArray) -> List[galois.FieldArray]:
         packets = []
-        total_len = len(data_bytes)
-        for i in range(0, total_len, self.packet_size):
-            packet = data_bytes[i:i+self.packet_size]
-            if len(packet) < self.packet_size:
-                packet += b'\x00' * (self.packet_size - len(packet))
-            packets.append(packet)
+        total_sym = len(gf_arr)
+        self._num_packets = (total_sym + self.k - 1) // self.k
+
+        for i in range(self._num_packets):
+            pkt = gf_arr[i*self.k : (i+1)*self.k]
+            if len(pkt) < self.k:
+                pkt = self.GF(np.concatenate([
+                    pkt.view(np.ndarray),
+                    np.zeros(self.k - len(pkt), dtype=np.uint8)
+                ]))
+            packets.append(pkt)
         return packets
 
-    def combine_packets_to_bytes(self, packets: List[bytes], original_len: int) -> bytes:
-        """合并分包数据，截断到原始长度（去除填充）"""
-        combined = b''.join(packets)
-        return combined[:original_len]
-
-    # ---------------------------------------------------------
-    # 单包编码/解码（核心：异常捕获 + 最优恢复）
-    # ---------------------------------------------------------
-    def encode_single_packet(self, packet_bytes: bytes) -> bytes:
-        """对单个数据包进行RS编码"""
-        if len(packet_bytes) != self.packet_size:
-            raise ValueError(f"单包大小必须为 {self.packet_size} 字节，当前为 {len(packet_bytes)} 字节")
-        return self.rsc.encode(packet_bytes)
-
-    def decode_single_packet(self, encoded_packet_bytes: bytes, 
-                           erase_pos_bytes: Optional[List[int]] = None) -> Tuple[bytes, str]:
-        """
-        单包解码（容错版）：错误超限时返回最优恢复结果
-        返回：(解码后数据, 纠错状态)
-        纠错状态：'success'（完全纠错）/'partial_correct'（部分纠错）/'failed'（完全失败）
-        """
-        if len(encoded_packet_bytes) != self.encoded_packet_size:
-            raise ValueError(f"编码包大小必须为 {self.encoded_packet_size} 字节")
-
-        erase_pos = erase_pos_bytes or []
-        try:
-            # 正常纠错：返回完全修复的结果
-            res = self.rsc.decode(encoded_packet_bytes, erase_pos=erase_pos)
-            return bytes(res[0]), 'success'
-        
-        except ReedSolomonError:
-            # 错误超限：尝试提取底层纠错的中间结果（最优恢复）
-            try:
-                msg_in = bytearray(encoded_packet_bytes)
-                # 调用底层纠错函数，不抛异常，获取部分纠错结果
-                msg_out, num_err, err_pos = rs_correct_msg(
-                    msg_in, self.nsym, fcr=self.rsc.fcr, 
-                    generator=self.rsc.generator, erase_pos=erase_pos
-                )
-                # 提取原始数据部分（前packet_size字节）
-                partial_data = bytes(msg_out[:self.packet_size])
-                return partial_data, 'partial_correct'
-            
-            except Exception:
-                # 完全无法纠错：返回编码包前packet_size字节作为兜底
-                fallback_data = encoded_packet_bytes[:self.packet_size]
-                return fallback_data, 'failed'
-
-    # ---------------------------------------------------------
-    # 整体编码/解码（适配误码率仿真）
-    # ---------------------------------------------------------
+    # =================================================================
+    # 编码（已修复长度问题 ✅）
+    # =================================================================
     def encode(self, bits: np.ndarray) -> np.ndarray:
-        """
-        输入：比特流
-        输出：RS编码后比特流
-        """
-        # 转换为字节并记录填充数（用于解码还原）
-        data_bytes, pad_bits = self.bits_to_bytes(bits)
-        self._original_bit_len = len(bits)  # 保存原始比特长度
-        self._pad_bits = pad_bits           # 保存填充比特数
-        self._original_byte_len = len(data_bytes)  # 保存原始字节长度
+        gf_msg = self.bits_to_gf(bits)
+        packets = self.split_to_packets(gf_msg)
 
-        # 分包 + 逐包编码
-        packets = self.split_bytes_to_packets(data_bytes)
-        encoded_packets = [self.encode_single_packet(pkt) for pkt in packets]
-        encoded_bytes = b''.join(encoded_packets)
-        result_bits = self.bytes_to_bits(encoded_bytes)
+        # 逐包 RS 编码
+        encoded_packets = [self.rs.encode(pkt) for pkt in packets]
+        gf_encoded = self.GF(np.concatenate([p.view(np.ndarray) for p in encoded_packets]))
 
-        # 转换为比特流返回
-        return result_bits
+        # 转回比特 → 长度严格正确
+        bits_encoded = self.gf_to_bits(gf_encoded)
+        return bits_encoded
 
-    def decode(self, bits: np.ndarray, original_bit_len: int, erase_pos_bytes: Optional[List[int]] = None) -> Tuple[np.ndarray, dict]:
-        """
-        输入：含错比特流
-        输出：(最优恢复比特流, debug信息字典)
-        debug信息包含：
-            - packet_count: 总包数
-            - success_packets: 完全纠错包索引
-            - partial_packets: 部分纠错包索引
-            - failed_packets: 完全失败包索引
-            - original_bit_len: 原始比特长度（用于误码率计算）
-        """
-        # 初始化debug信息（核心：统计各状态包数量，方便误码率分析）
-        debug_info = {
-            "packet_count": 0,
+    # =================================================================
+    # 解码
+    # =================================================================
+    def decode(
+        self,
+        llrs: np.ndarray,
+        original_bit_len: int,
+        erase_pos_bytes: Optional[List[int]] = None
+    ) -> Tuple[np.ndarray, dict]:
+
+        bits = (llrs < 0).astype(np.uint8)
+        gf_rx = self.bits_to_gf(bits)
+
+        if len(gf_rx) % self.n != 0:
+            raise ValueError(f"编码符号长度必须是 {self.n} 的整数倍")
+
+        # 拆包
+        pkts = [gf_rx[i*self.n : (i+1)*self.n] for i in range(len(gf_rx) // self.n)]
+        debug = {
+            "packet_count": len(pkts),
             "success_packets": [],
             "partial_packets": [],
             "failed_packets": [],
-            "original_bit_len": self._original_bit_len
+            "original_bit_len": original_bit_len
         }
 
-        # 比特转字节（保留填充，编码包长度固定）
-        coded_bytes, _ = self.bits_to_bytes(bits)
-        if len(coded_bytes) % self.encoded_packet_size != 0:
-            raise ValueError(f"编码数据长度必须是 {self.encoded_packet_size} 的倍数")
-
-        # 拆分编码包
-        encoded_packets = []
-        for i in range(0, len(coded_bytes), self.encoded_packet_size):
-            encoded_packets.append(coded_bytes[i:i+self.encoded_packet_size])
-        debug_info["packet_count"] = len(encoded_packets)
-
-        # 逐包解码（异常容错 + 状态记录）
-        decoded_packets = []
-        for pkt_idx, pkt in enumerate(encoded_packets):
-            # 计算当前包的相对擦除位置
-            pkt_erase_pos = None
+        decoded_pkts = []
+        for idx, pkt in enumerate(pkts):
+            erasures = None
             if erase_pos_bytes is not None:
-                start = pkt_idx * self.encoded_packet_size
-                end = start + self.encoded_packet_size
-                pkt_erase_pos = [p - start for p in erase_pos_bytes if start <= p < end]
-            
-            # 解码（捕获异常，返回最优结果）
-            pkt_data, pkt_status = self.decode_single_packet(pkt, pkt_erase_pos)
-            decoded_packets.append(pkt_data)
+                start = idx * self.n
+                erasures = [p - start for p in erase_pos_bytes if start <= p < start + self.n]
 
-            # 记录纠错状态（用于后续误码率统计）
-            if pkt_status == 'success':
-                debug_info["success_packets"].append(pkt_idx)
-            elif pkt_status == 'partial_correct':
-                debug_info["partial_packets"].append(pkt_idx)
-            else:
-                debug_info["failed_packets"].append(pkt_idx)
+            try:
+                dec = self.rs.decode(pkt, erasures=erasures)
+                decoded_pkts.append(dec)
+                debug["success_packets"].append(idx)
+            except galois.ReedSolomonError:
+                decoded_pkts.append(pkt[:self.k])
+                debug["partial_packets"].append(idx)
+            except Exception:
+                decoded_pkts.append(pkt[:self.k])
+                debug["failed_packets"].append(idx)
 
-        # 合并解码包并恢复原始长度（关键：保证误码率计算准确）
-        original_byte_len = original_bit_len // 8
-        decoded_bytes = self.combine_packets_to_bytes(decoded_packets, original_byte_len)
-        
-        # 转换为比特流，去除编码时的填充比特
-        decoded_bits = self.bytes_to_bits(decoded_bytes, self._pad_bits)
+        gf_dec = self.GF(np.concatenate([p.view(np.ndarray) for p in decoded_pkts]))
+        decoded_bits = self.gf_to_bits(gf_dec)
 
-        # 严格截断到原始比特长度（避免填充比特干扰误码率）
-        if len(decoded_bits) > original_bit_len:
-            decoded_bits = decoded_bits[:original_bit_len]
-
+        # 截断到原始有效比特长度
+        decoded_bits = decoded_bits[:original_bit_len]
         return decoded_bits
     
-    # ---------------------------------------------------------
-    # 工具属性（方便仿真）
-    # ---------------------------------------------------------
-    @property
-    def max_correctable_bytes(self):
-        """返回最大可纠正字节错误数"""
-        return self.nsym // 2
-
-    # ---------------------------------------------------------
-    # 错误注入（适配误码率仿真，可复现）
-    # ---------------------------------------------------------
-    def introduce_random_byte_errors(self, bits: np.ndarray, n_byte_errors: int, seed: Optional[int] = None) -> np.ndarray:
+    def decode_with_auto_erase(
+        self,
+        llrs: np.ndarray,
+        original_bit_len: int,
+        num_erasures_per_packet: int = 2
+    ) -> Tuple[np.ndarray, dict]:
         """
-        精准注入指定数量的字节错误，支持随机种子（复现仿真结果）
+        自动擦除译码：每个 RS 包选择最不可靠的 num_erasures_per_packet 个符号作为擦除。
+        符号可靠性 = 对应比特 LLR 绝对值之和（越小越不可靠）。
         """
-        if seed is not None:
-            np.random.seed(seed)  # 固定种子，保证仿真可复现
+        bits_per_sym = self.c_exp
+        # 1. 计算编码后的比特长度
+        L = original_bit_len
+        pad_to_8 = (bits_per_sym - (L % bits_per_sym)) % bits_per_sym
+        L_padded = L + pad_to_8
+        num_symbols = L_padded // bits_per_sym
+        num_packets = (num_symbols + self.k - 1) // self.k
+        total_coded_bits = num_packets * self.n * bits_per_sym
 
-        data_bytes, pad_bits = self.bits_to_bytes(bits)
-        arr = np.frombuffer(data_bytes, dtype=np.uint8).copy()
+        if len(llrs) != total_coded_bits:
+            if len(llrs) > total_coded_bits:
+                llrs = llrs[:total_coded_bits]
+            else:
+                llrs = np.pad(llrs, (0, total_coded_bits - len(llrs)), constant_values=0)
 
-        if n_byte_errors < 0 or n_byte_errors > len(arr):
-            raise ValueError(f"错误数必须在 0~{len(arr)} 之间")
-        if n_byte_errors == 0:
-            return self.bytes_to_bits(arr.tobytes(), pad_bits)
+        # 2. 计算每个符号的可靠性（LLR 绝对值之和）
+        llrs_per_sym = llrs.reshape(-1, bits_per_sym)
+        sym_reliability = np.sum(np.abs(llrs_per_sym), axis=1)  # 越小越不可靠
 
-        # 随机选择错误位置，确保每个位置只改一次
-        error_pos = np.random.choice(len(arr), n_byte_errors, replace=False)
-        for pos in error_pos:
-            # 随机替换为不同的字节值（确保产生错误）
-            old_val = arr[pos]
-            new_val = np.random.randint(0, 256)
-            while new_val == old_val:
-                new_val = np.random.randint(0, 256)
-            arr[pos] = new_val
+        # 3. 按包分组
+        pkt_reliability = sym_reliability.reshape(num_packets, self.n)
 
-        # 转回比特流并去除填充，截断到原始长度
-        corrupted_bits = self.bytes_to_bits(arr.tobytes(), pad_bits)
-        return corrupted_bits[:len(bits)]
+        # 4. 为每个包生成擦除布尔掩码
+        erasures_masks = []
+        for pkt_rel in pkt_reliability:
+            k = min(num_erasures_per_packet, self.n)
+            idx = np.argpartition(pkt_rel, k-1)[:k]   # 最不可靠的 k 个索引
+            mask = np.zeros(self.n, dtype=bool)
+            mask[idx] = True
+            erasures_masks.append(mask)
+
+        # 5. 硬判决 + GF 符号
+        rx_bits = (llrs < 0).astype(np.uint8)
+        gf_rx = self.bits_to_gf(rx_bits)
+        gf_packets = gf_rx.reshape(num_packets, self.n)
+
+        # 6. 逐包译码（使用布尔掩码）
+        decoded_pkts = []
+        debug = {
+            "packet_count": num_packets,
+            "success_packets": [],
+            "partial_packets": [],
+            "failed_packets": [],
+            "erasures_masks": erasures_masks
+        }
+
+        for idx, (pkt, mask) in enumerate(zip(gf_packets, erasures_masks)):
+            try:
+                dec = self.rs.decode(pkt, erasures=mask)   # 此处传入布尔掩码
+                decoded_pkts.append(dec)
+                debug["success_packets"].append(idx)
+            except galois.ReedSolomonError:
+                decoded_pkts.append(pkt[:self.k])
+                debug["partial_packets"].append(idx)
+            except Exception:
+                decoded_pkts.append(pkt[:self.k])
+                debug["failed_packets"].append(idx)
+
+        # 7. 合并并转回比特
+        gf_decoded = self.GF(np.concatenate([p.view(np.ndarray) for p in decoded_pkts]))
+        decoded_bits = self.gf_to_bits(gf_decoded)
+        decoded_bits = decoded_bits[:original_bit_len]
+        return decoded_bits
     
+
+    def decode_chase(
+    self,
+    llrs: np.ndarray,
+    original_bit_len: int,
+    num_chase_per_packet: int = 3
+    ) -> Tuple[np.ndarray, dict]:
+        """
+        采用 Chase-II 软判决译码（p=3，8 个试探序列）的 RS 解码器。
+
+        参数：
+            llrs: 对数似然比，形状 (N_bits,)，正对应比特 0，负对应比特 1。
+            original_bit_len: 原始信息比特长度（用于最终截断）。
+            num_chase_per_packet: 每个包的 Chase 试探序列数量。
+
+        返回：
+            decoded_bits: 解码后的比特数组，长度 <= original_bit_len。
+            debug: 调试信息字典。
+        """
+        # 每个 GF 符号对应的比特数
+        bits_per_symbol = int(np.log2(self.GF.order))
+        # 硬判决比特
+        bits = (llrs < 0).astype(np.uint8)
+        # 转换为 GF 符号
+        gf_rx = self.bits_to_gf(bits)
+
+        if len(gf_rx) % self.n != 0:
+            raise ValueError(f"编码符号长度必须是 {self.n} 的整数倍")
+
+        # 拆包
+        pkts = [gf_rx[i*self.n : (i+1)*self.n] for i in range(len(gf_rx) // self.n)]
+        debug = {
+            "packet_count": len(pkts),
+            "success_packets": [],
+            "partial_packets": [],
+            "failed_packets": [],
+            "original_bit_len": original_bit_len
+        }
+
+        decoded_pkts = []  # 存放每个包解码出的消息符号（长度 k）
+
+        # Chase 参数
+        for idx, pkt in enumerate(pkts):
+            # 计算当前包对应的比特区间
+            bit_start = idx * self.n * bits_per_symbol
+            bit_end = (idx + 1) * self.n * bits_per_symbol
+            pkt_llrs = llrs[bit_start:bit_end]  # 长度 = n * bits_per_symbol
+
+            # 硬判决比特
+            hard_bits = (pkt_llrs < 0).astype(np.uint8)
+
+            # 选择最不可靠的 p 个比特位置（LLR 绝对值最小）
+            abs_llr = np.abs(pkt_llrs)
+            unreliable_pos = np.argsort(abs_llr)[:num_chase_per_packet]
+
+            best_msg = None
+            best_score = -np.inf
+
+            # 遍历所有翻转模式
+            for flip_pattern in product([0, 1], repeat=num_chase_per_packet):
+                test_bits = hard_bits.copy()
+                for pos, flip in zip(unreliable_pos, flip_pattern):
+                    if flip:
+                        test_bits[pos] ^= 1
+
+                # 转换为 GF 符号并尝试 RS 解码
+                test_symbols = self.bits_to_gf(test_bits)  # 长度 n
+                try:
+                    decoded_msg = self.rs.decode(test_symbols)  # 长度 k
+                    # 重新编码得到完整码字
+                    codeword_sym = self.rs.encode(decoded_msg)   # 长度 n
+                    codeword_bits = self.gf_to_bits(codeword_sym)  # 长度 n * bits_per_symbol
+                    # 相关性得分：∑ llr * (1-2*bit) ，越大表示越可靠
+                    score = np.sum(pkt_llrs * (1 - 2 * codeword_bits.astype(np.float32)))
+                    if score > best_score:
+                        best_score = score
+                        best_msg = decoded_msg
+                except galois.ReedSolomonError:
+                    continue
+
+            if best_msg is not None:
+                decoded_pkts.append(best_msg)
+                debug["success_packets"].append(idx)
+            else:
+                # 所有试探失败，使用硬判决消息（截取码字的前 k 个符号）
+                fallback_msg = self.bits_to_gf(hard_bits)[:self.k]
+                decoded_pkts.append(fallback_msg)
+                debug["partial_packets"].append(idx)
+
+        # 拼接所有消息符号，转换为比特并截断
+        gf_dec = self.GF(np.concatenate([pkt.view(np.ndarray) for pkt in decoded_pkts]))
+        decoded_bits = self.gf_to_bits(gf_dec)
+        decoded_bits = decoded_bits[:original_bit_len]
+
+        return 
+    
+class LDPCCoder:
+    """
+    LDPC coder with two matrix modes.
+
+    Engineering mode keeps the legacy smoke-test code:
+        c = [u, p]
+        p = u A mod 2
+        H = [A.T, I]
+
+    IEEE 802.15.3d mode uses the standard THz-SC mandatory LDPC(1440,1344)
+    or LDPC(1440,1056) H matrix and solves parity bits over GF(2).
+    For 11/15, minus_literal follows Equation 13-1 literally but is not
+    encodable as c=[i,p]; plus_systematic_candidate is explicitly marked as
+    a pending-confirmation candidate, not a confirmed IEEE correction.
+    """
+
+    def __init__(self, params):
+        self.params = params
+        self.matrix_type = str(self._get_param("ldpc_matrix_type", "engineering") or "engineering")
+        self.standard_rate = str(self._get_param("ldpc_standard_rate", "14/15") or "14/15")
+        self.rate11_direction = normalize_ieee802153d_rate11_direction(
+            self._get_param("ldpc_rate11_direction", "minus_literal")
+        )
+        self.rate11_direction_note = (
+            ieee802153d_rate11_direction_note(self.rate11_direction)
+            if self.standard_rate == "11/15"
+            else None
+        )
+        self.rate11_systematic_candidate = (
+            self.standard_rate == "11/15"
+            and self.rate11_direction == RATE11_PLUS_SYSTEMATIC_CANDIDATE
+        )
+        self.is_systematic_candidate = self.rate11_systematic_candidate
+        self.standard_confirmation_status = (
+            ieee802153d_standard_confirmation_status(self.standard_rate, self.rate11_direction)
+            if self.matrix_type == "ieee802153d_1440"
+            else "not_applicable_engineering_ldpc"
+        )
+        if self.matrix_type == "ieee802153d_1440":
+            self.n, self.k, self.r = ieee802153d_1440_dimensions(self.standard_rate)
+        elif self.matrix_type == "engineering":
+            self.n = int(self._get_param("ldpc_n", 672))
+            self.k = int(self._get_param("ldpc_k", 336))
+            self.r = self.n - self.k
+        else:
+            raise ValueError("ldpc_matrix_type must be 'engineering' or 'ieee802153d_1440'")
+        self.max_iter = int(self._get_param("ldpc_max_iter", 30))
+        self.col_weight = int(self._get_param("ldpc_col_weight", self._get_param("ldpc_dv", 3)))
+        self.seed = int(self._get_param("ldpc_seed", 2024))
+        self.decode_algorithm = str(self._get_param("ldpc_decode_algorithm", "min_sum"))
+        self.llr_clip = float(self._get_param("ldpc_llr_clip", 20.0))
+        self.hard_llr_value = float(self._get_param("ldpc_hard_llr_value", 12.0))
+        self.min_sum_alpha = float(self._get_param("ldpc_min_sum_alpha", 0.8))
+        self.efficiency = self.k / self.n
+
+        if self.k <= 0 or self.n <= self.k:
+            raise ValueError("LDPC requires ldpc_n > ldpc_k > 0")
+        if self.matrix_type == "engineering" and (self.col_weight <= 0 or self.col_weight > self.r):
+            raise ValueError("LDPC ldpc_col_weight must be in [1, ldpc_n - ldpc_k]")
+        if self.decode_algorithm not in ("min_sum", "normalized_min_sum"):
+            raise ValueError("LDPC decode_algorithm must be 'min_sum' or 'normalized_min_sum'")
+
+        if self.matrix_type == "ieee802153d_1440":
+            self.H = build_ieee802153d_1440_h(self.standard_rate, self.rate11_direction)
+            self.matrix_validation = ieee802153d_1440_matrix_metadata(
+                self.standard_rate,
+                self.rate11_direction,
+            )
+            (
+                self.info_positions,
+                self.parity_positions,
+                self.Hp_inv,
+                self.parity_matrix,
+                self.systematic_info_is_prefix,
+            ) = ieee802153d_1440_encoder_matrices(
+                self.standard_rate,
+                self.rate11_direction,
+            )
+            self.A = None
+        else:
+            self.A = self._build_sparse_a_matrix()
+            self.H = self._build_engineering_h_matrix()
+            self.info_positions = np.arange(self.k, dtype=np.int32)
+            self.parity_positions = np.arange(self.k, self.n, dtype=np.int32)
+            self.parity_matrix = self.A
+            self.Hp_inv = np.eye(self.r, dtype=np.uint8)
+            self.systematic_info_is_prefix = True
+            self.matrix_validation = {
+                "shape": self.H.shape,
+                "column_weight": int(self.col_weight + 1),
+                "rank": int(self.r),
+                "ones": int(np.sum(self.H)),
+            }
+
+        self.check_to_vars = self._build_check_to_vars()
+        self.var_to_checks = self._build_var_to_checks()
+        self.edge_var, self.edge_check, self.check_edges, self.var_edges = self._build_edges()
+
+        self.last_padding_bits = 0
+        self.last_num_blocks = 0
+        self.last_info_length = 0
+        self.last_encoded_length = 0
+
+    def _get_param(self, key, default):
+        try:
+            return self.params.get(key)
+        except KeyError:
+            return default
+
+    def _build_sparse_a_matrix(self) -> np.ndarray:
+        rng = np.random.default_rng(self.seed)
+        a = np.zeros((self.k, self.r), dtype=np.uint8)
+        for row in range(self.k):
+            checks = rng.choice(self.r, size=self.col_weight, replace=False)
+            a[row, checks] = 1
+        return a
+
+    def _build_engineering_h_matrix(self) -> np.ndarray:
+        h = np.zeros((self.r, self.n), dtype=np.uint8)
+        h[:, : self.k] = self.A.T
+        h[:, self.k :] = np.eye(self.r, dtype=np.uint8)
+        return h
+
+    def _build_check_to_vars(self) -> list[np.ndarray]:
+        check_to_vars = []
+        for check in range(self.r):
+            check_to_vars.append(np.flatnonzero(self.H[check]).astype(np.int32))
+        return check_to_vars
+
+    def _build_var_to_checks(self) -> list[np.ndarray]:
+        var_to_checks = [[] for _ in range(self.n)]
+        rows, cols = np.nonzero(self.H)
+        for check, var in zip(rows, cols):
+            var_to_checks[int(var)].append(int(check))
+        return [np.asarray(checks, dtype=np.int32) for checks in var_to_checks]
+
+    def _build_edges(self):
+        edge_var = []
+        edge_check = []
+        check_edges = []
+        var_edges = [[] for _ in range(self.n)]
+        for check, vars_for_check in enumerate(self.check_to_vars):
+            edges = []
+            for var in vars_for_check:
+                edge_idx = len(edge_var)
+                edge_var.append(int(var))
+                edge_check.append(int(check))
+                edges.append(edge_idx)
+                var_edges[int(var)].append(edge_idx)
+            check_edges.append(np.asarray(edges, dtype=np.int32))
+
+        return (
+            np.asarray(edge_var, dtype=np.int32),
+            np.asarray(edge_check, dtype=np.int32),
+            check_edges,
+            [np.asarray(edges, dtype=np.int32) for edges in var_edges],
+        )
+
+    def encode(self, bits: np.ndarray) -> np.ndarray:
+        bits = np.asarray(bits, dtype=np.uint8).ravel()
+        if not np.all(np.isin(bits, [0, 1])):
+            raise ValueError("LDPC encode input must be binary bits")
+
+        self.last_info_length = int(len(bits))
+        self.last_padding_bits = int((-len(bits)) % self.k)
+        if self.last_padding_bits:
+            bits_padded = np.concatenate([bits, np.zeros(self.last_padding_bits, dtype=np.uint8)])
+        else:
+            bits_padded = bits
+
+        info_blocks = bits_padded.reshape(-1, self.k)
+        parity = (info_blocks.astype(np.uint16) @ self.parity_matrix.astype(np.uint16)) & 1
+        parity = parity.astype(np.uint8, copy=False)
+        if self.systematic_info_is_prefix:
+            codewords = np.concatenate([info_blocks, parity], axis=1)
+        else:
+            codewords = np.zeros((info_blocks.shape[0], self.n), dtype=np.uint8)
+            codewords[:, self.info_positions] = info_blocks
+            codewords[:, self.parity_positions] = parity
+
+        self.last_num_blocks = int(codewords.shape[0])
+        self.last_encoded_length = int(codewords.size)
+        return codewords.reshape(-1).astype(np.uint8)
+
+    def syndrome(self, codeword: np.ndarray) -> np.ndarray:
+        codeword = np.asarray(codeword, dtype=np.uint8).ravel()
+        if len(codeword) != self.n:
+            raise ValueError(f"LDPC syndrome expects one codeword of length {self.n}")
+        syndrome = np.empty(self.r, dtype=np.uint8)
+        for check, vars_for_check in enumerate(self.check_to_vars):
+            syndrome[check] = np.bitwise_xor.reduce(codeword[vars_for_check])
+        return syndrome
+
+    def decode(
+        self,
+        llrs: np.ndarray,
+        original_bit_len: Optional[int] = None,
+        ldpc_padding_bits: Optional[int] = None,
+    ) -> Tuple[np.ndarray, dict]:
+        llrs = np.asarray(llrs).ravel()
+        used_hard_fallback = bool(np.all(np.isin(llrs, [0, 1])))
+        if used_hard_fallback:
+            llrs = np.where(llrs.astype(np.uint8) == 0, self.hard_llr_value, -self.hard_llr_value)
+        else:
+            llrs = llrs.astype(np.float64, copy=False)
+
+        if self.llr_clip > 0:
+            llrs = np.clip(llrs, -self.llr_clip, self.llr_clip)
+
+        input_llr_length = int(len(llrs))
+        llr_padding_bits = int((-len(llrs)) % self.n)
+        if llr_padding_bits:
+            llrs = np.pad(llrs, (0, llr_padding_bits), mode="constant", constant_values=0.0)
+
+        blocks = llrs.reshape(-1, self.n)
+        decoded_blocks = []
+        iterations = []
+        syndrome_weights = []
+        success_blocks = []
+        failed_blocks = []
+
+        for block_idx, block_llrs in enumerate(blocks):
+            hard_bits, posterior, used_iter, success = self._decode_block(block_llrs)
+            syndrome_weight = int(np.sum(self.syndrome(hard_bits)))
+            decoded_blocks.append(hard_bits[self.info_positions])
+            iterations.append(int(used_iter))
+            syndrome_weights.append(syndrome_weight)
+            if success:
+                success_blocks.append(block_idx)
+            else:
+                failed_blocks.append(block_idx)
+
+        decoded_bits = np.concatenate(decoded_blocks).astype(np.uint8) if decoded_blocks else np.array([], dtype=np.uint8)
+        padding = int(self.last_padding_bits if ldpc_padding_bits is None else ldpc_padding_bits)
+        if padding > 0 and len(decoded_bits) >= padding:
+            decoded_bits = decoded_bits[:-padding]
+        if original_bit_len is not None:
+            decoded_bits = decoded_bits[: int(original_bit_len)]
+
+        debug = {
+            "algorithm": self.decode_algorithm,
+            "ldpc_matrix_type": self.matrix_type,
+            "ldpc_standard_rate": self.standard_rate if self.matrix_type == "ieee802153d_1440" else None,
+            "ldpc_rate11_direction": self.rate11_direction if self.standard_rate == "11/15" else None,
+            "ldpc_rate11_direction_note": self.rate11_direction_note,
+            "ldpc_rate11_systematic_candidate": self.rate11_systematic_candidate,
+            "is_systematic_candidate": self.is_systematic_candidate,
+            "standard_confirmation_status": self.standard_confirmation_status,
+            "systematic_info_is_prefix": self.systematic_info_is_prefix,
+            "ldpc_n": self.n,
+            "ldpc_k": self.k,
+            "ldpc_r": self.r,
+            "num_blocks": int(len(blocks)),
+            "input_llr_length": input_llr_length,
+            "llr_padding_bits": llr_padding_bits,
+            "ldpc_padding_bits": padding,
+            "used_hard_fallback": used_hard_fallback,
+            "iterations": iterations,
+            "success_blocks": success_blocks,
+            "failed_blocks": failed_blocks,
+            "syndrome_weights": syndrome_weights,
+            "decode_success": len(failed_blocks) == 0,
+        }
+        return decoded_bits, debug
+
+    def _decode_block(self, llr_block: np.ndarray):
+        llr = np.asarray(llr_block, dtype=np.float64).ravel()
+        if len(llr) != self.n:
+            raise ValueError(f"LDPC decode block expects length {self.n}")
+
+        edge_count = len(self.edge_var)
+        var_to_check = llr[self.edge_var].copy()
+        check_to_var = np.zeros(edge_count, dtype=np.float64)
+        posterior = llr.copy()
+        min_sum_scale = self.min_sum_alpha if self.decode_algorithm == "normalized_min_sum" else 1.0
+        hard_bits = (posterior < 0).astype(np.uint8)
+        if np.all(self.syndrome(hard_bits) == 0):
+            return hard_bits, posterior, 0, True
+
+        eps = 1e-12
+        for iteration in range(1, self.max_iter + 1):
+            for edges in self.check_edges:
+                messages = var_to_check[edges]
+                signs = np.where(messages < 0, -1.0, 1.0)
+                abs_messages = np.maximum(np.abs(messages), eps)
+                total_sign = np.prod(signs)
+
+                if len(abs_messages) == 1:
+                    min_values = abs_messages
+                else:
+                    min_index = int(np.argmin(abs_messages))
+                    min1 = abs_messages[min_index]
+                    min2 = np.min(np.delete(abs_messages, min_index))
+                    min_values = np.full(len(edges), min1, dtype=np.float64)
+                    min_values[min_index] = min2
+
+                check_to_var[edges] = min_sum_scale * total_sign * signs * min_values
+
+            posterior = llr.copy()
+            for var, edges in enumerate(self.var_edges):
+                if len(edges) > 0:
+                    posterior[var] += np.sum(check_to_var[edges])
+                    var_to_check[edges] = posterior[var] - check_to_var[edges]
+
+            if self.llr_clip > 0:
+                posterior = np.clip(posterior, -self.llr_clip, self.llr_clip)
+                var_to_check = np.clip(var_to_check, -self.llr_clip, self.llr_clip)
+
+            hard_bits = (posterior < 0).astype(np.uint8)
+            if np.all(self.syndrome(hard_bits) == 0):
+                return hard_bits, posterior, iteration, True
+
+        return hard_bits, posterior, self.max_iter, False
+    
+

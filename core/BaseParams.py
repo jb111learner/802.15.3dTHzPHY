@@ -33,6 +33,13 @@ class BaseParams:
             self._params[key] = value
         self.validate()  # 更新后重新校验
 
+    def clone(self):
+        """深拷贝参数对象并返回。"""
+        new_obj = self.__class__()
+        new_obj._params = self._params.copy()
+        new_obj.validate()
+        return new_obj
+
     def __str__(self):
         """打印所有参数"""
         return "\n".join([f"{key}: {value}" for key, value in self._params.items()])

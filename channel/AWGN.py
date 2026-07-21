@@ -105,6 +105,7 @@ class AWGN:
         # 噪声方差 = 噪声功率/2（复信号的实/虚部分开）
         noise_std = np.sqrt(noise_power / 2)
         noise = noise_std * (np.random.randn(len(signal)) + 1j * np.random.randn(len(signal)))
+        print(f"设定噪声方差：{noise_power:.6f}")
         # 4. 添加噪声
         signal_with_noise = signal + noise
         self.snr_db = 10 * np.log10(signal_power / noise_power)  # 实际SNR值（dB）
@@ -125,18 +126,18 @@ class AWGN:
         
         return results_dict
 
-# # 测试
-# if __name__ == "__main__":
-#     # 初始化参数和发射机
-#     params = PHYParams()
-#     transmitter = THzTransmitter(params)
-#     tx_signal = transmitter.run()
-#     multipath_chan = MultipathChannel(params)
-#     signal_with_multipath = multipath_chan.apply_multipath(tx_signal)
-#     awgn = AWGN(params)
-#     signal_with_noise = awgn.add_awgn(signal_with_multipath)
-#     # 计算实际SNR
-#     signal_power = np.mean(np.abs(signal_with_multipath) ** 2)
-#     noise_power = np.mean(np.abs(signal_with_noise - signal_with_multipath) ** 2)
-#     actual_snr_db = 10 * np.log10(signal_power / noise_power)
-#     print(f"目标SNR：{params.get('SNRdB')} dB, 实际SNR：{actual_snr_db:.2f} dB")
+# 测试
+if __name__ == "__main__":
+    # 初始化参数和发射机
+    params = PHYParams()
+    transmitter = THzTransmitter(params)
+    tx_signal_dict = transmitter.run()
+    # multipath_chan = MultipathChannel(params)
+    # signal_with_multipath = multipath_chan.apply_multipath(tx_signal)
+    awgn = AWGN(params)
+    signal_with_noise_dict = awgn.add_awgn(tx_signal_dict)
+    # 计算实际SNR
+    signal_power = signal_with_noise_dict["signal_power"]
+    noise_power = signal_with_noise_dict["noise_power"]
+    actual_snr_db = 10 * np.log10(signal_power / noise_power)
+    print(f"目标SNR：{params.get('SNRdB')} dB, 实际SNR：{actual_snr_db:.2f} dB")

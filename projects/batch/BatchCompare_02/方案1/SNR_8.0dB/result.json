@@ -1,0 +1,193 @@
+[
+  {
+    "run_index": 1,
+    "params": {
+      "_params": {
+        "bit_source": "PRBS",
+        "file_path": null,
+        "duration": 1,
+        "sample_rate": 44100.0,
+        "bit_depth": 8,
+        "bit_length": null,
+        "random_seed": 2,
+        "seed_strategy": "递增种子",
+        "fc": 1000000000000.0,
+        "bandwidth": 100000000000.0,
+        "subframe_num": 51,
+        "subframe_length": 480,
+        "gi_length": 32,
+        "c_init": 305419896,
+        "NCBPS": 4,
+        "APSK_RINGS": [
+          "(4, 1.0)",
+          "(12, 2.85)"
+        ],
+        "APSK_PHASE_OFFSETS": [
+          0.7853981633974483,
+          0.2617993877991494
+        ],
+        "code_type": "RS",
+        "rs_nsym": 63,
+        "rs_c_exp": 8,
+        "rs_packet_size": 192,
+        "oversampling": 4,
+        "rolloff": 0.22,
+        "filter_type": "rrc",
+        "filter_length": 8,
+        "scramble": true,
+        "ppre": 1,
+        "pw": 0,
+        "Preamble_type": "short",
+        "phase_rotation": 0.7853981633974483,
+        "MCS": 1,
+        "noise_temperature": null,
+        "noise_figure_db": null,
+        "SNRdB": 8.0,
+        "decode_mode": "hard",
+        "run_times": 1,
+        "save_intermediate": false,
+        "Rate": 1
+      }
+    },
+    "result": {
+      "params": {
+        "_params": {
+          "bit_source": "PRBS",
+          "file_path": null,
+          "duration": 1,
+          "sample_rate": 44100.0,
+          "bit_depth": 8,
+          "bit_length": null,
+          "random_seed": 2,
+          "seed_strategy": "递增种子",
+          "fc": 1000000000000.0,
+          "bandwidth": 100000000000.0,
+          "subframe_num": 51,
+          "subframe_length": 480,
+          "gi_length": 32,
+          "c_init": 305419896,
+          "NCBPS": 4,
+          "APSK_RINGS": [
+            "(4, 1.0)",
+            "(12, 2.85)"
+          ],
+          "APSK_PHASE_OFFSETS": [
+            0.7853981633974483,
+            0.2617993877991494
+          ],
+          "code_type": "RS",
+          "rs_nsym": 63,
+          "rs_c_exp": 8,
+          "rs_packet_size": 192,
+          "oversampling": 4,
+          "rolloff": 0.22,
+          "filter_type": "rrc",
+          "filter_length": 8,
+          "scramble": true,
+          "ppre": 1,
+          "pw": 0,
+          "Preamble_type": "short",
+          "phase_rotation": 0.7853981633974483,
+          "MCS": 1,
+          "noise_temperature": null,
+          "noise_figure_db": null,
+          "SNRdB": 8.0,
+          "decode_mode": "hard",
+          "run_times": 1,
+          "save_intermediate": false,
+          "Rate": 1
+        }
+      },
+      "seed": 2,
+      "tx_assembled": {
+        "signal_stream": "[1 0 0 ... 0 0 0]",
+        "sample_rate_Hz": 352800.0,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 368640,
+        "frame_num": 5,
+        "padding_bit_num": 15840,
+        "is_big_bitstream": false,
+        "frame_bit_num": 73728
+      },
+      "tx_preamble": null,
+      "tx_scrambled": {
+        "signal_stream": "[0 0 0 ... 1 1 0]",
+        "sample_rate_Hz": 352800.0,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 368640,
+        "padding_bit_num": 15840
+      },
+      "tx_encoded": {
+        "signal_stream": "[0 0 0 ... 0 1 1]",
+        "sample_rate_Hz": 468562.5,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 489600,
+        "padding_bit_num": 15840
+      },
+      "tx_modulated": {
+        "signal_stream": "[-0.9486833 -0.31622777j -0.31622777+0.31622777j -0.31622777+0.9486833j\n ...  0.9486833 -0.31622777j -0.31622777-0.31622777j\n  0.31622777+0.9486833j ]",
+        "sample_rate_Hz": 117140.625,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 122400,
+        "padding_bit_num": 15840
+      },
+      "tx_with_gi": {
+        "signal_stream": "[ 1.+0.j  1.+0.j  1.+0.j ...  1.+0.j -1.-0.j  1.+0.j]",
+        "sample_rate_Hz": 124980.62499999999,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 130592,
+        "padding_bit_num": 15840
+      },
+      "tx_signal": {
+        "signal_stream": "[0.5581534 +0.j 0.5550328 +0.j 0.48211044+0.j ... 0.59347388+0.j\n 0.42602483+0.j 0.16574475+0.j]",
+        "sample_rate_Hz": 499922.49999999994,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 522368,
+        "padding_bit_num": 15840
+      },
+      "rx_signal": {
+        "signal_stream": "[0.59047136+0.12279764j 0.29534215-0.07485469j 0.29863489-0.09731684j ...\n 0.68861935-0.11292267j 0.36728242+0.05038526j 0.15010395-0.01103851j]",
+        "sample_rate_Hz": 499922.49999999994,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 522368,
+        "signal_power": 0.2503942978040577,
+        "noise_power": 0.039684821802073174,
+        "SNRdB": 8.0,
+        "padding_bit_num": 15840
+      },
+      "rx_filtered": "[0.50119565-0.00871092j 0.63180228-0.08296091j 0.75997981-0.15638321j ...\n 1.04950868+0.04115046j 0.88951322-0.03333678j 0.54236196-0.05804396j]",
+      "rx_matched": {
+        "signal_stream": "[ 0.50119565-0.00871092j  1.08054431-0.2109933j   0.67382722+0.05928741j\n ...  1.07573981-0.16124896j -0.96968579+0.25650731j\n  0.89802501+0.15037285j]",
+        "sample_rate_Hz": 124980.62499999999,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 130592.0,
+        "padding_bit_num": 15840
+      },
+      "rx_no_gi": {
+        "signal_stream": "[-0.81430558-0.29291869j -0.09685587+0.34830406j -0.4760841 +0.89676308j\n ...  1.00723639-0.50184713j -0.32911576-0.10448681j\n  0.22749383+0.780467j  ]",
+        "sample_rate_Hz": 117140.62499999999,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 122400.0,
+        "padding_bit_num": 15840
+      },
+      "rx_demodulated": {
+        "signal_stream": "[15.90073428  2.90270838  4.67559692 ...  2.36257369 -3.63127891\n -6.4640386 ]",
+        "sample_rate_Hz": 468562.49999999994,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 489600.0,
+        "padding_bit_num": 15840
+      },
+      "rx_decoded": {
+        "signal_stream": "[1 0 0 ... 0 0 0]",
+        "sample_rate_Hz": 352799.99999999994,
+        "duration_seconds": 1.0448979591836736,
+        "signal_length": 368640,
+        "padding_bit_num": 15840
+      },
+      "ber": 0.0
+    },
+    "metrics": {
+      "ber": 0.0
+    }
+  }
+]

@@ -5,157 +5,242 @@ from channel.THzChannel import THzChannel
 from core.BaseReceiver import BaseReceiver
 from receiver.sync.CoarseSync import CoarseSync
 from receiver.sync.FineSync import FineSync
-from receiver.sync.CFOEstimator import CFOEstimator
+from receiver.CFOEstimator import CFOEstimator
 from receiver.ChannelEstimator import ChannelEstimator
 from receiver.NoiseEstimator import NoiseEstimator
-from receiver.GIremover import GIRemover
 from receiver.DeModulator import THzDemodulator
 from receiver.MatchedFilter import RxMatchedFilter
+from receiver.Equalizer import FreqDomainEqualizer
+from receiver.RxOFDMProcesser import RxOFDMProcesser
 from receiver.Decoder import Decoder
 from receiver.DeScrambler import DeScrambler
+from receiver.Downsampler import Downsampler
+
 
 class THzReceiver(BaseReceiver):
     """
-    THz接收机主类：调度子模块完成“同步→频偏补偿→信道估计→均衡”全流程
+    THz 接收机主类 — 支持 SC-FDE / OFDM 双模式
+
+    流程:
+      MF → CoarseSync → CFO coarse → FineSync → Downsample → CFO fine
+      → [SC-FDE: ChannelEst + FreqDomainEqualizer]
+      → [OFDM:   RxOFDMProcesser (内置LS+相位跟踪)]
+      → NoiseEst → Demodulate → Decode → DeScramble
     """
+
     def __init__(self, params, transmitter):
         super().__init__(params, transmitter)
-        self.params = params
-        self.transmitter = transmitter
-        self.sync_seq = self.transmitter.sync   # SYNC序列
-        self.sfd_seq = self.transmitter.sfd     # SFD序列
-        self.ces_seq = self.transmitter.ces     # CES序列
-        # 初始化子模块
+        self.link_mode = params.get("link_mode").lower()
+
+        self.rx_matched_filter = RxMatchedFilter(transmitter)
+        self.coarse_sync = CoarseSync(transmitter)
+        self.fine_sync = FineSync(transmitter)
+        self.cfo_estimator = CFOEstimator(transmitter)
+        self.downsampler = Downsampler(transmitter)
+        self.channel_estimator = ChannelEstimator(transmitter)
+        self.equalizer = FreqDomainEqualizer(transmitter)
+        self.noise_estimator = NoiseEstimator(transmitter)
         self.demodulator = THzDemodulator(params)
-        self.rx_matched_filter = RxMatchedFilter(self.transmitter.pulse_shaper)
-        # self.coarse_sync = CoarseSync(params)
-        # self.fine_sync = FineSync(params)
-        # self.cfo_estimator = CFOEstimator(params)
-        # self.channel_estimator = ChannelEstimator(params)
-        # self.noise_estimator = NoiseEstimator(params)
-        # self.equalizer = Equalizer(params)
-        self.gi_remover = GIRemover(params)
-        self.coder = Decoder(params)
-        self.scrembler = DeScrambler(params)
+        self.decoder = Decoder(params)
+        self.descrambler = DeScrambler(params)
+        if self.link_mode == "ofdm":
+            self.rx_ofdm = RxOFDMProcesser(transmitter)
 
-    # def coarse_sync(self):
-    #     """粗同步"""
-    #     self.coarse_offset, self.corr_norm = self.coarse_sync.detect_sync(self.rx_signal, self.sync_seq)
-    #     return self.coarse_offset
+        # 中间结果缓存
+        self.rx_matched = None
+        self.rx_coarse_synced = None
+        self.rx_cfo_coarse = None
+        self.rx_fine_synced = None
+        self.rx_downsampled = None
+        self.rx_cfo_fine = None
+        self.rx_equalized = None
+        self.noise_var = None
+        self.llr_dict = None
+        self.decoded_bits = None
+        self.data_bits = None
 
-    # def fine_sync(self):
-    #     """细同步"""
-    #     self.fine_offset = self.fine_sync.detect_sfd(self.rx_signal, self.sfd_seq, self.coarse_offset)
-    #     self.sync_offset = self.fine_offset  # 总同步偏移
-    #     return self.sync_offset
+    # ==================== 子模块调用 ====================
 
-    # def estimate_and_compensate_cfo(self):
-    #     """频偏估计与补偿"""
-    #     # 提取SYNC字段
-    #     sync_field = self.rx_signal[self.coarse_offset : self.coarse_offset + len(self.sync_seq)]
-    #     # 估计频偏
-    #     self.cfo_est = self.cfo_estimator.estimate_cfo(sync_field)
-    #     # 补偿频偏
-    #     self.rx_signal_compensated = self.cfo_estimator.compensate_cfo(self.rx_signal, self.cfo_est)
-    #     return self.cfo_est
+    def matched_filter(self, signal_dict):
+        self.rx_matched = self.rx_matched_filter.matched_filter(signal_dict)
+        return self.rx_matched
 
-    # def estimate_channel(self):
-    #     """信道估计"""
-    #     # 提取CES字段
-    #     ces_offset = self.sync_offset + len(self.sync_seq) + len(self.sfd_seq)
-    #     ces_field = self.rx_signal_compensated[ces_offset : ces_offset + len(self.ces_seq)]
-    #     # LS信道估计
-    #     self.chan_est_fft, self.chan_est_time = self.channel_estimator.ls_estimate(ces_field, self.ces_seq)
-    #     return self.chan_est_fft
+    def coarse_sync_detect(self, signal_dict):
+        self.rx_coarse_synced = self.coarse_sync.detect_sync(signal_dict)
+        return self.rx_coarse_synced
 
-    # def estimate_noise_var(self):
-    #     """噪声方差估计"""
-    #     # 提取SYNC字段
-    #     sync_field = self.rx_signal_compensated[self.coarse_offset : self.coarse_offset + len(self.sync_seq)]
-    #     self.noise_var = self.noise_estimator.estimate_noise_var(sync_field, self.sync_seq)
-    #     return self.noise_var
+    def compensate_cfo_coarse(self, signal_dict):
+        # Single-frame CFO — avoids per-frame phase discontinuity
+        fs = signal_dict["sample_rate_Hz"]
+        cfo_est = self.cfo_estimator.estimate_cfo_coarse(
+            signal_dict["signal_stream"], fs=fs)
+        sig = self.cfo_estimator.compensate_cfo(
+            signal_dict["signal_stream"], fs=fs, cfo_est=cfo_est)
+        self.rx_cfo_coarse = dict(signal_dict)
+        self.rx_cfo_coarse["signal_stream"] = sig
+        self.rx_cfo_coarse["signal_length"] = len(sig)
+        return self.rx_cfo_coarse
 
-    # def equalize(self):
-    #     """均衡"""
-    #     # 提取数据段
-    #     data_offset = self.sync_offset + len(self.preamble)
-    #     rx_data = self.rx_signal_compensated[data_offset:]
-    #     # MMSE均衡
-    #     self.equalized_data = self.equalizer.mmse_equalize(rx_data, self.chan_est_fft, self.noise_var)
-    #     # ZF均衡
-    #     # self.equalized_data = self.equalizer.zf_equalize(rx_data, self.chan_est_fft)
-    #     return self.equalized_data
-    
-    def matched_filter(self):
-        """匹配滤波"""
-        self.rx_symbols_cp_dict = self.rx_matched_filter.recover_symbols(self.rx_signal_dict)
-        return self.rx_symbols_cp_dict
+    def fine_sync_frame(self, signal_dict):
+        self.rx_fine_synced = self.fine_sync.fine_sync(signal_dict)
+        return self.rx_fine_synced
 
-    def remove_gi(self):
-        self.rx_symbols_dict = self.gi_remover.remove_gi(self.rx_symbols_cp_dict)
-        return self.rx_symbols_dict
+    def downsample(self, signal_dict):
+        self.rx_downsampled = self.downsampler.recover_symbol(signal_dict)
+        return self.rx_downsampled
 
-    def demodulate(self):
-        """解调"""
-        snr_db = self.params.get("SNRdB")    
-        snr_linear = 10 ** (snr_db / 10)
-        sigma = np.sqrt(1.00 / (2 * snr_linear))
-        self.llr_dict = self.demodulator.demodulate(self.rx_symbols_dict, sigma)
+    def compensate_cfo_fine(self, signal_dict):
+        # Single-frame CFO — avoids per-frame phase discontinuity
+        fs = signal_dict["sample_rate_Hz"]
+        cfo_est = self.cfo_estimator.estimate_cfo_fine(
+            signal_dict["signal_stream"], fs=fs)
+        sig = self.cfo_estimator.compensate_cfo(
+            signal_dict["signal_stream"], fs=fs, cfo_est=cfo_est)
+        self.rx_cfo_fine = dict(signal_dict)
+        self.rx_cfo_fine["signal_stream"] = sig
+        self.rx_cfo_fine["signal_length"] = len(sig)
+        return self.rx_cfo_fine
+
+    def estimate_channel(self, signal_dict):
+        self.rx_estimated = self.channel_estimator.channel_estimate(signal_dict)
+        return self.rx_estimated
+
+    def equalize(self, signal_dict):
+        self.rx_equalized = self.equalizer.equalize(signal_dict)
+        return self.rx_equalized
+
+    def ofdm_demodulate(self, signal_dict):
+        self.rx_equalized = self.rx_ofdm.ofdm_demodulate(
+            signal_dict, H_init_list=None)
+        return self.rx_equalized
+
+    def estimate_noise(self, signal_dict):
+        result = self.noise_estimator.noise_estimate(signal_dict)
+        var_list = result.get("noise_var", [0.01])
+        if isinstance(var_list, list):
+            self.noise_var = np.mean(var_list)
+        else:
+            self.noise_var = var_list
+        return self.noise_var
+
+    def demodulate(self, signal_dict):
+        # 使用噪声方差估计值计算 sigma
+        noise_var = self.noise_var if self.noise_var and self.noise_var > 0 else 0.01
+        sigma = np.sqrt(noise_var / 2)
+        # 重建兼容的 dict（确保 sample_rate * duration == signal_length）
+        sym = signal_dict["signal_stream"]
+        fs = signal_dict.get("sample_rate_Hz", 1.0)
+        compat_dict = {
+            "signal_stream": sym,
+            "sample_rate_Hz": fs,
+            "signal_length": len(sym),
+            "duration_seconds": len(sym) / fs if fs > 0 else 0,
+            "padding_bit_num": signal_dict.get("padding_bit_num", 0),
+        }
+        self.llr_dict = self.demodulator.demodulate(compat_dict, sigma)
         return self.llr_dict
 
-    def decision(self):
-        """判决"""
-        # LLR转比特
-        self.rx_bits_dict = self.demodulator.llr_to_bits(self.llr_dict)
-        return self.rx_bits_dict
+    def decode(self, signal_dict):
+        # Pad/truncate LLR to expected coded bit length if needed
+        llr = signal_dict["signal_stream"]
+        expected_len = round(signal_dict["sample_rate_Hz"] * signal_dict["duration_seconds"])
+        if len(llr) > expected_len:
+            signal_dict = dict(signal_dict)
+            signal_dict["signal_stream"] = llr[:expected_len]
+            signal_dict["signal_length"] = expected_len
+        elif len(llr) < expected_len:
+            signal_dict = dict(signal_dict)
+            pad = np.zeros(expected_len - len(llr), dtype=llr.dtype)
+            signal_dict["signal_stream"] = np.concatenate([llr, pad])
+            signal_dict["signal_length"] = expected_len
+        self.decoded_bits = self.decoder.decode(signal_dict)
+        self.data_bits = self.descrambler.descramble(self.decoded_bits)
+        return self.data_bits
 
-    def decode(self):
-        """解码"""
-        self.decoded_bits_dict = self.coder.decode(self.rx_bits_dict)
-        self.data_bits_dict = self.scrembler.descramble(self.decoded_bits_dict)
-        return self.data_bits_dict
+    # ==================== 主流程 ====================
 
     def run(self, rx_signal_dict):
-        """执行完整接收流程"""
-        self.rx_signal_dict = rx_signal_dict
-        # # 粗同步
-        # self.coarse_sync()
-        # # 频偏估计与补偿
-        # self.estimate_and_compensate_cfo()
-        # # 细同步（补偿频偏后）
-        # self.fine_sync()
-        # # 噪声方差估计
-        # self.estimate_noise_var()
-        # # 信道估计
-        # self.estimate_channel()
-        # # 均衡
-        # self.equalize()
-        # 匹配滤波
-        self.matched_filter()
-        # 去除GI
-        self.remove_gi()
-        # 解调
-        self.demodulate()
-        # 判决
-        self.decision()
-        # 解码
-        data_dict = self.decode()
-        return data_dict
+        """
+        完整接收流程 — 分支 SC-FDE / OFDM
+        """
+        # ① 匹配滤波
+        sig = self.matched_filter(rx_signal_dict)
 
-# 测试
+        # ② 粗同步（SYNC 互相关定位）
+        sig = self.coarse_sync_detect(sig)
+
+        # ③ 粗 CFO（逐帧估计+补偿）
+        sig = self.compensate_cfo_coarse(sig)
+
+        # ④ 细同步（SFD 帧定界）
+        sig = self.fine_sync_frame(sig)
+
+        # ⑤ 下采样
+        sig = self.downsample(sig)
+
+        # ⑥ 细 CFO（逐帧估计+补偿）
+        sig = self.compensate_cfo_fine(sig)
+
+        # ⑦ 噪声方差估计（基于 SYNC，需在 OFDM 解调前）
+        self.estimate_noise(sig)
+
+        if self.link_mode == "ofdm":
+            # ⑧ OFDM 解调（内置导频LS + 相位跟踪 + 均衡）
+            sig = self.ofdm_demodulate(sig)
+        else:
+            # ⑧ SC-FDE: 信道估计 + 频域均衡
+            sig = self.estimate_channel(sig)
+            sig = self.equalize(sig)
+
+        # ⑨ 解调（LLR，使用噪声方差）
+        sig = self.demodulate(sig)
+
+        # ⑩ 解码 + 解扰
+        data = self.decode(sig)
+        return data
+
+# ==================== 测试 ====================
 if __name__ == "__main__":
-    # 初始化参数、发射机、信道
+
     params = PHYParams()
-    transmitter = THzTransmitter(params)
-    tx_signal = transmitter.run()
-    channel = THzChannel(params)
-    rx_signal = channel.run(tx_signal)
-    # 初始化接收机并恢复数据
-    receiver = THzReceiver(params, transmitter)
-    rx_data = receiver.run(rx_signal)
-    print(f"\n===== 解扰结果分析 =====")
-    print(f"接收比特长度：{len(rx_data['bit_stream'])}, 原始比特长度：{len(transmitter.data_bits_dict['bit_stream'])}")
-    print(f"原始比特（前10）：{transmitter.data_bits_dict['bit_stream'][0:10]}")
-    print(f"解扰比特（前10）：{rx_data['bit_stream'][0:10]}")
-    print(f"比特错误数：{np.sum(transmitter.data_bits_dict['bit_stream'] != rx_data['bit_stream'])}")
-    print(f"误码率：{np.sum(transmitter.data_bits_dict['bit_stream'] != rx_data['bit_stream'])/len(transmitter.data_bits_dict['bit_stream']):.6f}")
+    tx = THzTransmitter(params)
+    tx.run()
+    ch = THzChannel(params)
+    rx = ch.run(tx.tx_signal_dict)
+
+    receiver = THzReceiver(params, tx)
+    rx_data = receiver.run(rx)
+
+    tx_bits = tx.data_bits_dict["signal_stream"]
+    rx_bits = rx_data["signal_stream"]
+    cmp = min(len(tx_bits), len(rx_bits))
+    ber = np.sum(tx_bits[:cmp] != rx_bits[:cmp]) / cmp
+    print(f"  noise_var = {receiver.noise_var:.2e}")
+    print(f"  BER = {ber:.2e}  ({np.sum(tx_bits[:cmp] != rx_bits[:cmp])} / {cmp})")    
+
+
+# # ==================== 测试 ====================
+# if __name__ == "__main__":
+#     for mode in ["sc-fde", "ofdm"]:
+#         print(f"\n{'='*55}")
+#         print(f"     {mode.upper()} 模式")
+#         print(f"{'='*55}")
+
+#         params = PHYParams()
+#         params.update(link_mode=mode)
+#         tx = THzTransmitter(params)
+#         tx.run()
+#         ch = THzChannel(params)
+#         rx = ch.run(tx.tx_signal_dict)
+
+#         receiver = THzReceiver(params, tx)
+#         rx_data = receiver.run(rx)
+
+#         tx_bits = tx.data_bits_dict["signal_stream"]
+#         rx_bits = rx_data["signal_stream"]
+#         cmp = min(len(tx_bits), len(rx_bits))
+#         ber = np.sum(tx_bits[:cmp] != rx_bits[:cmp]) / cmp
+#         print(f"  noise_var = {receiver.noise_var:.2e}")
+#         print(f"  BER = {ber:.2e}  ({np.sum(tx_bits[:cmp] != rx_bits[:cmp])} / {cmp})")
+
+#     print("\nDone")

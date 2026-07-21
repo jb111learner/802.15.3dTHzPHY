@@ -1,9 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from params.PHYParams import PHYParams
-from transmitter.DataProcesser import BitStreamProcessor
-from transmitter.Scrambler import Scrambler 
-from transmitter.Encoder import Encoder
 plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
@@ -72,8 +69,10 @@ class THzModulator:
         # 输出参数 
         self.sample_rate = None  # 采样率
         self.duration = None  # 时长
-        self.symbol_length = None  # 符号长度
+        self.signal_length = None  # 符号长度
         self.padding_bit_num = 0   # 补零的比特数
+        self.frame_symbol_num = None  # 每帧符号数  
+        self.frame_num = None  # 帧数
 
 
     # -------------------- APSK (A/B) --------------------
@@ -124,35 +123,41 @@ class THzModulator:
         """
         校验输入数据字典合法性
         :param data_dict: 输入数据字典，包含以下键值：
-            "bit_stream": 比特流,
+            "signal_stream": 比特流,
             "sample_rate_Hz": 采样率,
             "duration_seconds": 时长,
-            "bit_length": 比特长度,
+            "signal_length": 比特长度,
             "padding_bit_num": 补零比特数,
+            "frame_bit_num": 单帧比特数,
+            "frame_num": 帧数,
         """
         # 校验输入字典完整性
         required_keys = [
-            "bit_stream", "sample_rate_Hz", "duration_seconds", "bit_length","padding_bit_num"
+            "signal_stream", "sample_rate_Hz", "duration_seconds", "signal_length","padding_bit_num","frame_bit_num","frame_num"    
         ]
         for key in required_keys:
             if key not in data_dict:
                 raise KeyError(f"输入数据字典缺少必要键值：{key}")
             
         # 校验分帧信息一致性
-        if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["bit_length"]:
+        if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["signal_length"]:
             raise ValueError("输入数据字典中的采样率与时长不匹配")  
-        if self.MCS != "0" and data_dict["bit_length"] % self.NCBPS != 0:
-            raise ValueError("输入比特流长度必须是NCBPS的整数倍")
+        if data_dict["frame_bit_num"] % self.NCBPS != 0:
+            raise ValueError("输入数据字典中的帧比特数必须是NCBPS的整数倍")
+        if data_dict["frame_bit_num"] * data_dict["frame_num"] != data_dict["signal_length"]:
+            raise ValueError("输入数据字典中的分帧信息不匹配")
         
 
         if self.MCS == "0":
             self.sample_rate = data_dict["sample_rate_Hz"]
-            self.symbol_length = data_dict["bit_length"]
+            self.signal_length = data_dict["signal_length"]
         else:
             self.sample_rate = data_dict["sample_rate_Hz"] / self.NCBPS
-            self.symbol_length = data_dict["bit_length"] / self.NCBPS
+            self.signal_length = data_dict["signal_length"] // self.NCBPS
         self.duration = data_dict["duration_seconds"]
         self.padding_bit_num = data_dict["padding_bit_num"]  
+        self.frame_symbol_num = data_dict["frame_bit_num"] // self.NCBPS
+        self.frame_num = data_dict["frame_num"] 
 
 
     def _dbpsk_modulate(self, bits):
@@ -280,7 +285,7 @@ class THzModulator:
     def modulate(self, data_dict):
         """主调制函数（修正版）"""
         self._verification_data(data_dict)
-        bits = data_dict["bit_stream"]
+        bits = data_dict["signal_stream"]
         if not np.all(np.isin(bits, [0, 1])):
             raise ValueError("输入必须是二进制比特数组（0/1）")
         
@@ -305,11 +310,13 @@ class THzModulator:
                 raise ValueError(f"不支持的NCBPS：{self.NCBPS}")
             
         result_dict = {
-            "symbol_stream": symbols_modulated,
+            "signal_stream": symbols_modulated,
             "sample_rate_Hz": self.sample_rate,
             "duration_seconds": self.duration,
-            "symbol_length": round(self.symbol_length),
+            "signal_length": self.signal_length,
             "padding_bit_num": self.padding_bit_num,
+            "frame_symbol_num": self.frame_symbol_num,
+            "frame_num": self.frame_num,
         }   
         return result_dict
         
@@ -341,17 +348,60 @@ class THzModulator:
         
         plt.show()
 
-# ====================== 使用示例 ======================
+# ====================== test ======================
 if __name__ == "__main__":
-    params = PHYParams()
-    p1 = BitStreamProcessor(params)
-    res1 = p1.run()
-    scrambler = Scrambler(params)
-    scrambled_data_dict = scrambler.scramble(res1)
-    coder = Encoder(params)
-    encoded_data_dict = coder.encode(scrambled_data_dict)
-    modulator = THzModulator(params)
-    symbols_dict = modulator.modulate(encoded_data_dict)
-    signal_power = np.mean(np.abs(symbols_dict["symbol_stream"]) ** 2)
-    print(f"调制后信号功率：{signal_power}")
-    modulator.plot_constellation(symbols_dict["symbol_stream"][:200], MCS=params.get("MCS"))
+    import os
+
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "DejaVu Serif", "STIX"],
+        "mathtext.fontset": "stix",
+        "axes.unicode_minus": False,
+        "figure.dpi": 150,
+        "savefig.dpi": 300,
+        "savefig.bbox": "tight",
+        "axes.linewidth": 0.8,
+        "xtick.direction": "in", "ytick.direction": "in",
+        "xtick.major.size": 4, "ytick.major.size": 4,
+        "xtick.labelsize": 10, "ytick.labelsize": 10,
+        "axes.labelsize": 11,
+        "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
+    })
+
+    out_dir = "simulation_results"
+    os.makedirs(out_dir, exist_ok=True)
+    mod_cfg = {2: ("QPSK", "fig_const_qpsk"), 4: ("16QAM", "fig_const_16qam"),
+               6: ("64QAM", "fig_const_64qam")}
+
+    for ncbps, (name, fname) in mod_cfg.items():
+        params = PHYParams(); params.update(NCBPS=ncbps)
+        mod = THzModulator(params)
+        n_syms = 2 ** ncbps
+        bits = np.array([[int(b) for b in format(i ^ (i >> 1), f"0{ncbps}b")]
+                          for i in range(n_syms)]).flatten()
+        syms = mod.modulate({
+            "signal_stream": bits, "sample_rate_Hz": 1.0,
+            "duration_seconds": len(bits), "signal_length": len(bits),
+            "padding_bit_num": 0, "frame_bit_num": len(bits), "frame_num": 1,
+        })["signal_stream"]
+        # de-rotate π/2 per-symbol
+        phase = np.exp(-1j * np.pi * np.arange(n_syms) / 2)
+        syms = syms * phase
+
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.plot(syms.real, syms.imag, "o", ms=10, mfc="#2C68B4", mec="none", alpha=0.85)
+        for i, (x, y) in enumerate(zip(syms.real, syms.imag)):
+            ax.annotate(str(i), (x, y), fontsize=7, ha="center", va="center",
+                        color="white", fontweight="bold")
+        ax.axhline(y=0, color="gray", lw=0.3)
+        ax.axvline(x=0, color="gray", lw=0.3)
+        ax.set_xlabel("I"); ax.set_ylabel("Q")
+        ax.set_title(f"{name} ({n_syms} points)", fontsize=11, pad=6)
+        ax.axis("equal")
+        fig.tight_layout()
+        fig.savefig(f"{out_dir}/{fname}.pdf", dpi=600)
+        fig.savefig(f"{out_dir}/{fname}.png", dpi=300)
+        plt.close(fig)
+        print(f"{fname} saved")
+
+    print(f"\\nAll figures saved to {out_dir}/")

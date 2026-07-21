@@ -1,8 +1,9 @@
 import numpy as np
-from scipy.signal import lfilter
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
 from channel.THzChannel import THzChannel
+# from receiver.CFOEstimator import CFOEstimator
+# from receiver.sync.FineSync import FineSync
 import matplotlib.pyplot as plt
 
 # 设置中文显示
@@ -10,18 +11,25 @@ plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 
 class RxMatchedFilter:
-    def __init__(self, tx_pulse_shaper):
-        self.upsample = tx_pulse_shaper.sps
-        self.chan_max_delay = tx_pulse_shaper.chan_max_delay
-        self.filter_type = tx_pulse_shaper.filter_type
-        self.filter_coeffs = tx_pulse_shaper.filter_coeffs
-        self.filter_length_span = tx_pulse_shaper.filter_length 
-        
-        # 匹配滤波器
-        if self.filter_type == "rrc":
-            self.h_rx = self.filter_coeffs  # RRC对称，共轭翻转后和原系数一致
-        else:
-            self.h_rx = np.conj(self.filter_coeffs[::-1])
+    def __init__(self, transmitter):
+        self.sps = transmitter.oversampling
+        # self.chan_max_delay = transmitter.chan_max_delay
+        self.filter_type = transmitter.pulse_shaper.filter_type
+        self.filter_length = transmitter.pulse_shaper.filter_length
+        self.link_mode = transmitter.params.get("link_mode").lower()
+
+        # 获取（或生成）TX滤波器系数，统一从TX推导RX
+        tx_coeffs = transmitter.pulse_shaper.filter_coeffs
+        if tx_coeffs is None:
+            tx_coeffs = transmitter.pulse_shaper._design_tx_filter()
+
+        if self.link_mode == "sc-fde":
+            # RRC/RC匹配滤波器：时间反转共轭
+            self.h_rx = np.conj(tx_coeffs[::-1])
+        elif self.link_mode == "ofdm":
+            # OFDM低通滤波器：与TX相同形状，DC增益=1（TX的DC增益=sps）
+            # TX滤波器 = firwin / sum(h) * sps，除以sps即得单位DC增益的RX滤波器
+            self.h_rx = tx_coeffs / self.sps
 
         # 线性相位滤波器的延迟
         self.filter_delay = (len(self.h_rx) - 1) // 2  
@@ -40,9 +48,6 @@ class RxMatchedFilter:
             "sample_rate_Hz": 采样率,
             "duration_seconds": 时长,
             "signal_length": 信号长度,
-            "signal_power": 信号功率,
-            "noise_power": 噪声功率,
-            "SNRdB": self.snr_db,
             "padding_bit_num": 补零比特数,
         """
         # 校验输入字典完整性
@@ -57,119 +62,33 @@ class RxMatchedFilter:
         if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["signal_length"]:
             raise ValueError("输入数据字典中的采样率与时长不匹配")  
         
-        self.sample_rate = data_dict["sample_rate_Hz"] / self.upsample
-        self.symbol_length = data_dict["signal_length"] / self.upsample
-        self.duration = data_dict["duration_seconds"]
-        self.padding_bit_num = data_dict["padding_bit_num"]        
+        self.sample_rate = data_dict["sample_rate_Hz"]
+        self.signal_length = data_dict["signal_length"] + 2 * self.filter_delay
+        self.duration = self.signal_length / self.sample_rate
+        self.padding_bit_num = data_dict["padding_bit_num"]
 
-    # def matched_filter(self, rx):
-    #     """滤波"""
-    #     # full卷积 
-    #     y = np.convolve(rx, self.h_rx, 'full')
-    #     # 去除滤波器引入的线性相位延迟
-    #     y = y[self.filter_delay:]
-    #     return y
-    
-    # def downsample(self, y):
-    #     """下采样"""
-    #     start = 0
-    #     return y[start::self.upsample]
-
-    # def recover_symbols(self, rx_signal_dict):
-    #     """恢复符号（匹配滤波+下采样+截断边缘冗余）"""
-    #     # 校验输入数据合法性
-    #     self._verification_data(rx_signal_dict)
-    #     rx_signal = rx_signal_dict["signal_stream"]
-    #     # 匹配滤波
-    #     y = self.matched_filter(rx_signal)
-    #     # 下采样
-    #     s = self.downsample(y)
-    #     # 截断边缘冗余
-    #     span = int(self.filter_length_span / self.upsample)
-    #     if len(s) > 2*span:
-    #         s = s[:-span] 
-
-    #     if len(s) != self.symbol_length:
-    #         raise ValueError("匹配滤波后信号长度不匹配:预期长度={}, 实际长度={}".format(self.symbol_length, len(s)))
-        
-    #     result_dict = {
-    #         "symbol_stream": s,
-    #         "sample_rate_Hz": self.sample_rate,
-    #         "duration_seconds": self.duration,
-    #         "symbol_length": self.symbol_length,
-    #         "padding_bit_num": self.padding_bit_num,
-    #     }
-    #     return result_dict
-    def matched_filter(self, rx):
-        """滤波：精确计算卷积和延迟补偿"""
-        # full卷积 (长度 = len(rx) + len(h_rx) - 1)
-        y = np.convolve(rx, self.h_rx, 'full')
-        
-        # 精确移除滤波器引入的线性相位延迟
-        # 处理整数/半整数延迟：先取整，后续下采样时再微调
-        delay_int = int(np.round(self.filter_delay))
-        y = y[delay_int:]
-        
-        # 截断到原始信号长度（去除卷积扩展的部分）
-        y = y[:len(rx)]
-        
-        return y
-    
-    def downsample(self, y):
-        """下采样：精确对齐符号时钟"""
-        # 计算下采样起始偏移（补偿半整数延迟）
-        offset = int((self.filter_delay - np.floor(self.filter_delay)) * self.upsample)
-        start = offset % self.upsample
-        
-        # 下采样并确保长度正确
-        downsampled = y[start::self.upsample]
-        
-        return downsampled
-
-    def recover_symbols(self, rx_signal_dict):
-        """恢复符号（匹配滤波+下采样+精确长度截断）"""
-        # 校验输入数据合法性
-        self._verification_data(rx_signal_dict)
-        rx_signal = rx_signal_dict["signal_stream"]
-        
-        # 1. 匹配滤波（含延迟补偿和长度截断）
-        self.y_filtered = self.matched_filter(rx_signal)
-        
-        # 2. 下采样
-        s = self.downsample(self.y_filtered)
-        
-        # 3. 精确截断到预期符号长度（核心修复）
-        # 移除边缘冗余并确保长度严格匹配
-        if len(s) > self.symbol_length:
-            # 计算需要截断的长度
-            trim_length = len(s) - self.symbol_length
-            # 前后均分截断（避免单边截断导致的信号失真）
-            trim_front = trim_length // 2
-            trim_back = trim_length - trim_front
-            s = s[trim_front:-trim_back] if trim_back > 0 else s[trim_front:]
-        elif len(s) < self.symbol_length:
-            # 补零（应对极少数长度不足情况）
-            pad_length = self.symbol_length - len(s)
-            s = np.pad(s, (0, pad_length), mode='constant')
-        
-        # 最终长度校验
-        if not np.isclose(len(s), self.symbol_length):
+    def matched_filter(self, signal_dict):
+        """匹配滤波"""
+        self._verification_data(signal_dict)
+        y = np.convolve(signal_dict["signal_stream"], self.h_rx, 'full')
+        # 最终长度校验··
+        if not np.isclose(len(y), self.signal_length):
             raise ValueError(
-                f"匹配滤波后信号长度不匹配:预期长度={self.symbol_length}, 实际长度={len(s)}"
+                f"匹配滤波后信号长度不匹配:预期长度={self.signal_length}, 实际长度={len(y)}"
             )
         
         result_dict = {
-            "symbol_stream": s,
+            "signal_stream": y,
             "sample_rate_Hz": self.sample_rate,
             "duration_seconds": self.duration,
-            "symbol_length": self.symbol_length,
+            "signal_length": self.signal_length,
             "padding_bit_num": self.padding_bit_num,
         }
         return result_dict
 
 # 测试
 if __name__ == "__main__":
-    # 初始化参数和发射机
+    # # 初始化参数和发射机
     params = PHYParams()
     transmitter = THzTransmitter(params)    
     # 执行完整发射流程  
@@ -177,18 +96,35 @@ if __name__ == "__main__":
     # 初始化信道并生成接收信号
     channel = THzChannel(params)
     rx_signal_dict = channel.run(tx_signal_dict)
+
+
     # 初始化接收端匹配滤波器
-    rx_matched_filter = RxMatchedFilter(transmitter.pulse_shaper)
+    rx_matched_filter = RxMatchedFilter(transmitter)
     # === 进行匹配滤波并获得中间信号 ===
-    rx_matched_dict = rx_matched_filter.recover_symbols(rx_signal_dict)
-    print(f"发射信号长度：{len(tx_signal_dict['signal_stream'])}, 接收信号长度：{len(rx_matched_dict['symbol_stream'])}")
+    rx_matched_signal_dict = rx_matched_filter.matched_filter(rx_signal_dict)
+    print(f"匹配滤波后信号长度：{len(rx_matched_signal_dict['signal_stream'])}, 预期长度：{rx_matched_filter.signal_length}")
+    print(f"采样率：{rx_matched_signal_dict['sample_rate_Hz']} Hz，时长：{rx_matched_signal_dict['duration_seconds']} 秒")
+    preamble = transmitter.preamble
+    filter_delay = rx_matched_filter.filter_delay
+    fig, axes = plt.subplots(1, 2, figsize=(15, 4))
+    axes[0].plot(transmitter.tx_signal_dict['signal_stream'][:500])
+    axes[0].set_title("发射信号（前500点）")
+    axes[0].set_xlabel("采样点索引")
+    axes[0].set_ylabel("幅度")
+    axes[0].grid(True)
+    axes[1].plot(rx_matched_signal_dict['signal_stream'][filter_delay:filter_delay+500], color='orange')
+    axes[1].set_title("接收滤波后信号（前500点）")
+    axes[1].set_xlabel("采样点索引")
+    axes[1].set_ylabel("幅度")
+    axes[1].grid(True)
+    plt.tight_layout()
+    plt.show()
 
     # 提取信号用于可视化
     tx_signal = tx_signal_dict["signal_stream"]
     rx_signal = rx_signal_dict["signal_stream"]
-    y_filtered = rx_matched_filter.y_filtered
-    tx_symbols = transmitter.data_with_gi_dict["symbol_stream"]
-    y_matched = rx_matched_dict["symbol_stream"]
+    y_filtered = rx_matched_signal_dict["signal_stream"]
+    tx_symbols = transmitter.data_with_preamble_dict["signal_stream"]
     # ================================
     #        可视化绘图部分
     # ================================
@@ -232,13 +168,26 @@ if __name__ == "__main__":
     plt.xlabel("样本点")
     plt.ylabel("幅度")    
 
-    # ---- 6. 时域（恢复符号）----
-    plt.subplot(3, 3, 6)
-    plt.plot(np.real(y_matched[:100]))
-    plt.title("恢复符号时域波形（实部）")
-    plt.xlabel("样本点")
-    plt.ylabel("幅度")
+    # # ---- 6. 时域（恢复符号）----
+    # plt.subplot(3, 3, 6)
+    # plt.plot(np.real(y_matched[:100]))
+    # plt.title("恢复符号时域波形（实部）")
+    # plt.xlabel("样本点")
+    # plt.ylabel("幅度")
 
+    # # ---- 7. 相位（恢复符号）----
+    # plt.subplot(3, 3, 7)
+    # plt.plot(np.angle(y_matched[:200]))
+    # plt.title("恢复符号相位")
+    # plt.xlabel("样本点")
+    # plt.ylabel("相位 (弧度)")
+
+    # ---- 8. 相位（原始符号）----
+    plt.subplot(3, 3, 8)
+    plt.plot(np.angle(tx_symbols[:200]))
+    plt.title("原始符号相位")
+    plt.xlabel("样本点")
+    plt.ylabel("相位 (弧度)")
 
     plt.tight_layout()
     plt.show()

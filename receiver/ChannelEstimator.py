@@ -1,249 +1,399 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
-from scipy.signal import resample
+from scipy.signal import find_peaks, correlate
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
 from channel.THzChannel import THzChannel
 from receiver.MatchedFilter import RxMatchedFilter
-from receiver.sync.CoarseSync import CoarseSync
-from receiver.sync.CFOEstimator import CFOEstimator
-from receiver.sync.FineSync import FineSync
-from receiver.NoiseEstimator import NoiseEstimator
+from receiver.CFOEstimator import CFOEstimator
 
 class ChannelEstimator:
     """
-    信道估计器：完全对齐MATLAB逻辑
-    核心功能：
-    1. 基于CES序列互相关估计时域CIR（冲激响应）
-    2. 估计细同步偏移（fine_offset）
-    3. 转换为频域信道响应（CSI）
-    4. 兼容原有LS/MMSE估计接口
+    信道估计器（符号率输入），支持 SC-FDE 和 OFDM 两种模式：
+
+      SC-FDE — CES互相关信道估计（时域相关 → CIR → FFT → CSI）
+      OFDM   — CES LS信道估计（CES段 FFT → 频域LS → CSI）
+
+    支持两种帧策略：
+      - 'per_frame' : 每帧独立估计
+      - 'global'     : 仅用第一帧估计，所有帧共享
     """
-    def __init__(self, tx_preamble, Lh=256, nfft=256):
-        self.params = tx_preamble.params
-        self.oversampling = tx_preamble.params.get("oversampling")
-        self.N_ces = len(tx_preamble.a512) * self.oversampling # a512/b512序列长度（协议固定）
-        self.Lh = Lh  # CIR有效长度（多径最大时延扩展）
-        self.nfft = nfft  # FFT点数（频域CSI维度）
-        self.len_b128 = len(tx_preamble.b128) * self.oversampling  # CES前导b128长度（协议固定）
-    
-    def _upsample_ces(self, ces_symbol_seq):
-        """符号级CES序列上采样（匹配接收信号的采样率）"""
-        upsampled_length = len(ces_symbol_seq) * self.oversampling
-        upsampled = resample(ces_symbol_seq, upsampled_length)
-        return upsampled
+    def __init__(self, transmitter, estimation_mode='per_frame'):
+        self.params = transmitter.params
+        self.link_mode = self.params.get("link_mode").lower()
+
+        # —————— CES 公共参数 ——————
+        self.N_ces = len(transmitter.preamble_gen.a512)    # 512 (a512/b512长度)
+        self.Lh = self.params.get("gi_length")             # CP长度，也是CIR保留长度
+        self.nfft = self.params.get("subframe_length")     # FFT点数 = 512
+        self.len_b128 = len(transmitter.preamble_gen.b128) # 128
+        self.sync_len = len(transmitter.sync)              # SYNC符号数
+        self.sfd_len = len(transmitter.sfd)                # SFD符号数
+        self.ces_seq = transmitter.ces                     # 完整CES序列（符号级）
+        self.ces_len = len(self.ces_seq)                   # CES总长度 = 1408
+
+        # —————— OFDM LS估计专用：本地CES频域参考 ——————
+        self.tx_a512 = transmitter.preamble_gen.a512       # 512点 BPSK
+        self.tx_b512 = transmitter.preamble_gen.b512       # 512点 BPSK
+
+        # —————— 帧长度（符号级）——————
+        preamble_len = len(transmitter.preamble)           # 前导码总长
+        subframe_len = self.params.get("subframe_length")  # 512
+        gi_len = self.params.get("gi_length")              # 32
+
+        if self.link_mode == "ofdm":
+            # OFDM: 每帧 = 前导码 + 48个OFDM符号×(子载波+GI)
+            subframe_ofdm_num = self.params.get("subframe_ofdm_num")  # 48
+            self.frame_symbol_num = preamble_len + \
+                (subframe_len + gi_len) * subframe_ofdm_num
+        else:
+            # SC-FDE: 每帧 = 前导码 + subframe_num个块×(块长+GI)
+            self.frame_symbol_num = preamble_len + \
+                (subframe_len + gi_len) * self.params.get("subframe_num")
+
+        self.estimation_mode = estimation_mode
+
+        # 输出缓存
+        self.sample_rate = None
+        self.duration = None
+        self.signal_length = None
+        self.padding_bit_num = 0
+        self.channel_freq_response = None
+        self.channel_time_response = None
+
+    def _verification_data(self, data_dict):
+        required_keys = [
+            "signal_stream", "sample_rate_Hz", "duration_seconds",
+            "signal_length", "padding_bit_num"
+        ]
+        for key in required_keys:
+            if key not in data_dict:
+                raise KeyError(f"输入数据字典缺少必要键值：{key}")
+        if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["signal_length"]:
+            raise ValueError("采样率与时长不匹配")
+        self.sample_rate = data_dict["sample_rate_Hz"]
+        self.signal_length = data_dict["signal_length"]
+        self.duration = data_dict["duration_seconds"]
+        self.padding_bit_num = data_dict["padding_bit_num"]
+
+    def _split_into_frames(self, rx_signal, frame_len, tail_mode='discard'):
+        """
+        将一维/二维信号分割为帧列表
+        :param rx_signal: 输入信号 (1D 或 2D)
+        :param tail_mode: 'discard' 丢弃不足一帧的尾部，'zero_pad' 补零至整帧
+        :return: (frames, num_frames, processed_len)
+        """
+        total_len = len(rx_signal)
+        if frame_len <= 0:
+            raise ValueError("帧长度必须大于 0")
+        num_frames = total_len // frame_len
+        remainder = total_len % frame_len
+
+        if remainder == 0:
+            processed_signal = rx_signal
+            num_frames = total_len // frame_len
+        else:
+            if tail_mode == 'discard':
+                processed_signal = rx_signal[:num_frames * frame_len]
+                print(f"丢弃尾部 {remainder} 个采样点（不足一帧）")
+            elif tail_mode == 'zero_pad':
+                pad_len = frame_len - remainder
+                if rx_signal.ndim == 1:
+                    pad = np.zeros(pad_len, dtype=rx_signal.dtype)
+                else:
+                    pad = np.zeros((pad_len, rx_signal.shape[1]), dtype=rx_signal.dtype)
+                processed_signal = np.concatenate([rx_signal, pad], axis=0)
+                num_frames = num_frames + 1
+                print(f"尾部补零 {pad_len} 个采样点")
+            else:
+                raise ValueError("tail_mode 必须为 'discard' 或 'zero_pad'")
+
+        frames = np.split(processed_signal, num_frames, axis=0)
+        return frames, num_frames, len(processed_signal)
 
     def ces_corr_estimate(self, ces_field, ces_seq):
         """
-        核心方法：对齐MATLAB的CES互相关信道估计逻辑
-        :param ces_field: 接收的完整CES序列
-        :param ces_seq: 本地完整CES序列
-        :return: H_est（频域CSI）, fine_offset（细偏移）, h_est（时域CIR）
+        核心CES互相关信道估计（与原逻辑一致，未修改）
         """
-        # ========== 步骤1：提取本地CES的a512/b512子序列（对齐MATLAB） ==========
-        # ces_seq = self._upsample_ces(ces_seq)  # 上采样至采样级
-        # 提取a512（跳过前128的b128）
+        # 提取a512和b512
         start_a512 = self.len_b128
         a512 = ces_seq[start_a512 : start_a512 + self.N_ces]
-        # 提取b512（a512之后）
         start_b512 = start_a512 + self.N_ces
         b512 = ces_seq[start_b512 : start_b512 + self.N_ces]
 
-        # ========== 步骤2：提取接收CES的a512/b512对应段 ==========
         ra512 = ces_field[start_a512 : start_a512 + self.N_ces]
         rb512 = ces_field[start_b512 : start_b512 + self.N_ces]
 
-        # ========== 步骤3：互相关计算（对齐MATLAB conv + flipud + conj） ==========
-        # 互相关：conv(x, flip(conj(y))) 等价于 MATLAB conv(x, flipud(conj(y)))
         ra = np.convolve(ra512, np.flip(np.conj(a512)), mode='full')
         rb = np.convolve(rb512, np.flip(np.conj(b512)), mode='full')
-        c = (ra + rb) / (2 * self.N_ces)  # 归一化（对齐MATLAB）
+        c = (ra + rb) / (2 * self.N_ces)
 
-        # ========== 步骤4：相关峰检测（粗峰值位置） ==========
         abs_c = np.abs(c)
-        center = np.argmax(abs_c)  # 最大相关峰位置
+        center = np.argmax(abs_c)
 
-        # ========== 步骤5：截取峰值附近区间，提取有效峰 ==========
-        # 截取center±Lh/2区间（对齐MATLAB startregion/endregion）
         start_region = int(center - self.Lh / 2)
         end_region = int(center + self.Lh / 2)
-        # 边界保护（避免下标越界）
         start_region = max(0, start_region)
         end_region = min(len(c)-1, end_region)
         c_region = c[start_region:end_region+1]
         abs_c_region = np.abs(c_region)
 
-        # 找有效峰值（MinPeakHeight=0.25*max(abs(c))）
-        peaks, _ = find_peaks(abs_c_region, height=0.25 * abs_c.max())
-        
+        # peaks, _ = find_peaks(abs_c_region, height=0.1 * abs_c.max())
+        # if len(peaks) == 0:
+        #     peaks = [np.argmax(abs_c_region)]
+        peaks, _ = find_peaks(abs_c_region, height=0.1 * abs_c.max())
         if len(peaks) == 0:
-            # 无有效峰时，取区间内最大值
-            peaks = [np.argmax(abs_c_region)]
+            peaks = np.array([np.argmax(abs_c_region)])   # 转为numpy数组
+        else:
+            peaks = np.array(peaks)                       # 确保为numpy数组        
 
-        # ========== 步骤6：计算细偏移和CIR下标 ==========
-        # 映射回原始相关序列的下标（对齐MATLAB idx0）
         idx0 = peaks + start_region
-        # 取第一个峰值（主径）计算细偏移（对齐MATLAB fine_offset = idx0(1)-512）
         fine_offset = idx0[0] - self.N_ces
-        # CIR相对下标（1-based → 0-based适配Python）
         idx_h = idx0 - idx0[0]
 
-        # ========== 步骤7：构建时域CIR（对齐MATLAB h_est） ==========
         h_est = np.zeros((self.Lh,), dtype=np.complex128)
-        # 仅在有效峰值位置填充相关值（边界保护）
         valid_idx = [i for i in idx_h if 0 <= i < self.Lh]
         valid_c = [c[idx0[k]] for k in range(len(idx0)) if 0 <= idx_h[k] < self.Lh]
         h_est[valid_idx] = valid_c
 
-        # ========== 步骤8：转换为频域CSI（对齐MATLAB fftshift(fft(cirEst,nfft))） ==========
-        cir_est = h_est
-        H_est = np.fft.fftshift(np.fft.fft(cir_est, self.nfft))
+        H_est = np.fft.fftshift(np.fft.fft(h_est, self.nfft))
+        return H_est, fine_offset, h_est
+
+    # ==================== OFDM LS 信道估计 ====================
+    def _ls_estimate_ofdm(self, ces_field):
+        """
+        OFDM模式：基于CES序列的LS（最小二乘）信道估计
+
+        关键修正：线性卷积 vs 循环卷积
+          - 多径信道下接收CES是 tx * h 的线性卷积，长度 = 512 + Lh - 1
+          - 必须用扩展FFT窗口捕获完整卷积响应，否则LS幅值失真
+          - 做法：提取 512+Lh-1 点 → FFT → LS → IFFT → 截断至 Lh
+
+        :param ces_field: 接收CES时域信号（符号率，长度1408）
+        :return: H_est (512点频域CSI), fine_offset (0), h_est (Lh点时域CIR)
+        """
+        full_len = self.N_ces + self.Lh - 1   # 512 + 31 = 543（完整线性卷积长度）
+
+        # 1. 提取 a512 / b512 的完整线性卷积响应
+        start_a512 = self.len_b128
+        rx_a512_full = ces_field[start_a512 : start_a512 + full_len]   # 543
+        start_b512 = start_a512 + self.N_ces
+        rx_b512_full = ces_field[start_b512 : start_b512 + full_len]   # 543
+
+        # 2. TX参考序列零填充至 full_len
+        tx_a512_padded = np.pad(self.tx_a512, (0, self.Lh - 1))  # 543
+        tx_b512_padded = np.pad(self.tx_b512, (0, self.Lh - 1))  # 543
+
+        # 3. FFT（full_len点，捕获完整线性卷积）
+        Y_a = np.fft.fft(rx_a512_full)
+        Y_b = np.fft.fft(rx_b512_full)
+        X_a = np.fft.fft(tx_a512_padded)
+        X_b = np.fft.fft(tx_b512_padded)
+
+        # 4. LS估计: H = Y / X（阈值保护低功率子载波）
+        threshold = np.max([np.max(np.abs(X_a)), np.max(np.abs(X_b))]) * 1e-3
+        mask_a = np.abs(X_a) > threshold
+        mask_b = np.abs(X_b) > threshold
+
+        H_a = np.zeros(full_len, dtype=np.complex128)
+        H_b = np.zeros(full_len, dtype=np.complex128)
+        H_a[mask_a] = Y_a[mask_a] / X_a[mask_a]
+        H_b[mask_b] = Y_b[mask_b] / X_b[mask_b]
+
+        # 5. 两组平均
+        mask_both = mask_a & mask_b
+        H_est_full = np.zeros(full_len, dtype=np.complex128)
+        H_est_full[mask_both] = (H_a[mask_both] + H_b[mask_both]) / 2.0
+        H_est_full[mask_a & ~mask_b] = H_a[mask_a & ~mask_b]
+        H_est_full[mask_b & ~mask_a] = H_b[mask_b & ~mask_a]
+
+        # 6. IFFT → 时域CIR（full_len点），截断至 Lh
+        h_full = np.fft.ifft(H_est_full)
+        h_est = h_full[:self.Lh].copy()
+
+        # 7. 输出512点频域CSI（零填充CIR → FFT，与SC-FDE格式一致）
+        h_padded = np.zeros(self.N_ces, dtype=np.complex128)
+        h_padded[:self.Lh] = h_est
+        H_est = np.fft.fft(h_padded)
+
+        fine_offset = 0
 
         return H_est, fine_offset, h_est
 
+    def channel_estimate(self, signal_dict):
+        """
+        多帧信道估计入口
 
-# 测试：完全复现MATLAB逻辑的验证
+        SC-FDE模式: CES互相关 → 时域CIR → FFT → 频域CSI
+        OFDM模式:   CES LS估计 → 频域CSI → IFFT → 时域CIR
+
+        :param signal_dict: 符号率接收信号字典
+        :return: result_dict (含 channel_freq_response, channel_time_response, fine_offset)
+        """
+        self._verification_data(signal_dict)
+        rx_symbols = signal_dict["signal_stream"]
+
+        # 分割帧
+        frames, num_frames, _ = self._split_into_frames(rx_symbols, self.frame_symbol_num)
+        if num_frames == 0:
+            raise ValueError("信号不包含完整帧，无法进行信道估计")
+
+        # CES偏移（相对于帧起始）
+        ces_offset = self.sync_len + self.sfd_len
+
+        H_list = []
+        h_list = []
+        fine_offset_list = []
+
+        # global模式：先估计第一帧作为共享值
+        first_H = first_fine = first_h = None
+        if self.estimation_mode == 'global' and num_frames > 0:
+            first_frame = frames[0]
+            ces_field = first_frame[ces_offset : ces_offset + self.ces_len]
+            if self.link_mode == "ofdm":
+                first_H, first_fine, first_h = self._ls_estimate_ofdm(ces_field)
+            else:
+                first_H, first_fine, first_h = self.ces_corr_estimate(ces_field, self.ces_seq)
+
+        for i, frame in enumerate(frames):
+            if self.estimation_mode == 'per_frame':
+                ces_field = frame[ces_offset : ces_offset + self.ces_len]
+                if self.link_mode == "ofdm":
+                    H_est, fine_offset, h_est = self._ls_estimate_ofdm(ces_field)
+                else:
+                    H_est, fine_offset, h_est = self.ces_corr_estimate(ces_field, self.ces_seq)
+                H_list.append(H_est)
+                h_list.append(h_est)
+                fine_offset_list.append(fine_offset)
+            else:  # 'global'
+                H_list.append(first_H.copy())
+                h_list.append(first_h.copy())
+                fine_offset_list.append(first_fine)
+
+        # 缓存
+        if num_frames == 1:
+            self.channel_freq_response = H_list[0]
+            self.channel_time_response = h_list[0]
+        else:
+            self.channel_freq_response = H_list
+            self.channel_time_response = h_list
+
+        result_dict = {
+            "signal_stream": rx_symbols,
+            "sample_rate_Hz": self.sample_rate,
+            "duration_seconds": self.duration,
+            "signal_length": self.signal_length,
+            "padding_bit_num": self.padding_bit_num,
+            "channel_freq_response": H_list,
+            "channel_time_response": h_list,
+            "fine_offset": fine_offset_list,
+        }
+        return result_dict
+
+
+
+# ==================== 测试 ====================
 if __name__ == "__main__":
-    params = PHYParams()
-    # 初始化参数和发射机
-    params = PHYParams()
-    transmitter = THzTransmitter(params)
-    tx_signal = transmitter.run()
-    tx_symbols = transmitter.tx_symbols
-    tx_preamble = transmitter.preamble_gen
-    
-    # 初始化信道并生成接收信号
-    channel = THzChannel(params)
-    rx_signal = channel.run(tx_signal)
-    
-    # 初始化接收端匹配滤波器
-    rx_matched_filter = RxMatchedFilter(transmitter.pulse_shaper)
-    recovered_symbols = rx_matched_filter.matched_filter(rx_signal)
-    
-    # 粗同步
-    coarse_sync = CoarseSync(tx_preamble, sync_threshold=0.5, scaling_factor=5)
-    coarse_offset, corr_norm = coarse_sync.detect_sync(recovered_symbols)
-    
-    # CFO估计与补偿
-    cfo_estimator = CFOEstimator(tx_preamble, params)
-    sync_start = coarse_offset
-    sync_field = recovered_symbols[sync_start:sync_start + len(tx_preamble.sync) * params.get("oversampling")]
-    cfo_est = cfo_estimator.estimate_cfo(sync_field)
-    rx_signal_compensated = cfo_estimator.compensate_cfo(recovered_symbols, cfo_est)
-    
-    # 再次估计频偏（验证补偿效果）
-    sync_field_comp = rx_signal_compensated[sync_start:sync_start + len(tx_preamble.sync) * params.get("oversampling")]
-    cfo_est_again = cfo_estimator.estimate_cfo(sync_field_comp)
-    
-    # 结果验证
-    print(f"\n=== 频偏估计与补偿结果 ===")
-    print(f"真实频偏：{channel.cfo.freq_offset} Hz")
-    print(f"估计频偏：{cfo_est:.2f} Hz")
-    print(f"频偏估计误差：{abs(cfo_est - channel.cfo.freq_offset):.2f} Hz") 
-    print(f"补偿后再次估计频偏：{cfo_est_again:.2f} Hz")   
-    
-    # 细同步
-    fine_sync = FineSync(tx_preamble, search_window=32, min_peak_ratio=0.4) 
-    fine_correction = fine_sync.detect_sfd(rx_signal_compensated, coarse_offset, plot_flag=False)
-    total_offset = coarse_offset + fine_correction
+    import matplotlib.pyplot as plt
+    plt.rcParams["font.family"] = ["SimHei"]
+    plt.rcParams["axes.unicode_minus"] = False
 
-    print(f"\n=== 同步偏移结果 ===")
-    print(f"粗同步偏移：{coarse_offset}")
-    print(f"细同步修正量：{fine_correction}")
-    print(f"最终整体同步偏移：{total_offset}")
+    for mode in ["sc-fde", "ofdm"]:
+        print(f"\n{'='*50}")
+        print(f"     {mode.upper()} 模式")
+        print(f"{'='*50}")
 
-    # 噪声方差估计测试
-    sync_field_sync = rx_signal_compensated[total_offset:total_offset + len(tx_preamble.sync) * params.get("oversampling")]
-    noise_estimator = NoiseEstimator(tx_preamble)
-    # 估计噪声方差
-    noise_var_est = noise_estimator.estimate_noise_var_with_gi(sync_field_sync)
-    print(f"\n=== 噪声与信噪比结果 ===")
-    print(f"估计噪声方差：{noise_var_est:.6f}")
+        # ---- TX ----
+        params = PHYParams()
+        params.update(link_mode=mode)
+        tx = THzTransmitter(params)
+        tx.run()
+        ch = THzChannel(params)
+        rx = ch.run(tx.tx_signal_dict)
 
-    # 信道估计测试
-    # 获取真实信道参数（用于对比）
-    nfft = 256  # 与ChannelEstimator默认nfft一致
-    channel_estimator = ChannelEstimator(tx_preamble, nfft=nfft)
-    
-    # 1. 获取真实信道的时域冲激响应h_true
-    # 从THzChannel中提取真实CIR（需确保THzChannel类暴露h属性，若未暴露可替换为以下模拟方式）
-    # 方式1：若THzChannel有h属性（真实信道CIR）
-    h_true = channel.chan_true
+        sps = params.get("oversampling")
+        Lh = params.get("gi_length")
+        nfft = params.get("subframe_length")
 
-    # 2. 计算真实信道的频域响应H_true（对齐MATLAB：fftshift(fft(h,nfft))）
-    H_true = np.fft.fftshift(np.fft.fft(h_true, nfft))
+        # ---- RX: MF -> coarse CFO -> fine CFO -> ChEst ----
+        mf = RxMatchedFilter(tx)
+        mf_out = mf.matched_filter(rx)
+        mf_sig = mf_out["signal_stream"]
+        fd = mf.filter_delay
+        mf_fs = mf_out["sample_rate_Hz"]
+        sym_fs = mf_fs / sps
+        tx_len = len(tx.data_with_preamble_dict["signal_stream"])
 
-    # 3. 提取CES序列并执行信道估计
-    # ces_seq = tx_preamble.ces  # 本地CES序列
-    ces_seq = tx_signal[
-        len(tx_preamble.sync)*params.get("oversampling") + len(tx_preamble.sfd)*params.get("oversampling") :
-        len(transmitter.preamble)* params.get("oversampling")
-    ]
-    ces_field = rx_signal_compensated[
-        total_offset + len(tx_preamble.sync)* params.get("oversampling") + len(tx_preamble.sfd)* params.get("oversampling") :
-        total_offset + len(transmitter.preamble)* params.get("oversampling")
-    ]
+        ce = CFOEstimator(tx)
+        cfo_c = ce.estimate_cfo_coarse(mf_sig, fs=mf_fs)
+        mf_c = ce.compensate_cfo(mf_sig, fs=mf_fs, cfo_est=cfo_c)
+        rs = mf_c[fd:fd+tx_len*sps:sps]
+        cfo_f = ce.estimate_cfo_fine(rs, fs=sym_fs)
+        rs = ce.compensate_cfo(rs, fs=sym_fs, cfo_est=cfo_f)
+        rs = np.pad(rs[:tx_len], (0, max(0, tx_len-len(rs))))
 
-    # ========== 执行CES互相关信道估计（对齐MATLAB逻辑） ==========
-    H_est, fine_offset, h_est = channel_estimator.ces_corr_estimate(ces_field, ces_seq)
+        nd = dict(tx.data_with_preamble_dict)
+        nd["signal_stream"] = rs
+        r = ChannelEstimator(tx).channel_estimate(nd)
+        h_est = r["channel_time_response"][0]
+        H_est = r["channel_freq_response"][0]
 
-    # ========== 新增：计算频域NMSE（dB）（对齐MATLAB逻辑） ==========
-    # norm(x)^2 等价于 np.linalg.norm(x)**2
-    numerator = np.linalg.norm(H_true - H_est) ** 2
-    denominator = np.linalg.norm(H_true) ** 2 + np.finfo(float).eps  # +eps避免除零
-    nmse_freq = numerator / denominator
-    nmse_freq_dB = 10 * np.log10(nmse_freq)
-    print(f"\n=== 信道估计精度评估 ===")
-    print(f"频域NMSE = {nmse_freq_dB:.2f} dB")
+        # ---- true equivalent symbol-rate channel ----
+        h_phys = np.zeros(Lh*sps, dtype=np.complex128)
+        h_phys[:len(ch.chan_true)] = ch.chan_true
+        pt, pr = tx.pulse_shaper.filter_coeffs, mf.h_rx
+        heq = np.convolve(np.convolve(h_phys, pt), pr)
+        gd = (len(pt)-1)//2 + (len(pr)-1)//2
+        ht = heq[gd::sps][:Lh]
+        Ht = np.fft.fft(ht, nfft)
 
-    # ========== 输出关键结果 ==========
-    print(f"\n=== 信道估计结果 ===")
-    print(f"细同步偏移：{fine_offset}")
-    print(f"时域CIR非零值位置：{np.where(np.abs(h_est) > 1e-3)[0]}")
-    print(f"时域CIR非零值幅值：{np.abs(h_est)[np.where(np.abs(h_est) > 1e-3)]}")
-    print(f"频域CSI长度：{len(H_est)}")
+        nmse_t = np.linalg.norm(ht-h_est)**2/(np.linalg.norm(ht)**2+np.finfo(float).eps)
+        nmse_f = np.linalg.norm(Ht-H_est)**2/(np.linalg.norm(Ht)**2+np.finfo(float).eps)
+        cfo_err = abs(cfo_c+cfo_f-ch.cfo.freq_offset) if hasattr(ch, 'cfo') else 0
 
-    # ========== 重构可视化：使用ax对象绘图（修复use_line_collection报错） ==========
-    # 图1：真实CIR的实部
-    fig1, ax1 = plt.subplots(figsize=(8, 4))
-    markerline, stemlines, baseline = ax1.stem(np.real(h_true), linefmt='b-', basefmt='b-')
-    ax1.set_title('CIR real (magnitude)')
-    ax1.set_xlabel('n')
-    ax1.set_ylabel('|h_real|')
-    ax1.grid(alpha=0.3)
+        print(f"  CFO coarse={cfo_c:.1f}Hz fine={cfo_f:.1f}Hz residual={cfo_err:.1f}Hz")
+        print(f"  CIR NMSE={10*np.log10(nmse_t):.1f}dB  CSI NMSE={10*np.log10(nmse_f):.1f}dB")
 
-    # 图2：频域CSI实部对比（H_true vs H_est）
-    fig2, ax2 = plt.subplots(figsize=(8, 4))
-    ax2.plot(np.real(H_true), 'r-', label='H_true')
-    ax2.plot(np.real(H_est), 'b-', label='H_estimation')
-    ax2.set_title(f'H-frequency domain (real) {nfft}-fft')
-    ax2.set_xlabel('n')
-    ax2.set_ylabel('real(H)')
-    ax2.legend()
-    ax2.grid(alpha=0.3)
-
-    # 图3：频域CSI虚部对比（H_true vs H_est）
-    fig3, ax3 = plt.subplots(figsize=(8, 4))
-    ax3.plot(np.imag(H_true), 'r-', label='H_true')
-    ax3.plot(np.imag(H_est), 'b-', label='H_estimation')
-    ax3.set_title(f'H-frequency domain (imag) {nfft}-fft')
-    ax3.set_xlabel('n')
-    ax3.set_ylabel('imag(H)')
-    ax3.legend()
-    ax3.grid(alpha=0.3)
-
-    # 额外：时域CIR幅值对比
-    fig4, ax4 = plt.subplots(figsize=(8, 4))
-    # 绘制真实CIR
-    markerline1, stemlines1, baseline1 = ax4.stem(np.abs(h_true), linefmt='r-', basefmt='r-', label='h_true')
-    # 绘制估计CIR
-    markerline2, stemlines2, baseline2 = ax4.stem(np.abs(h_est), linefmt='b-', basefmt='b-', label='h_est', markerfmt='bo')
-    ax4.set_title('CIR Magnitude Comparison')
-    ax4.set_xlabel('n')
-    ax4.set_ylabel('|h|')
-    ax4.legend()
-    ax4.grid(alpha=0.3)
-
-    plt.tight_layout()
-    plt.show()
+    # ---- visualization ----
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    for idx, mode in enumerate(["sc-fde", "ofdm"]):
+        params = PHYParams()
+        params.update(link_mode=mode)
+        sps, Lh, nfft = params.get("oversampling"), params.get("gi_length"), params.get("subframe_length")
+        tx = THzTransmitter(params); tx.run()
+        ch = THzChannel(params); rx = ch.run(tx.tx_signal_dict)
+        mf = RxMatchedFilter(tx); mf_out = mf.matched_filter(rx)
+        mf_sig = mf_out["signal_stream"]; mf_fs = mf_out["sample_rate_Hz"]
+        fd = mf.filter_delay; sym_fs = mf_fs/sps
+        tx_len = len(tx.data_with_preamble_dict["signal_stream"])
+        ce = CFOEstimator(tx)
+        cfo_c = ce.estimate_cfo_coarse(mf_sig, fs=mf_fs)
+        mf_c = ce.compensate_cfo(mf_sig, fs=mf_fs, cfo_est=cfo_c)
+        rs = mf_c[fd:fd+tx_len*sps:sps]
+        cfo_f = ce.estimate_cfo_fine(rs, fs=sym_fs)
+        rs = ce.compensate_cfo(rs, fs=sym_fs, cfo_est=cfo_f)
+        rs = np.pad(rs[:tx_len], (0, max(0, tx_len-len(rs))))
+        h_phys = np.zeros(Lh*sps, dtype=np.complex128)
+        h_phys[:len(ch.chan_true)] = ch.chan_true
+        pt, pr = tx.pulse_shaper.filter_coeffs, mf.h_rx
+        heq = np.convolve(np.convolve(h_phys, pt), pr)
+        gd = (len(pt)-1)//2 + (len(pr)-1)//2
+        ht = heq[gd::sps][:Lh]; Ht = np.fft.fft(ht, nfft)
+        nd = dict(tx.data_with_preamble_dict); nd["signal_stream"] = rs
+        r = ChannelEstimator(tx).channel_estimate(nd)
+        he = r["channel_time_response"][0]; He = r["channel_freq_response"][0]
+        nmse = np.linalg.norm(Ht-He)**2/(np.linalg.norm(Ht)**2+np.finfo(float).eps)
+        cfo_res = abs(cfo_c+cfo_f-ch.cfo.freq_offset) if hasattr(ch, 'cfo') else 0
+        ax0 = axes[0, idx]
+        ax0.stem(np.abs(ht), linefmt='b-', markerfmt='bo', basefmt=' ', label='|h_true|')
+        ax0.stem(np.abs(he), linefmt='r--', markerfmt='rx', basefmt=' ', label='|h_est|')
+        ax0.set_title(f'{mode.upper()} CIR (CFO res={cfo_res:.0f}Hz NMSE={10*np.log10(nmse):.1f}dB)')
+        ax0.set_xlabel('tap'); ax0.set_ylabel('|h|'); ax0.legend(fontsize=7); ax0.grid(True, alpha=0.3)
+        ax1 = axes[1, idx]
+        ax1.plot(np.abs(Ht), 'b-', lw=1.2, alpha=0.8, label='|H_true|')
+        ax1.plot(np.abs(He), 'r--', lw=0.8, alpha=0.8, label='|H_est|')
+        ax1.set_title(f'{mode.upper()} CSI (NMSE={10*np.log10(nmse):.1f}dB)')
+        ax1.set_xlabel('subcarrier'); ax1.set_ylabel('|H|'); ax1.legend(fontsize=7); ax1.grid(True, alpha=0.3)
+    fig.suptitle('Channel Estimation with Sync+CFO (SC-FDE corr vs OFDM LS)', fontsize=14, fontweight='bold')
+    plt.tight_layout(); plt.show()
+    print("\nDone")

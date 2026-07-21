@@ -5,7 +5,6 @@ from transmitter.THzTransmitter import THzTransmitter
 from params.PHYParams import PHYParams
 from channel.THzChannel import THzChannel
 from receiver.MatchedFilter import RxMatchedFilter
-from receiver.GIremover import GIRemover
 plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
@@ -77,31 +76,31 @@ class THzDemodulator:
         """
         校验输入数据字典合法性
         :param data_dict: 输入数据字典，包含以下键值：
-            "symbol_stream": 符号流,
+            "signal_stream": 符号流,
             "sample_rate_Hz": 采样率,
             "duration_seconds": 时长,
-            "symbol_length": 符号长度,
+            "signal_length": 符号长度,
             "padding_bit_num": 补零比特数,
         """
         # 校验输入字典完整性
         required_keys = [
-            "symbol_stream", "sample_rate_Hz", "duration_seconds", "symbol_length","padding_bit_num"
+            "signal_stream", "sample_rate_Hz", "duration_seconds", "signal_length","padding_bit_num"
         ]
         for key in required_keys:
             if key not in data_dict:
                 raise KeyError(f"输入数据字典缺少必要键值：{key}")
             
         # 校验分帧信息一致性
-        if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["symbol_length"]:
+        if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["signal_length"]:
             raise ValueError("输入数据字典中的采样率与时长不匹配")  
         
 
         if self.MCS == "0":
             self.sample_rate = data_dict["sample_rate_Hz"]
-            self.bit_length = data_dict["symbol_length"]
+            self.bit_length = data_dict["signal_length"]
         else:
             self.sample_rate = data_dict["sample_rate_Hz"] * self.NCBPS
-            self.bit_length = data_dict["symbol_length"] * self.NCBPS
+            self.bit_length = data_dict["signal_length"] * self.NCBPS
         self.duration = data_dict["duration_seconds"]
         self.padding_bit_num = data_dict["padding_bit_num"]  
 
@@ -378,7 +377,7 @@ class THzDemodulator:
 
     def demodulate(self, rx_symbols_dict, sigma):
         self._verification_data(rx_symbols_dict)
-        rx_symbols = rx_symbols_dict["symbol_stream"]
+        rx_symbols = rx_symbols_dict["signal_stream"]
         if self.MCS == 0:
             llr = self._dbpsk_demodulate(rx_symbols, sigma)
         elif self.MCS == 2:
@@ -406,26 +405,26 @@ class THzDemodulator:
             raise ValueError(f"解调后比特长度不匹配:预期长度={self.bit_length}, 实际长度={len(llr)}")
 
         result_dict = {
-            "bit_llr": llr,
+            "signal_stream": llr,
             "sample_rate_Hz": self.sample_rate,
             "duration_seconds": self.duration,
-            "bit_length": self.bit_length,
+            "signal_length": self.bit_length,
             "padding_bit_num": self.padding_bit_num
         }
         
         return result_dict
 
     def llr_to_bits(self, llr_dict):
-        if round(llr_dict["sample_rate_Hz"] * llr_dict["duration_seconds"]) != llr_dict["bit_length"]:
+        if round(llr_dict["sample_rate_Hz"] * llr_dict["duration_seconds"]) != llr_dict["signal_length"]:
             raise ValueError("输入数据字典中的采样率与时长不匹配")   
-        if len(llr_dict["bit_llr"]) != llr_dict["bit_length"]:
-            raise ValueError(f"输入LLR长度不匹配:预期长度={llr_dict['bit_length']}, 实际长度={len(llr_dict['bit_llr'])}")     
-        bits = (llr_dict["bit_llr"] < 0).astype(np.uint8)
+        if len(llr_dict["signal_stream"]) != llr_dict["signal_length"]:
+            raise ValueError(f"输入LLR长度不匹配:预期长度={llr_dict['signal_length']}, 实际长度={len(llr_dict['signal_stream'])}")     
+        bits = (llr_dict["signal_stream"] < 0).astype(np.uint8)
         result_dict = {
-            "bit_stream": bits,
+            "signal_stream": bits,
             "sample_rate_Hz": llr_dict["sample_rate_Hz"],
             "duration_seconds": llr_dict["duration_seconds"],
-            "bit_length": llr_dict["bit_length"],
+            "signal_length": llr_dict["signal_length"],
             "padding_bit_num": llr_dict["padding_bit_num"]
         }
         return result_dict
@@ -561,48 +560,102 @@ def analyze_link_waveforms(tx_symbols, tx_signal, rx_signal, y_matched, y_cp_del
         print(f"⚠️ 实际SNR与配置偏差过大！配置={snr_db}dB, 实际={actual_snr}dB")
 
 if __name__ == "__main__":
-    # 初始化参数和发射机
-    params = PHYParams()
-    transmitter = THzTransmitter(params)    
-    # 执行完整发射流程  
-    tx_signal_dict = transmitter.run() 
-    # 初始化信道并生成接收信号
-    channel = THzChannel(params)
-    rx_signal_dict = channel.run(tx_signal_dict)
-    # 初始化接收端匹配滤波器
-    rx_matched_filter = RxMatchedFilter(transmitter.pulse_shaper)
-    # === 进行匹配滤波并获得中间信号 ===
-    rx_matched_dict = rx_matched_filter.recover_symbols(rx_signal_dict)
-    # 初始化GI移除器
-    gi_remover = GIRemover(params)
-    # === 进行GI移除 ===
-    rx_data_no_gi_dict = gi_remover.remove_gi(rx_matched_dict)
-    
-    # 解调
-    snr_db = params.get("SNRdB")    
-    sigma = snr_to_sigma(snr_db)  # 改用归一化后的sigma计算
-    demodulator = THzDemodulator(params)
-    llr_dict = demodulator.demodulate(rx_data_no_gi_dict, sigma)
-    # LLR转比特
-    rec_bits_dict = demodulator.llr_to_bits(llr_dict)
+    from receiver.MatchedFilter import RxMatchedFilter
+    from receiver.sync.CoarseSync import CoarseSync
+    from receiver.sync.FineSync import FineSync
+    from receiver.CFOEstimator import CFOEstimator
+    from receiver.Downsampler import Downsampler
+    from receiver.ChannelEstimator import ChannelEstimator
+    from receiver.RxOFDMProcesser import RxOFDMProcesser
+    from receiver.Equalizer import FreqDomainEqualizer
+    from channel.THzChannel import THzChannel
 
-    # 截断比特到相同长度（避免维度不匹配）
-    min_bit_len = min(len(transmitter.coded_bits_dict["bit_stream"]), len(rec_bits_dict["bit_stream"]))
-    tx_bits_trunc = transmitter.coded_bits_dict["bit_stream"][:min_bit_len]
-    rec_bits_trunc = rec_bits_dict["bit_stream"][:min_bit_len]
-    
-    print(f"\n===== 解调结果分析 =====")
-    print(f"接收比特长度：{len(rec_bits_dict['bit_stream'])}, 原始比特长度：{len(transmitter.coded_bits_dict['bit_stream']  )}")
-    print(f"原始比特（前10）：{tx_bits_trunc[0:10]}")
-    print(f"解调比特（前10）：{rec_bits_trunc[0:10]}")
-    print(f"比特错误数：{np.sum(tx_bits_trunc != rec_bits_trunc)}")
-    print(f"误码率：{np.sum(tx_bits_trunc != rec_bits_trunc)/min_bit_len:.6f}")
-    
-    # 额外：LLR分布分析
+    for mode in ["ofdm"]:
+        print(f"\n{'='*55}")
+        print(f"     {mode.upper()} 模式 BER 测试")
+        print(f"{'='*55}")
+
+        params = PHYParams()
+        params.update(link_mode=mode)
+        tx = THzTransmitter(params)
+        tx.run()
+        ch = THzChannel(params)
+        rx = ch.run(tx.tx_signal_dict)
+
+        sps = params.get("oversampling")
+
+        # ---- RX: MF -> CoarseSync -> CFOc -> FineSync -> DS -> CFOf ----
+        mf = RxMatchedFilter(tx)
+        mf_out = mf.matched_filter(rx)
+
+        cs = CoarseSync(tx)
+        sync_out = cs.detect_sync(mf_out)
+
+        # ---- RX: MF -> CoarseSync -> CFOc -> FineSync -> DS -> CFOf ----
+        cfo = CFOEstimator(tx)
+        mf_fs = sync_out["sample_rate_Hz"]
+        cfo_c = cfo.estimate_cfo_coarse(sync_out["signal_stream"], fs=mf_fs)
+        sig_c = cfo.compensate_cfo(sync_out["signal_stream"], fs=mf_fs, cfo_est=cfo_c)
+        cd = dict(sync_out); cd["signal_stream"] = sig_c; cd["signal_length"] = len(sig_c)
+
+        fsync = FineSync(tx)
+        fout = fsync.fine_sync(cd)
+
+        ds = Downsampler(tx)
+        sout = ds.recover_symbol(fout)
+
+        cfo_f = cfo.estimate_cfo_fine(sout["signal_stream"], fs=sout["sample_rate_Hz"])
+        rx_cfo = cfo.compensate_cfo(sout["signal_stream"],
+                                     fs=sout["sample_rate_Hz"], cfo_est=cfo_f)
+        rd = dict(sout); rd["signal_stream"] = rx_cfo
+
+        if mode == "ofdm":
+            # ---- OFDM: RxOFDMProcesser (内置导频LS+时域加窗+相位插值) ----
+            rx_ofdm = RxOFDMProcesser(tx)
+            ofdm_r = rx_ofdm.ofdm_demodulate(rd, H_init_list=None)
+            rx_sym_out = ofdm_r["signal_stream"]
+            sym_fs = ofdm_r["sample_rate_Hz"]
+        else:
+            # ---- SC-FDE: ChannelEstimator → FreqDomainEqualizer ----
+            ch_est = ChannelEstimator(tx)
+            ch_result = ch_est.channel_estimate(rd)
+            eq = FreqDomainEqualizer(tx)
+            eq_out = eq.equalize(ch_result)
+            rx_sym_out = eq_out["signal_stream"]
+            sym_fs = eq_out["sample_rate_Hz"]
+
+        # 构造 DeModulator 兼容的 dict
+        rx_symbols_dict = {
+            "signal_stream": rx_sym_out,
+            "sample_rate_Hz": sym_fs,
+            "signal_length": len(rx_sym_out),
+            "duration_seconds": len(rx_sym_out) / sym_fs,
+            "padding_bit_num": rd["padding_bit_num"],
+        }
+
+        # ---- 解调 ----
+        snr_db = params.get("SNRdB")
+        sigma = snr_to_sigma(snr_db)
+        demodulator = THzDemodulator(params)
+        llr_dict = demodulator.demodulate(rx_symbols_dict, sigma)
+        rec_bits_dict = demodulator.llr_to_bits(llr_dict)
+
+        # ---- BER ----
+        tx_bits = tx.coded_bits_dict["signal_stream"]
+        rx_bits = rec_bits_dict["signal_stream"]
+        min_len = min(len(tx_bits), len(rx_bits))
+        tx_b = tx_bits[:min_len]; rx_b = rx_bits[:min_len]
+        ber = np.sum(tx_b != rx_b) / min_len
+        print(f"  coded bits: tx={len(tx_bits)} rx={len(rx_bits)}")
+        print(f"  BER = {ber:.2e}  ({np.sum(tx_b != rx_b)} / {min_len})")
+
+    # ---- 可视化 ----
     plt.figure(figsize=(8, 4))
-    plt.hist(llr_dict["bit_llr"], bins=50, color='purple', alpha=0.7)
-    plt.title(f'LLR值分布（均值：{np.mean(llr_dict["bit_llr"]):.4f}，标准差：{np.std(llr_dict["bit_llr"]):.4f}）')
-    plt.xlabel('LLR值')
-    plt.ylabel('频次')
-    plt.grid(True)
+    plt.hist(llr_dict["signal_stream"], bins=50, color='purple', alpha=0.7)
+    plt.title(f'{mode.upper()} LLR Distribution '
+              f'(mean={np.mean(llr_dict["signal_stream"]):.3f} '
+              f'std={np.std(llr_dict["signal_stream"]):.3f})')
+    plt.xlabel('LLR'); plt.ylabel('count'); plt.grid(True)
     plt.show()
+
+    print("\nDone")

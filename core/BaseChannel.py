@@ -15,25 +15,22 @@ class BaseChannel:
 
     def _init_channel(self):
         """初始化信道（子类可重写）"""
-        # 生成信道冲激响应
-        chan_delays = self.params.get("chan_delays")
-        chan_gains = self.params.get("chan_gains")
-        max_delay = max(chan_delays) if len(chan_delays) > 0 else 0
-        self.chan_impulse = np.zeros(max_delay + 1, dtype=complex)
-        for delay, gain in zip(chan_delays, chan_gains):
-            self.chan_impulse[delay] = gain
+        # # 生成信道冲激响应
+        # chan_delays = self.params.get("chan_delays")
+        # chan_gains = self.params.get("chan_gains")
+        # max_delay = max(chan_delays) if len(chan_delays) > 0 else 0
+        # self.chan_impulse = np.zeros(max_delay + 1, dtype=complex)
+        # for delay, gain in zip(chan_delays, chan_gains):
+        #     self.chan_impulse[delay] = gain
 
     def apply_multipath(self, signal):
-        """应用多径效应（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 apply_multipath() 方法")
+        """应用多径效应（子类可重写）"""
 
     def add_awgn(self, signal):
-        """添加高斯白噪声（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 add_awgn() 方法")
+        """添加高斯白噪声（子类可重写）"""
 
     def add_cfo(self, signal):
-        """添加频偏（子类必须重写）"""
-        raise NotImplementedError("子类必须实现 add_cfo() 方法")
+        """添加频偏（子类可重写）"""
 
     def run(self, tx_signal):
         """执行完整信道流程（统一调度）"""
