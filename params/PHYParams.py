@@ -140,6 +140,12 @@ class PHYParams(BaseParams):
             "iq_gQ_taps": [1.0],                   # Legacy/global FD IQ: Q branch FIR taps
             "iq_gain_imbalance_db": 0.0,           # Legacy I/Q 幅度不平衡，单位 dB
             "iq_phase_imbalance_deg": 0.0,         # Legacy I/Q 相位不平衡，单位 degree
+
+            # RX IQ 不平衡补偿参数（独立于信道损伤注入开关）
+            "enable_iq_compensation": True,        # 是否在接收机细 CFO 后启用 IQ 补偿
+            "iq_comp_filter_len": 5,               # IQ 损伤/补偿 FIR 长度
+            "iq_comp_ridge_lambda": 0.0,           # LS 岭回归系数，0 表示使用伪逆
+            "iq_compensation_mode": "per_frame",  # per_frame / first_frame
             
             # 多径信道相关参数（第一版：静态多径 + 可选分数延迟，默认关闭以保持原 AWGN 链路不变）
             "enable_multipath": True,                                                                # 是否启用多径信道

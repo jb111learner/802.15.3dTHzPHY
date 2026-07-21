@@ -1,19 +1,6 @@
 import numpy as np
 from receiver.IQRealParallelCalibrator import IQRealParallelCalibrator
 
-# 测试用导入
-from params.PHYParams import PHYParams
-from transmitter.THzTransmitter import THzTransmitter
-from channel.THzChannel import THzChannel
-from receiver.CFOEstimator import CFOEstimator
-from receiver.sync.FineSync import FineSync
-from receiver.ChannelEstimator import ChannelEstimator
-from receiver.NoiseEstimator import NoiseEstimator
-from receiver.Equalizer import FreqDomainEqualizer
-from receiver.MatchedFilter import RxMatchedFilter
-from receiver.Downsampler import Downsampler
-import matplotlib.pyplot as plt
-
 
 class IQCompensator:
     """
@@ -61,13 +48,27 @@ class IQCompensator:
         self.ces_len = len(self.tx_ces)             # CES 符号数
         self.preamble_len = len(transmitter.preamble)  # 前导码总符号数
 
-        # 计算完整帧长度（符号级），用于分帧
-        subframe_len = self.params.get("subframe_length")
-        gi_len = self.params.get("gi_length")
-        self.frame_symbol_num = (
-            (subframe_len + gi_len) * self.params.get("subframe_num")
-            + self.preamble_len
-        )
+        # 直接复用发射机实际生成的帧元数据。OFDM 帧还包含块状导频，
+        # 不能使用 subframe_num 重新推导，否则多帧切分会发生错位。
+        frame_dict = getattr(transmitter, "data_with_preamble_dict", None)
+        if not isinstance(frame_dict, dict):
+            raise ValueError("初始化 IQCompensator 前必须先执行 transmitter.run()")
+        for key in ("frame_symbol_num", "frame_num"):
+            if key not in frame_dict:
+                raise KeyError(f"发射机帧数据缺少必要键值：{key}")
+        self.frame_symbol_num = int(frame_dict["frame_symbol_num"])
+        self.expected_frame_num = int(frame_dict["frame_num"])
+        if self.frame_symbol_num <= 0 or self.expected_frame_num <= 0:
+            raise ValueError("发射机帧长度和帧数必须为正整数")
+        if self.frame_symbol_num < self.preamble_len:
+            raise ValueError("发射机单帧长度不能小于前导码长度")
+        expected_signal_length = self.frame_symbol_num * self.expected_frame_num
+        if int(frame_dict.get("signal_length", -1)) != expected_signal_length:
+            raise ValueError(
+                "发射机帧元数据不一致："
+                f"frame_symbol_num * frame_num={expected_signal_length}, "
+                f"signal_length={frame_dict.get('signal_length')}"
+            )
 
         # 输出缓存
         self.sample_rate = None
@@ -101,6 +102,15 @@ class IQCompensator:
             if key not in data_dict:
                 raise KeyError(f"输入数据字典缺少必要键值：{key}")
 
+        signal = np.asarray(data_dict["signal_stream"])
+        if signal.ndim != 1:
+            raise ValueError("IQ 补偿输入 signal_stream 必须是一维信号")
+        if len(signal) != int(data_dict["signal_length"]):
+            raise ValueError(
+                "IQ 补偿输入信号长度不匹配："
+                f"len(signal_stream)={len(signal)}, signal_length={data_dict['signal_length']}"
+            )
+
         # 采样率 × 时长 ≅ 信号长度 的一致性校验
         if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["signal_length"]:
             raise ValueError("输入数据字典中的采样率与时长不匹配")
@@ -110,13 +120,13 @@ class IQCompensator:
         self.duration = data_dict["duration_seconds"]
         self.padding_bit_num = data_dict["padding_bit_num"]
 
-    def _split_into_frames(self, rx_signal, frame_len, tail_mode='discard'):
+    def _split_into_frames(self, rx_signal, frame_len, tail_mode='error'):
         """
         将一维信号分割为帧列表
 
         :param rx_signal: 1D 复信号
         :param frame_len: 每帧符号数
-        :param tail_mode: 'discard' 丢弃不足一帧的尾部，
+        :param tail_mode: 'error' 要求严格整帧，'discard' 丢弃不足一帧的尾部，
                           'zero_pad' 补零至整帧
         :return: (frames_list, num_frames, processed_len)
         """
@@ -126,11 +136,18 @@ class IQCompensator:
 
         num_frames = total_len // frame_len
         remainder = total_len % frame_len
+        if total_len == 0:
+            return [], 0, 0
 
         if remainder == 0:
             processed_signal = rx_signal
         else:
-            if tail_mode == 'discard':
+            if tail_mode == 'error':
+                raise ValueError(
+                    f"IQ 补偿输入长度 {total_len} 不是帧长 {frame_len} 的整数倍，"
+                    f"尾部剩余 {remainder} 个符号"
+                )
+            elif tail_mode == 'discard':
                 processed_signal = rx_signal[:num_frames * frame_len]
                 print(f"[IQCompensator] 丢弃尾部 {remainder} 个采样点（不足一帧）")
             elif tail_mode == 'zero_pad':
@@ -143,8 +160,10 @@ class IQCompensator:
                 num_frames += 1
                 print(f"[IQCompensator] 尾部补零 {pad_len} 个采样点")
             else:
-                raise ValueError("tail_mode 必须为 'discard' 或 'zero_pad'")
+                raise ValueError("tail_mode 必须为 'error'、'discard' 或 'zero_pad'")
 
+        if num_frames == 0:
+            return [], 0, len(processed_signal)
         frames = np.split(processed_signal, num_frames, axis=0)
         return frames, num_frames, len(processed_signal)
 
@@ -193,7 +212,7 @@ class IQCompensator:
     # 主入口：IQ 补偿
     # ------------------------------------------------------------------
 
-    def compensate(self, data_dict, tail_mode='discard'):
+    def compensate(self, data_dict, tail_mode='error'):
         """
         多帧 IQ 不平衡补偿入口
 
@@ -204,7 +223,7 @@ class IQCompensator:
           4. 拼接所有帧输出
 
         :param data_dict: 输入信号字典（符号率，细 CFO 补偿之后）
-        :param tail_mode: 尾部处理方式 'discard' / 'zero_pad'
+        :param tail_mode: 尾部处理方式 'error' / 'discard' / 'zero_pad'
         :return: result_dict 包含补偿后的信号流及补偿滤波器信息
         """
         self._verification_data(data_dict)
@@ -217,6 +236,10 @@ class IQCompensator:
         )
         if num_frames == 0:
             raise ValueError("[IQCompensator] 信号不包含完整帧，无法进行 IQ 补偿")
+        if tail_mode == 'error' and num_frames != self.expected_frame_num:
+            raise ValueError(
+                f"IQ 补偿输入帧数不匹配：预期 {self.expected_frame_num}，实际 {num_frames}"
+            )
 
         compensated_frames = []
         filter_info_list = []
@@ -261,15 +284,17 @@ class IQCompensator:
         self.duration = len(rx_compensated) / fs
         self.signal_length = len(rx_compensated)
 
-        result_dict = {
+        result_dict = dict(data_dict)
+        result_dict.update({
             "signal_stream": rx_compensated,
             "sample_rate_Hz": fs,
             "duration_seconds": self.duration,
             "signal_length": self.signal_length,
             "padding_bit_num": self.padding_bit_num,
-            # IQ 补偿特有的输出字段
+            "frame_symbol_num": self.frame_symbol_num,
+            "frame_num": num_frames,
             "iq_compensation_filters": filter_info_list,
-        }
+        })
         return result_dict
 
 
@@ -277,6 +302,18 @@ class IQCompensator:
 # 测试代码：验证 IQ 补偿在接收链路中的效果
 # ======================================================================
 if __name__ == "__main__":
+    from params.PHYParams import PHYParams
+    from transmitter.THzTransmitter import THzTransmitter
+    from channel.THzChannel import THzChannel
+    from receiver.CFOEstimator import CFOEstimator
+    from receiver.sync.FineSync import FineSync
+    from receiver.ChannelEstimator import ChannelEstimator
+    from receiver.NoiseEstimator import NoiseEstimator
+    from receiver.Equalizer import FreqDomainEqualizer
+    from receiver.MatchedFilter import RxMatchedFilter
+    from receiver.Downsampler import Downsampler
+    import matplotlib.pyplot as plt
+
     # ---- 1. 配置参数（开启 RX 端 IQ 不平衡） ----
     params = PHYParams()
     params.apply_dict({

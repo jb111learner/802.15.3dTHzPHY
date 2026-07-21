@@ -15,6 +15,7 @@ from receiver.RxOFDMProcesser import RxOFDMProcesser
 from receiver.Decoder import Decoder
 from receiver.DeScrambler import DeScrambler
 from receiver.Downsampler import Downsampler
+from receiver.IQCompensator import IQCompensator
 
 
 class THzReceiver(BaseReceiver):
@@ -23,9 +24,10 @@ class THzReceiver(BaseReceiver):
 
     流程:
       MF → CoarseSync → CFO coarse → FineSync → Downsample → CFO fine
+      → IQ compensation → NoiseEst
       → [SC-FDE: ChannelEst + FreqDomainEqualizer]
       → [OFDM:   RxOFDMProcesser (内置LS+相位跟踪)]
-      → NoiseEst → Demodulate → Decode → DeScramble
+      → Demodulate → Decode → DeScramble
     """
 
     def __init__(self, params, transmitter):
@@ -37,6 +39,14 @@ class THzReceiver(BaseReceiver):
         self.fine_sync = FineSync(transmitter)
         self.cfo_estimator = CFOEstimator(transmitter)
         self.downsampler = Downsampler(transmitter)
+        self.iq_compensator = None
+        if self.params.get("enable_iq_compensation"):
+            self.iq_compensator = IQCompensator(
+                transmitter,
+                filter_len=self.params.get("iq_comp_filter_len"),
+                ridge_lambda=self.params.get("iq_comp_ridge_lambda"),
+                compensation_mode=self.params.get("iq_compensation_mode"),
+            )
         self.channel_estimator = ChannelEstimator(transmitter)
         self.equalizer = FreqDomainEqualizer(transmitter)
         self.noise_estimator = NoiseEstimator(transmitter)
@@ -53,6 +63,7 @@ class THzReceiver(BaseReceiver):
         self.rx_fine_synced = None
         self.rx_downsampled = None
         self.rx_cfo_fine = None
+        self.rx_iq_compensated = None
         self.rx_equalized = None
         self.noise_var = None
         self.llr_dict = None
@@ -100,6 +111,15 @@ class THzReceiver(BaseReceiver):
         self.rx_cfo_fine["signal_stream"] = sig
         self.rx_cfo_fine["signal_length"] = len(sig)
         return self.rx_cfo_fine
+
+    def compensate_iq_imbalance(self, signal_dict):
+        """在符号率下利用每帧 CES 估计并补偿 RX IQ 不平衡。"""
+        if self.iq_compensator is None:
+            return signal_dict
+        self.rx_iq_compensated = self.iq_compensator.compensate(
+            signal_dict, tail_mode="error"
+        )
+        return self.rx_iq_compensated
 
     def estimate_channel(self, signal_dict):
         self.rx_estimated = self.channel_estimator.channel_estimate(signal_dict)
@@ -181,21 +201,24 @@ class THzReceiver(BaseReceiver):
         # ⑥ 细 CFO（逐帧估计+补偿）
         sig = self.compensate_cfo_fine(sig)
 
-        # ⑦ 噪声方差估计（基于 SYNC，需在 OFDM 解调前）
+        # ⑦ IQ 不平衡补偿（符号率、细 CFO 之后、信道估计之前）
+        sig = self.compensate_iq_imbalance(sig)
+
+        # ⑧ 噪声方差估计（基于补偿后的 SYNC，需在 OFDM 解调前）
         self.estimate_noise(sig)
 
         if self.link_mode == "ofdm":
-            # ⑧ OFDM 解调（内置导频LS + 相位跟踪 + 均衡）
+            # ⑨ OFDM 解调（内置导频LS + 相位跟踪 + 均衡）
             sig = self.ofdm_demodulate(sig)
         else:
-            # ⑧ SC-FDE: 信道估计 + 频域均衡
+            # ⑨ SC-FDE: 信道估计 + 频域均衡
             sig = self.estimate_channel(sig)
             sig = self.equalize(sig)
 
-        # ⑨ 解调（LLR，使用噪声方差）
+        # ⑩ 解调（LLR，使用噪声方差）
         sig = self.demodulate(sig)
 
-        # ⑩ 解码 + 解扰
+        # ⑪ 解码 + 解扰
         data = self.decode(sig)
         return data
 
