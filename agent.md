@@ -1,0 +1,1 @@
+以后编译运行代码全部使用thz环境，使用conda activate thz 命令。
