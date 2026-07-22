@@ -22,7 +22,14 @@ class BitStreamProcessor:
             self.code_rate = self.params.get("rs_packet_size") / (self.params.get("rs_packet_size") + self.params.get("rs_nsym"))  # RS编码包大小
         elif self.code_type == "LDPC":
             self.code_rate = 14 / 15  # LDPC编码率(目前固定为14/15)
-        self.frame_bit_num = self.NCBPS * self.subframe_length * self.subframe_num * self.code_rate
+        link_mode = (self.params.get("link_mode")).lower()
+        if link_mode == "ofdm":
+            n_pilots = len(self.params.get("pilot_block_indexes"))
+            n_data_syms = self.params.get("subframe_ofdm_num") - n_pilots
+            n_sc = self.params.get("subwave_num")
+            self.frame_bit_num = self.NCBPS * n_sc * n_data_syms * self.code_rate
+        else:
+            self.frame_bit_num = self.NCBPS * self.subframe_length * self.subframe_num * self.code_rate
         self.seed_strategy = self.params.get("seed_strategy")  # 随机种子策略
         self.random_seed = self.params.get("random_seed")
         self._seed_counter = 0

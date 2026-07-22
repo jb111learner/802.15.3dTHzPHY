@@ -49,6 +49,9 @@ class THzReceiver(BaseReceiver):
             )
         self.channel_estimator = ChannelEstimator(transmitter)
         self.equalizer = FreqDomainEqualizer(transmitter)
+        self.enable_channel_est = params.get("enable_channel_estimation")
+        if self.enable_channel_est is None:
+            self.enable_channel_est = True
         self.noise_estimator = NoiseEstimator(transmitter)
         self.demodulator = THzDemodulator(params)
         self.decoder = Decoder(params)
@@ -207,13 +210,15 @@ class THzReceiver(BaseReceiver):
         # ⑧ 噪声方差估计（基于补偿后的 SYNC，需在 OFDM 解调前）
         self.estimate_noise(sig)
 
-        if self.link_mode == "ofdm":
-            # ⑨ OFDM 解调（内置导频LS + 相位跟踪 + 均衡）
-            sig = self.ofdm_demodulate(sig)
-        else:
-            # ⑨ SC-FDE: 信道估计 + 频域均衡
-            sig = self.estimate_channel(sig)
-            sig = self.equalize(sig)
+        if self.enable_channel_est:
+            if self.link_mode == "ofdm":
+                # OFDM 解调（内置导频LS + 相位跟踪 + 均衡）
+                sig = self.ofdm_demodulate(sig)
+            else:
+                # SC-FDE: 信道估计 + 频域均衡
+                sig = self.estimate_channel(sig)
+                sig = self.equalize(sig)
+        # 关闭信道估计时 sig 保持原样（均衡前符号流）
 
         # ⑩ 解调（LLR，使用噪声方差）
         sig = self.demodulate(sig)

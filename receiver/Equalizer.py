@@ -215,174 +215,87 @@ class FreqDomainEqualizer:
         return result_dict
     
 if __name__ == "__main__":
-    # # 初始化参数和发射机
-    params = PHYParams()
-    # params.apply_dict(
-    # {
-    #     "enable_iq_imbalance": True,
-    #     "iq_imbalance_position": "rx",
-    #     "iq_imbalance_model": "fd",
-    #     "iq_gain_imbalance_db": 2.0,
-    #     "iq_phase_imbalance_deg": 5.0,
-    #     "iq_gI_taps": [1.0, 0.08, -0.03],
-    #     "iq_gQ_taps": [1.0, -0.12, 0.04],
-    #     "iq_power_normalize": False,
-    # }
-    # )    
-    transmitter = THzTransmitter(params)    
-    # 执行完整发射流程  
-    tx_signal_dict = transmitter.run() 
-    # 初始化信道并生成接收信号
-    channel = THzChannel(params)
-    rx_signal_dict = channel.run(tx_signal_dict)
+    from receiver.sync.CoarseSync import CoarseSync
+    from receiver.IQCompensator import IQCompensator
+    import os
 
-    num_points = 30000
-    # 假设您有原始发射数据符号（未加GI和前导码）
-    tx_data_symbols = transmitter.modulated_data_dict['signal_stream']   # 需要从发射机中获取
-    tx_data_symbols_with_gi = transmitter.data_with_gi_dict['signal_stream']  # 包含GI的符号流
-    tx_data_symbols_with_gi_samples = tx_data_symbols_with_gi[:num_points]  # 截取前2048个符号以匹配接收端截取的点数
-    tx_data_symbols_samples = tx_data_symbols[:num_points]  # 截取前2048个符号以匹配接收端截取的点数
-    
+    out_dir = "simulation_results"
+    os.makedirs(out_dir, exist_ok=True)
 
-    # 接收端匹配滤波
-    rx_matched_filter = RxMatchedFilter(transmitter)
-    rx_matched_signal_dict = rx_matched_filter.matched_filter(rx_signal_dict)
-    # 细同步恢复符号
-    fine_sync = FineSync(transmitter)
-    rx_sampled_signal_dict = fine_sync.fine_sync(rx_matched_signal_dict)
+    plt.rcParams.update({
+        "font.family": "serif", "font.serif": ["Times New Roman", "DejaVu Serif", "STIX"],
+        "axes.unicode_minus": False, "figure.dpi": 150, "savefig.dpi": 300,
+        "savefig.bbox": "tight", "axes.linewidth": 0.8,
+        "xtick.direction": "in", "ytick.direction": "in",
+        "xtick.major.size": 4, "ytick.major.size": 4,
+        "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
+    })
 
-    rx_symbol_with_gi = rx_sampled_signal_dict['signal_stream'][len(transmitter.preamble):]  # 去除Preamble
-    rx_symbol_with_gi_samples = rx_symbol_with_gi[:num_points]  # 截取前2048个点以避免过密
-    
+    # ---- RX chain following THzReceiver SC-FDE flow ----
+    for tag, iq_imbalance, iq_comp in [("no_iq", False, False),
+                                         ("iq_no_comp", True, False),
+                                         ("iq_comp", True, True)]:
+        params = PHYParams()
+        params.update(link_mode="sc-fde")
+        if iq_imbalance:
+            params.update(
+                enable_iq_imbalance=True,
+                enable_iq_compensation=iq_comp,
+                iq_imbalance_position="rx",
+                iq_imbalance_model="fd",
+                rx_iq_gain_imbalance_db=2.0,
+                rx_iq_phase_imbalance_deg=5.0,
+                iq_gI_taps=[1.0, 0.08, -0.03],
+                iq_gQ_taps=[1.0, -0.12, 0.04],
+            )
+        tx = THzTransmitter(params); tx.run()
+        ch = THzChannel(params); rx = ch.run(tx.tx_signal_dict)
 
-    # 粗频偏估计与补偿
-    cfo_estimator = CFOEstimator(transmitter)
-    rx_signal_compensate_dict = cfo_estimator.estimate_and_compensate_cfo_coarse(rx_sampled_signal_dict) 
-    print(f"估计频偏：{rx_signal_compensate_dict['cfo_estimates_Hz'][0]:.2f} Hz")
-    rx_signal_compensate = rx_signal_compensate_dict['signal_stream']
-    cfo_est_after = cfo_estimator.estimate_cfo_coarse(rx_signal_compensate, fs=rx_signal_dict['sample_rate_Hz'])
-    print(f"补偿后估计频偏：{cfo_est_after:.2f} Hz")
+        # ① MF → ② FineSync (no CoarseSync — IQComp needs exact frame boundaries)
+        mf = RxMatchedFilter(tx); sig = mf.matched_filter(rx)
+        cfo = CFOEstimator(tx)
+        sig = FineSync(tx).fine_sync(sig)
 
-    # 下采样
-    downsampler = Downsampler(transmitter)
-    rx_downsampled_signal_dict = downsampler.recover_symbol(rx_signal_compensate_dict)
+        # ③ CFO coarse
+        mf_fs = sig["sample_rate_Hz"]
+        cfo_c = cfo.estimate_cfo_coarse(sig["signal_stream"], fs=mf_fs)
+        sig_c = cfo.compensate_cfo(sig["signal_stream"], fs=mf_fs, cfo_est=cfo_c)
+        sig = dict(sig); sig["signal_stream"] = sig_c; sig["signal_length"] = len(sig_c)
 
-    # 细频偏估计与补偿
-    rx_signal_compensate_dict = cfo_estimator.estimate_and_compensate_cfo_fine(rx_downsampled_signal_dict)
-    print(f"细频偏估计：{rx_signal_compensate_dict['cfo_estimates_Hz'][0]:.2f} Hz")
-    rx_signal_compensate = rx_signal_compensate_dict['signal_stream']
-    cfo_est_after = cfo_estimator.estimate_cfo_fine(rx_signal_compensate, fs=rx_downsampled_signal_dict['sample_rate_Hz'])
-    print(f"补偿后估计频偏：{cfo_est_after:.2f} Hz")
+        # ④ Downsample
+        ds = Downsampler(tx); sig = ds.recover_symbol(sig)
 
-    # 初始化信道估计器
-    channel_estimator = ChannelEstimator(transmitter)
-    # ========== 执行CES互相关信道估计（对齐MATLAB逻辑） ==========
-    rx_estimated_dict = channel_estimator.channel_estimate(rx_signal_compensate_dict)
-    H_est_list = rx_estimated_dict["channel_freq_response"]
-    h_est_list = rx_estimated_dict["channel_time_response"]
-    fine_offset_list = rx_estimated_dict["fine_offset"]
-    H_est = H_est_list[0]
-    h_est = h_est_list[0]
-    fine_offset = fine_offset_list[0]
-    # print(f"估计的细同步修正量（采样点数）：{fine_offset}")
-    oversampling = params.get("oversampling")  # 过采样率
-    # 获取真实信道参数（用于对比）
-    nfft = params.get("subframe_length")  # 与ChannelEstimator默认nfft一致
-    h_true = np.zeros((params.get("gi_length") * oversampling,), dtype=np.complex128)
-    h_true[:len(channel.chan_true)] = channel.chan_true
-    #  等效基带处理：h_cont 与成型滤波器及匹配滤波器卷积
-    #  假设发射端成型滤波器为 p，接收端匹配滤波为 p_rev = p[::-1]
-    p = transmitter.pulse_shaper.filter_coeffs   # 采样率下的脉冲响应
-    p_mf = np.conj(p[::-1])                      # 匹配滤波器
-    h_eq_sampled = np.convolve(h_true, p, mode='full')
-    h_eq_sampled = np.convolve(h_eq_sampled, p_mf, mode='full')
-    group_delay = (len(p) - 1) // 2   # 假设线性相位
-    start_idx = group_delay * 2       # 卷积后总延迟补偿
-    h_true_symbol = h_eq_sampled[start_idx :: oversampling]   # 每隔 L 个采样点取一个
-    Lh = params.get("gi_length")
-    h_true_symbol = h_true_symbol[:Lh]
-    H_true_symbol = np.fft.fftshift(np.fft.fft(h_true_symbol, nfft))
+        # ⑤ CFO fine
+        sym_fs = sig["sample_rate_Hz"]
+        cfo_f = cfo.estimate_cfo_fine(sig["signal_stream"], fs=sym_fs)
+        sig_f = cfo.compensate_cfo(sig["signal_stream"], fs=sym_fs, cfo_est=cfo_f)
+        sig = dict(sig); sig["signal_stream"] = sig_f; sig["signal_length"] = len(sig_f)
 
-    rx_symbol_with_gi = rx_signal_compensate[len(transmitter.preamble) + fine_offset:]  # 去除Preamble
-    rx_symbol_with_gi_samples = rx_symbol_with_gi[:num_points]  # 截取前2048个点以避免过密
+        # ⑦ IQ compensation (only when enabled)
+        if iq_comp:
+            iq_c = IQCompensator(tx, filter_len=5, ridge_lambda=0.0,
+                                  compensation_mode="per_frame")
+            sig = iq_c.compensate(sig, tail_mode="error")
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    axes[0].plot(rx_symbol_with_gi_samples.real, rx_symbol_with_gi_samples.imag, '.')
-    axes[0].set_title("匹配滤波+下采样+频偏补偿后星座图")
-    axes[0].set_xlabel("实部")
-    axes[0].set_ylabel("虚部")
-    axes[1].plot(tx_data_symbols_with_gi_samples.real, tx_data_symbols_with_gi_samples.imag, 'x')
-    axes[1].set_title(f'原始数据符号星座图')
-    axes[1].axis('equal')
-    plt.grid()
-    plt.show()    
+        # ⑧ Channel est + Equalize
+        sig = ChannelEstimator(tx).channel_estimate(sig)
+        sig = FreqDomainEqualizer(tx).equalize(sig)
 
-    # 绘制频偏补偿后的时域波形
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
-    axes[0].plot(tx_data_symbols_with_gi_samples[:100])
-    axes[0].set_title("发射端原始符号（前100点）")
-    axes[0].set_xlabel("符号索引")
-    axes[0].set_ylabel("幅度")
-    axes[0].grid(True)
-    axes[1].plot(rx_symbol_with_gi_samples[:100], color='orange')
-    axes[1].set_title("频偏补偿后的符号（前100点）")
-    axes[1].set_xlabel("符号索引")
-    axes[1].set_ylabel("幅度")
-    axes[1].grid(True)
-    plt.tight_layout()
-    plt.show()
+        # plot constellation (skip preamble)
+        rx_syms = sig["signal_stream"]
+        tx_syms = tx.data_with_gi_dict["signal_stream"]
+        cmp = min(len(tx_syms), len(rx_syms))
 
-    # 估计噪声方差
-    noise_estimator = NoiseEstimator(transmitter)
-    result_dict = noise_estimator.noise_estimate(rx_estimated_dict)
-    noise_var_est_list = result_dict['noise_var']
-    noise_var_est = noise_var_est_list[0]
-    print(f"估计噪声方差：{noise_var_est:.6f}")
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.plot(tx_syms[:cmp:10].real, tx_syms[:cmp:10].imag, ".", ms=2, alpha=0.3, label="TX")
+        ax.plot(rx_syms[:cmp:10].real, rx_syms[:cmp:10].imag, ".", ms=2, alpha=0.7, label="RX")
+        ax.set_xlabel("I"); ax.set_ylabel("Q")
+        ax.set_title(f"SC-FDE — {tag}", fontsize=11, pad=6)
+        ax.axis("equal"); ax.legend(fontsize=8, markerscale=3)
+        fig.tight_layout()
+        fig.savefig(f"{out_dir}/eq_{tag}.pdf", dpi=600)
+        fig.savefig(f"{out_dir}/eq_{tag}.png", dpi=300)
+        plt.close(fig)
+        print(f"{tag}: saved")
 
-
-    # 初始化均衡器
-    equalizer = FreqDomainEqualizer(transmitter)
-    # 进行均衡
-    equalized_dict = equalizer.equalize(result_dict)
-
-    equalized_signal = equalized_dict["signal_stream"]
-
-    fig, axes = plt.subplots(figsize=(12, 5))
-    axes.stem(np.abs(h_true_symbol), linefmt='b-', basefmt='b-', label='真实信道 |h_true|', markerfmt='bo')
-    axes.stem(np.abs(h_est), linefmt='r-', basefmt='r-', label='信道估计 |h_est|')
-    axes.set_title("信道估计")
-    axes.set_xlabel("子载波索引")
-    axes.set_ylabel("幅度")
-    axes.legend()
-    plt.tight_layout()
-    plt.show()
-
-    # 绘制星座图
-    fig, axes = plt.subplots(1, 2 ,figsize=(12, 5))
-    axes[0].plot(tx_data_symbols_samples.real, tx_data_symbols_samples.imag, 'x')
-    axes[0].set_title("原始数据符号星座图")
-
-    equalized_signal_samples = equalized_signal[:num_points]  # 截取前2048个点以避免过密
-    axes[1].plot(equalized_signal_samples.real, equalized_signal_samples.imag, '.')
-    axes[1].set_title(f'均衡后星座图')
-    axes[1].axis('equal')
-    plt.grid()
-    plt.show()
-
-    # 绘制均衡后信号的时域波形
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
-    axes[0].plot(tx_data_symbols_samples)
-    axes[0].set_title("发射端原始符号")
-    axes[0].set_xlabel("符号索引")
-    axes[0].set_ylabel("幅度")
-    axes[0].grid(True)
-    axes[1].plot(equalized_signal, color='orange')
-    axes[1].set_title("均衡后的符号")
-    axes[1].set_xlabel("符号索引")
-    axes[1].set_ylabel("幅度")
-    axes[1].grid(True)
-    plt.tight_layout()
-    plt.show()
-
-    
-
+    print(f"\nFigures saved to {out_dir}/")

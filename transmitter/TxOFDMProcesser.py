@@ -79,7 +79,6 @@ class TxOFDMProcesser:
         1. 按子帧分帧：将调制符号 reshape 为 (num_subframes, 45, 512)
         2. 插入块状导频：在 pilot_block_indexes 位置插入 pilot_seq
         3. 串并转换 + IFFT：每列一个512点OFDM符号
-        4. 添加循环前缀 (CP)
         5. 并串转换 (列优先 / Fortran顺序)
 
         :param signal_dict: 输入数据字典（格式同 _verification_data）

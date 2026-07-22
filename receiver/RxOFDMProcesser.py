@@ -22,7 +22,12 @@ class RxOFDMProcesser:
 
     def __init__(self, transmitter):
         self.params = transmitter.params
-        self.preamble_len = len(transmitter.preamble)          # 前导码长度（符号级）
+        self.preamble_len = len(transmitter.preamble)
+
+        # —————— 信道估计开关 ——————
+        self.enable_ch_est = self.params.get("enable_channel_estimation")
+        if self.enable_ch_est is None:
+            self.enable_ch_est = True
 
         # —————— OFDM 参数 ——————
         self.N_SC = self.params.get("subwave_num")             # 512 子载波
@@ -253,10 +258,17 @@ class RxOFDMProcesser:
         freq_grid = self._fft_demodulate(time_grid)
         self.ofdm_freq_grid = freq_grid
 
-        # ———— 3. LS跟踪+均衡（逐帧·逐符号，导频+判决引导） ————
-        eq_grid, H_est_list, h_est_list = self._ls_track_and_equalize(
-            freq_grid, H_init_list)
-        self.H_est_per_subframe = H_est_list
+        # ———— 3. LS跟踪+均衡（可开关） ————
+        if self.enable_ch_est:
+            eq_grid, H_est_list, h_est_list = self._ls_track_and_equalize(
+                freq_grid, H_init_list)
+            self.H_est_per_subframe = H_est_list
+        else:
+            # 跳过均衡：直接用频域数据（无信道补偿）
+            eq_grid = freq_grid
+            H_est_list = [np.ones(self.N_SC, dtype=np.complex128)] * self.frame_num
+            h_est_list = [np.zeros(self.gi_len, dtype=np.complex128)] * self.frame_num
+            h_est_list[0][0] = 1.0
 
         # ———— 4. 提取数据符号 ————
         data_symbols = self._extract_data_symbols(eq_grid)

@@ -42,8 +42,8 @@ class PHYParams(BaseParams):
             "subwave_num":512,                                                                       # 子载波数
             "subframe_ofdm_num": 48,                                                                 # 单数据帧OFDM子帧数量
             "pilot_block_indexes":[0, 16, 32],                                                       # 块状导频索引
-            # "enable_window_filter":False,                                                            # 是否启用加窗与频谱成型
-            # "rolling_width":64,                                                                      # 过渡带宽度
+            # "enable_window_filter":False,                                                          # 是否启用加窗与频谱成型
+            # "rolling_width":64,                                                                    # 过渡带宽度
 
 
             # 调制相关
@@ -52,10 +52,10 @@ class PHYParams(BaseParams):
             "APSK_PHASE_OFFSETS": [np.pi/4, np.pi/12],                                              # 每环相位偏置（可设全0）
             "code_type": "LDPC",                                                                      # 信道编码类型(RS编码/LDPC)
 
-            # RS码相关设置 (RS(15,11) shortened over GF(256): n=15, k=11, t=2)
-            "rs_nsym": 63,                                                                           # Reed-Solomon校验符号数量 (n-k)
-            "rs_c_exp": 8,                                                                           # Reed-Solomon有限域指数 (GF(2^8)=GF(256))
-            "rs_packet_size": 192,                                                                   # Reed-Solomon编码包大小 (k)
+            # RS码相关设置 (OFDM模式建议使用RS(15,11) ， SC-FDE模式建议使用RS(255,192))
+            "rs_nsym": 4,                                                                           # Reed-Solomon校验符号数量 (n-k)
+            "rs_c_exp": 4,                                                                           # Reed-Solomon有限域指数 (GF(2^8)=GF(256))
+            "rs_packet_size": 11,                                                                   # Reed-Solomon编码包大小 (k)
 
             # LDPC码相关设置
             "ldpc_n": 672,                                                                          # Engineering LDPC codeword length
@@ -146,13 +146,14 @@ class PHYParams(BaseParams):
             "iq_comp_filter_len": 5,               # IQ 损伤/补偿 FIR 长度
             "iq_comp_ridge_lambda": 0.0,           # LS 岭回归系数，0 表示使用伪逆
             "iq_compensation_mode": "per_frame",  # per_frame / first_frame
+
             
             # 多径信道相关参数（第一版：静态多径 + 可选分数延迟，默认关闭以保持原 AWGN 链路不变）
             "enable_multipath": True,                                                                # 是否启用多径信道
             "multipath_paths": [                                                                     # 多径路径列表；delay_samples 优先于 tau
                 {"delay_samples": 0.0,  "gain_type": "static", "gain": 1.0 + 0.0j},
-                {"delay_samples": 8.0,  "gain_type": "static", "gain": 0.45 * np.exp(-1j * np.pi / 6)},
-                {"delay_samples": 16.0, "gain_type": "static", "gain": 0.25 * np.exp(-1j * np.pi / 3)},
+                # {"delay_samples": 8.0,  "gain_type": "static", "gain": 0.45 * np.exp(-1j * np.pi / 6)},
+                # {"delay_samples": 16.0, "gain_type": "static", "gain": 0.25 * np.exp(-1j * np.pi / 3)},
                 # {"delay_samples": 32.0,  "gain_type": "static", "gain": 0.25 * np.exp(-1j * np.pi / 2)},
             ],
             # ==================PDP 相关参数==================
@@ -213,6 +214,7 @@ class PHYParams(BaseParams):
 
             # 接收机相关
             "equalizer_method": "zf",                                                               # 均衡方法（ZF/MMSE）
+            "enable_channel_estimation": True,                                                      # 是否启用信道估计与补偿
 
             # RS 解码器相关参数
             "decode_mode": "hard",                                                                 # 译码算法（hard / chase）
