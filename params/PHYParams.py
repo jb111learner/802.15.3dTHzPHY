@@ -31,8 +31,8 @@ class PHYParams(BaseParams):
             # 基础参数
             "fc": 1000e9,                                                                           # 载波频率（1 THz）
             "bandwidth": 30e9,                                                                      # 信号带宽（30 GHz）
-            "subframe_num": 51,                                                                     # 数据载荷子帧数量
-            "subframe_length": 480,                                                                 # 数据子帧长度(symbols)
+            "subframe_num": 45,#51,                                                                     # 数据载荷子帧数量
+            "subframe_length": 512,#480,                                                                 # 数据子帧长度(symbols)
             "gi_length": 32,                                                                        # GI长度(symbols)
             "gi_type": "cp",                                                                        # GI类型（循环前缀"cp"或格雷序列"golay"）
             "c_init": 0x12345678,                                                                   # 扰码器参数
