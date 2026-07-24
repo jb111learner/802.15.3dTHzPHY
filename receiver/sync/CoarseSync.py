@@ -1,9 +1,5 @@
 import numpy as np
-from params.PHYParams import PHYParams
-from transmitter.THzTransmitter import THzTransmitter
-from channel.THzChannel import THzChannel
-from receiver.MatchedFilter import RxMatchedFilter
-import matplotlib.pyplot as plt
+from scipy.signal import correlate
 
 
 class CoarseSync:
@@ -34,6 +30,11 @@ class CoarseSync:
         self.padding_bit_num = 0
         self.sync_offset = None       # 检测到的 SYNC 起始位置（过采样索引）
         self.corr_peak = None         # 互相关峰值
+
+    @staticmethod
+    def _valid_correlation(signal, reference):
+        """使用 FFT 计算与 np.correlate(..., mode='valid') 等价的互相关。"""
+        return correlate(signal, reference, mode="valid", method="fft")
 
     def _verification_data(self, data_dict):
         """校验输入数据字典（过采样域）"""
@@ -68,7 +69,9 @@ class CoarseSync:
 
         # ———— 1. SYNC 互相关 → 帧起始 ————
         search_len = min(len(rx_signal), self.sync_len_oversample * 5)
-        corr = np.abs(np.correlate(rx_signal[:search_len], self.sync_ref, mode="valid"))
+        corr = np.abs(self._valid_correlation(
+            rx_signal[:search_len], self.sync_ref
+        ))
         sync_start = np.argmax(corr)
         self.sync_offset = sync_start
         self.corr_peak = corr[sync_start]
@@ -96,6 +99,11 @@ class CoarseSync:
 
 # ==================== 测试 ====================
 if __name__ == "__main__":
+    from params.PHYParams import PHYParams
+    from transmitter.THzTransmitter import THzTransmitter
+    from channel.THzChannel import THzChannel
+    from receiver.MatchedFilter import RxMatchedFilter
+
     for mode in ["sc-fde", "ofdm"]:
         print(f"\n{'='*50}")
         print(f"     CoarseSync 测试 — {mode.upper()} 模式")

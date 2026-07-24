@@ -216,8 +216,10 @@ class FreqDomainEqualizer:
     
 if __name__ == "__main__":
     from receiver.sync.CoarseSync import CoarseSync
-    from receiver.IQCompensator import IQCompensator
+    from receiver.DecisionDirectedIQCompensator import DecisionDirectedIQCompensator
+    from receiver.DeModulator import THzDemodulator
     import os
+    import time
 
     out_dir = "simulation_results"
     os.makedirs(out_dir, exist_ok=True)
@@ -235,56 +237,113 @@ if __name__ == "__main__":
     for tag, iq_imbalance, iq_comp in [("no_iq", False, False),
                                          ("iq_no_comp", True, False),
                                          ("iq_comp", True, True)]:
+        scenario_start = time.perf_counter()
+        print(f"\n--- {tag} ---", flush=True)
         params = PHYParams()
-        params.update(link_mode="sc-fde")
+        test_subframe_num = 15
+        one_frame_sample_length = int(
+            params.get("subframe_length") * test_subframe_num
+            * params.get("rs_packet_size")
+            / (params.get("rs_packet_size") + params.get("rs_nsym"))
+        )
+        params.update(
+            enable_awgn=True,
+            SNRdB=24,
+            enable_cfo=False,
+            enable_phase_noise=False,
+            enable_multipath=False,
+            link_mode="sc-fde",
+            code_type="RS",
+            Preamble_type="short",
+            subframe_num=test_subframe_num,
+            duration=None,
+            sample_length=one_frame_sample_length,
+            random_seed=20260722,
+            seed_strategy="固定种子",
+            enable_iq_imbalance=iq_imbalance,
+            enable_iq_compensation=iq_comp,
+            iq_compensation_method="decision_directed",
+        )
         if iq_imbalance:
             params.update(
-                enable_iq_imbalance=True,
-                enable_iq_compensation=iq_comp,
                 iq_imbalance_position="rx",
                 iq_imbalance_model="fd",
                 rx_iq_gain_imbalance_db=2.0,
                 rx_iq_phase_imbalance_deg=5.0,
-                iq_gI_taps=[1.0, 0.08, -0.03],
-                iq_gQ_taps=[1.0, -0.12, 0.04],
+                rx_iq_gI_taps=[1.0, 0.08, -0.03],
+                rx_iq_gQ_taps=[1.0, -0.12, 0.04],
             )
         tx = THzTransmitter(params); tx.run()
+        print(f"  TX complete: {time.perf_counter() - scenario_start:.2f}s", flush=True)
+        np.random.seed(20260722)
         ch = THzChannel(params); rx = ch.run(tx.tx_signal_dict)
+        print(f"  Channel complete: {time.perf_counter() - scenario_start:.2f}s", flush=True)
 
-        # ① MF → ② FineSync (no CoarseSync — IQComp needs exact frame boundaries)
+        # ① MF → ② CoarseSync
         mf = RxMatchedFilter(tx); sig = mf.matched_filter(rx)
+        sig = CoarseSync(tx).detect_sync(sig)
+        print(f"  Sync complete: {time.perf_counter() - scenario_start:.2f}s", flush=True)
         cfo = CFOEstimator(tx)
-        sig = FineSync(tx).fine_sync(sig)
 
-        # ③ CFO coarse
+        # ③ CFO coarse → ④ FineSync
         mf_fs = sig["sample_rate_Hz"]
         cfo_c = cfo.estimate_cfo_coarse(sig["signal_stream"], fs=mf_fs)
         sig_c = cfo.compensate_cfo(sig["signal_stream"], fs=mf_fs, cfo_est=cfo_c)
         sig = dict(sig); sig["signal_stream"] = sig_c; sig["signal_length"] = len(sig_c)
+        sig = FineSync(tx).fine_sync(sig)
 
-        # ④ Downsample
+        # ⑤ Downsample
         ds = Downsampler(tx); sig = ds.recover_symbol(sig)
 
-        # ⑤ CFO fine
+        # ⑥ CFO fine
         sym_fs = sig["sample_rate_Hz"]
         cfo_f = cfo.estimate_cfo_fine(sig["signal_stream"], fs=sym_fs)
         sig_f = cfo.compensate_cfo(sig["signal_stream"], fs=sym_fs, cfo_est=cfo_f)
         sig = dict(sig); sig["signal_stream"] = sig_f; sig["signal_length"] = len(sig_f)
 
-        # ⑦ IQ compensation (only when enabled)
-        if iq_comp:
-            iq_c = IQCompensator(tx, filter_len=5, ridge_lambda=0.0,
-                                  compensation_mode="per_frame")
-            sig = iq_c.compensate(sig, tail_mode="error")
-
-        # ⑧ Channel est + Equalize
+        # ⑦ Noise est → ⑧ Channel est → ⑨ Equalize
+        sig = NoiseEstimator(tx).noise_estimate(sig)
+        noise_var = sig["noise_var"]
         sig = ChannelEstimator(tx).channel_estimate(sig)
         sig = FreqDomainEqualizer(tx).equalize(sig)
+        print(f"  Equalization complete: {time.perf_counter() - scenario_start:.2f}s", flush=True)
+
+        # ⑩ Decision-directed IQ compensation (only when enabled)
+        if iq_comp:
+            iq_c = DecisionDirectedIQCompensator(
+                params, filter_len=5, ridge_lambda=0.0, iterations=2
+            )
+            sig = iq_c.compensate(sig)
 
         # plot constellation (skip preamble)
         rx_syms = sig["signal_stream"]
-        tx_syms = tx.data_with_gi_dict["signal_stream"]
+        tx_syms = tx.modulated_data_dict["signal_stream"]
         cmp = min(len(tx_syms), len(rx_syms))
+
+        # Metrics use the same aligned TX/RX symbol and coded-bit ranges.
+        tx_cmp = tx_syms[:cmp]
+        rx_cmp = rx_syms[:cmp]
+        evm = np.sqrt(
+            np.mean(np.abs(rx_cmp - tx_cmp) ** 2)
+            / np.mean(np.abs(tx_cmp) ** 2)
+        )
+        image_design = np.column_stack((tx_cmp, np.conj(tx_cmp)))
+        direct_gain, image_gain = np.linalg.lstsq(
+            image_design, rx_cmp, rcond=None
+        )[0]
+        irr_db = 10 * np.log10(
+            (np.abs(direct_gain) ** 2 + 1e-15)
+            / (np.abs(image_gain) ** 2 + 1e-15)
+        )
+        noise_scalar = float(np.mean(noise_var)) if isinstance(noise_var, list) \
+            else float(noise_var)
+        sigma = np.sqrt(max(noise_scalar, 1e-15) / 2)
+        hard_bits = THzDemodulator(params).llr_to_bits(
+            THzDemodulator(params).demodulate(sig, sigma)
+        )["signal_stream"]
+        tx_bits = tx.coded_bits_dict["signal_stream"]
+        bit_cmp = min(len(tx_bits), len(hard_bits))
+        coded_ber = np.mean(tx_bits[:bit_cmp] != hard_bits[:bit_cmp])
 
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.plot(tx_syms[:cmp:10].real, tx_syms[:cmp:10].imag, ".", ms=2, alpha=0.3, label="TX")
@@ -296,6 +355,16 @@ if __name__ == "__main__":
         fig.savefig(f"{out_dir}/eq_{tag}.pdf", dpi=600)
         fig.savefig(f"{out_dir}/eq_{tag}.png", dpi=300)
         plt.close(fig)
-        print(f"{tag}: saved")
+        diagnostics = sig.get("iq_dd_diagnostics", [])
+        condition_text = ""
+        if diagnostics:
+            condition_text = (
+                f", cond(design)={diagnostics[-1]['design_condition_number']:.3e}, "
+                f"cond(post)={diagnostics[-1]['post_condition_number']:.3e}"
+            )
+        print(
+            f"{tag}: EVM={100 * evm:.2f}%, IRR={irr_db:.2f} dB, "
+            f"coded BER={coded_ber:.3e}{condition_text}; saved"
+        )
 
     print(f"\nFigures saved to {out_dir}/")

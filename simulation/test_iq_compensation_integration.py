@@ -147,6 +147,7 @@ def test_receiver_places_iq_compensation_before_noise_and_mode_branch(link_mode,
     receiver_class = _import_receiver_without_optional_galois()
     receiver = receiver_class.__new__(receiver_class)
     receiver.link_mode = link_mode
+    receiver.enable_channel_est = True
     calls = []
 
     stages = [
@@ -157,6 +158,7 @@ def test_receiver_places_iq_compensation_before_noise_and_mode_branch(link_mode,
         "downsample",
         "compensate_cfo_fine",
         "compensate_iq_imbalance",
+        "compensate_iq_decision_directed",
         "ofdm_demodulate",
         "estimate_channel",
         "equalize",
@@ -183,7 +185,34 @@ def test_receiver_places_iq_compensation_before_noise_and_mode_branch(link_mode,
         "compensate_iq_imbalance",
         "estimate_noise",
         *branch,
+        "compensate_iq_decision_directed",
         "demodulate",
         "decode",
     ]
     assert calls == expected
+
+
+def test_receiver_skips_decision_directed_iq_without_channel_equalization():
+    receiver_class = _import_receiver_without_optional_galois()
+    receiver = receiver_class.__new__(receiver_class)
+    receiver.link_mode = "sc-fde"
+    receiver.enable_channel_est = False
+    calls = []
+    passthrough_stages = [
+        "matched_filter", "coarse_sync_detect", "compensate_cfo_coarse",
+        "fine_sync_frame", "downsample", "compensate_cfo_fine",
+        "compensate_iq_imbalance", "demodulate", "decode",
+    ]
+    for stage in passthrough_stages:
+        setattr(
+            receiver, stage,
+            lambda signal, stage=stage: calls.append(stage) or signal,
+        )
+    receiver.compensate_iq_decision_directed = (
+        lambda signal: calls.append("compensate_iq_decision_directed") or signal
+    )
+    receiver.estimate_noise = lambda signal: calls.append("estimate_noise")
+
+    receiver.run({"signal_stream": np.array([0j])})
+
+    assert "compensate_iq_decision_directed" not in calls

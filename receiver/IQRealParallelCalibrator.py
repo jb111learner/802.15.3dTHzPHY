@@ -17,6 +17,23 @@ class IQRealParallelCalibrator:
     _COND_WARNING_THRESHOLD = 1e10
 
     @staticmethod
+    def _require_identifiable(matrix, name):
+        """Reject rank-deficient or numerically singular calibration systems."""
+        rank = int(np.linalg.matrix_rank(matrix))
+        required_rank = int(matrix.shape[1])
+        condition_number = float(np.linalg.cond(matrix))
+        if (
+            rank < required_rank
+            or not np.isfinite(condition_number)
+            or condition_number > IQRealParallelCalibrator._COND_WARNING_THRESHOLD
+        ):
+            raise np.linalg.LinAlgError(
+                f"{name} is not identifiable: rank={rank}/{required_rank}, "
+                f"condition_number={condition_number:.6e}"
+            )
+        return rank, condition_number
+
+    @staticmethod
     def _as_1d_array(values, dtype=float, name="array"):
         array = np.asarray(values, dtype=dtype)
         if array.ndim != 1:
@@ -115,7 +132,9 @@ class IQRealParallelCalibrator:
                 IQRealParallelCalibrator.build_toeplitz(sQ, filter_len),
             )
         )
-        design_condition_number = float(np.linalg.cond(design_matrix))
+        _, design_condition_number = IQRealParallelCalibrator._require_identifiable(
+            design_matrix, "IQ impairment estimation matrix"
+        )
         warning_message = None
 
         if ridge_lambda <= 0.0:
@@ -322,17 +341,10 @@ class IQRealParallelCalibrator:
         delta[0] = 1.0
         zero = np.zeros(output_len, dtype=float)
 
-        condition_number = float(np.linalg.cond(block_matrix))
+        _, condition_number = IQRealParallelCalibrator._require_identifiable(
+            block_matrix, "IQ postcompensation matrix"
+        )
         warning_message = None
-        if (
-            not np.isfinite(condition_number)
-            or condition_number > IQRealParallelCalibrator._COND_WARNING_THRESHOLD
-        ):
-            warning_message = (
-                "postcompensation LS matrix is ill-conditioned; "
-                f"condition_number={condition_number}"
-            )
-            warnings.warn(warning_message, RuntimeWarning, stacklevel=2)
 
         block_pinv = np.linalg.pinv(block_matrix)
         solution_row_1 = block_pinv @ np.concatenate((delta, zero))
