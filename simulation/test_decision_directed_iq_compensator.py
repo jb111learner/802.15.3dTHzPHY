@@ -1,7 +1,9 @@
 import numpy as np
 
-from receiver.DecisionDirectedIQCompensator import DecisionDirectedIQCompensator
-from receiver.IQRealParallelCalibrator import IQRealParallelCalibrator
+from receiver.IQCompensator import (
+    DecisionDirectedIQCompensator,
+    IQRealParallelCalibrator,
+)
 
 
 class _Params:

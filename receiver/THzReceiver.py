@@ -15,8 +15,10 @@ from receiver.RxOFDMProcesser import RxOFDMProcesser
 from receiver.Decoder import Decoder
 from receiver.DeScrambler import DeScrambler
 from receiver.Downsampler import Downsampler
-from receiver.IQCompensator import IQCompensator
-from receiver.DecisionDirectedIQCompensator import DecisionDirectedIQCompensator
+from receiver.IQCompensator import (
+    DecisionDirectedIQCompensator,
+    IQCompensator,
+)
 
 
 class THzReceiver(BaseReceiver):

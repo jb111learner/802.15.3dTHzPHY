@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from receiver.IQRealParallelCalibrator import IQRealParallelCalibrator
+from receiver.IQCompensator import IQRealParallelCalibrator
 
 
 def _estimate_and_compensate(reference, impaired, filter_len):

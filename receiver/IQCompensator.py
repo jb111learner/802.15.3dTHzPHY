@@ -1,5 +1,468 @@
+import warnings
+
 import numpy as np
-from receiver.IQRealParallelCalibrator import IQRealParallelCalibrator
+
+
+class IQRealParallelCalibrator:
+    """
+    Real-based parallel LS estimator and TX precompensator for IQ imbalance.
+
+    The model is:
+        xI = h1 * sI + h2 * sQ + bI
+        xQ = h3 * sI + h4 * sQ + bQ
+
+    All FIR convolutions are causal. Same-length signal outputs are produced by
+    truncating the full causal convolution to the input sequence length.
+    """
+
+    _COND_WARNING_THRESHOLD = 1e10
+
+    @staticmethod
+    def _require_identifiable(matrix, name):
+        """Reject rank-deficient or numerically singular calibration systems."""
+        rank = int(np.linalg.matrix_rank(matrix))
+        required_rank = int(matrix.shape[1])
+        condition_number = float(np.linalg.cond(matrix))
+        if (
+            rank < required_rank
+            or not np.isfinite(condition_number)
+            or condition_number > IQRealParallelCalibrator._COND_WARNING_THRESHOLD
+        ):
+            raise np.linalg.LinAlgError(
+                f"{name} is not identifiable: rank={rank}/{required_rank}, "
+                f"condition_number={condition_number:.6e}"
+            )
+        return rank, condition_number
+
+    @staticmethod
+    def _as_1d_array(values, dtype=float, name="array"):
+        array = np.asarray(values, dtype=dtype)
+        if array.ndim != 1:
+            raise ValueError(f"{name} must be a one-dimensional array")
+        return array
+
+    @staticmethod
+    def _validate_filter_len(filter_len):
+        try:
+            filter_len = int(filter_len)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("filter_len must be a positive integer") from exc
+
+        if filter_len <= 0:
+            raise ValueError("filter_len must be a positive integer")
+        return filter_len
+
+    @staticmethod
+    def _causal_fir_same_length(signal, taps):
+        signal = IQRealParallelCalibrator._as_1d_array(
+            signal, dtype=float, name="signal"
+        )
+        taps = IQRealParallelCalibrator._as_1d_array(taps, dtype=float, name="taps")
+        if taps.size == 0:
+            raise ValueError("taps must not be empty")
+        if signal.size == 0:
+            return np.zeros(0, dtype=float)
+        return np.convolve(signal, taps, mode="full")[: signal.size]
+
+    @staticmethod
+    def _build_full_convolution_matrix(taps, input_len, output_len=None):
+        taps = IQRealParallelCalibrator._as_1d_array(taps, dtype=float, name="taps")
+        if taps.size == 0:
+            raise ValueError("taps must not be empty")
+
+        input_len = IQRealParallelCalibrator._validate_filter_len(input_len)
+        if output_len is None:
+            output_len = taps.size + input_len - 1
+        output_len = IQRealParallelCalibrator._validate_filter_len(output_len)
+
+        matrix = np.zeros((output_len, input_len), dtype=float)
+        for col in range(input_len):
+            row_start = col
+            row_stop = min(col + taps.size, output_len)
+            if row_stop > row_start:
+                matrix[row_start:row_stop, col] = taps[: row_stop - row_start]
+        return matrix
+
+    @staticmethod
+    def build_toeplitz(signal, filter_len):
+        """
+        Build the same-length causal FIR convolution matrix.
+
+        If T = build_toeplitz(x, L), then T @ h equals
+        np.convolve(x, h, mode="full")[:len(x)] for len(h) == L.
+        """
+        filter_len = IQRealParallelCalibrator._validate_filter_len(filter_len)
+        signal = IQRealParallelCalibrator._as_1d_array(
+            signal, dtype=float, name="signal"
+        )
+        if signal.size == 0:
+            raise ValueError("signal must not be empty")
+
+        toeplitz = np.zeros((signal.size, filter_len), dtype=float)
+        for tap_idx in range(min(filter_len, signal.size)):
+            toeplitz[tap_idx:, tap_idx] = signal[: signal.size - tap_idx]
+        return toeplitz
+
+    @staticmethod
+    def estimate_impairment_filters(s, x, filter_len, ridge_lambda=0.0):
+        """Estimate h1, h2, h3, h4 and I/Q DC offsets by LS."""
+        filter_len = IQRealParallelCalibrator._validate_filter_len(filter_len)
+        ridge_lambda = float(ridge_lambda)
+        if not np.isfinite(ridge_lambda):
+            raise ValueError("ridge_lambda must be finite")
+
+        s = IQRealParallelCalibrator._as_1d_array(s, dtype=complex, name="s")
+        x = IQRealParallelCalibrator._as_1d_array(x, dtype=complex, name="x")
+
+        if s.size != x.size:
+            raise ValueError("s and x must have the same length")
+        if s.size <= filter_len:
+            raise ValueError("input length must be greater than filter_len")
+
+        sI = np.real(s)
+        sQ = np.imag(s)
+        xI = np.real(x)
+        xQ = np.imag(x)
+
+        design_matrix = np.column_stack(
+            (
+                np.ones(s.size, dtype=float),
+                IQRealParallelCalibrator.build_toeplitz(sI, filter_len),
+                IQRealParallelCalibrator.build_toeplitz(sQ, filter_len),
+            )
+        )
+        _, design_condition_number = IQRealParallelCalibrator._require_identifiable(
+            design_matrix, "IQ impairment estimation matrix"
+        )
+        warning_message = None
+
+        if ridge_lambda <= 0.0:
+            estimation_method = "pinv"
+            design_pinv = np.linalg.pinv(design_matrix)
+            coeff_I = design_pinv @ xI
+            coeff_Q = design_pinv @ xQ
+        else:
+            estimation_method = "ridge"
+            regularizer = np.eye(design_matrix.shape[1], dtype=float)
+            regularizer[0, 0] = 0.0
+            lhs = design_matrix.T @ design_matrix + ridge_lambda * regularizer
+            rhs_I = design_matrix.T @ xI
+            rhs_Q = design_matrix.T @ xQ
+            lhs_condition_number = float(np.linalg.cond(lhs))
+            use_pinv = (
+                not np.isfinite(lhs_condition_number)
+                or lhs_condition_number > IQRealParallelCalibrator._COND_WARNING_THRESHOLD
+            )
+
+            if use_pinv:
+                warning_message = (
+                    "ridge normal-equation matrix is ill-conditioned; "
+                    f"condition_number={lhs_condition_number}. "
+                    "Using pseudoinverse fallback."
+                )
+                warnings.warn(warning_message, RuntimeWarning, stacklevel=2)
+                lhs_pinv = np.linalg.pinv(lhs)
+                coeff_I = lhs_pinv @ rhs_I
+                coeff_Q = lhs_pinv @ rhs_Q
+            else:
+                try:
+                    coeff_I = np.linalg.solve(lhs, rhs_I)
+                    coeff_Q = np.linalg.solve(lhs, rhs_Q)
+                except np.linalg.LinAlgError:
+                    warning_message = (
+                        "ridge normal-equation solve failed. "
+                        "Using pseudoinverse fallback."
+                    )
+                    warnings.warn(warning_message, RuntimeWarning, stacklevel=2)
+                    lhs_pinv = np.linalg.pinv(lhs)
+                    coeff_I = lhs_pinv @ rhs_I
+                    coeff_Q = lhs_pinv @ rhs_Q
+
+        if not (np.all(np.isfinite(coeff_I)) and np.all(np.isfinite(coeff_Q))):
+            raise np.linalg.LinAlgError(
+                "impairment filter estimation produced non-finite coefficients"
+            )
+
+        bI = float(coeff_I[0])
+        h1 = coeff_I[1 : 1 + filter_len].astype(float)
+        h2 = coeff_I[1 + filter_len :].astype(float)
+        bQ = float(coeff_Q[0])
+        h3 = coeff_Q[1 : 1 + filter_len].astype(float)
+        h4 = coeff_Q[1 + filter_len :].astype(float)
+
+        residual_I = design_matrix @ coeff_I - xI
+        residual_Q = design_matrix @ coeff_Q - xQ
+        result = {
+            "h1": h1,
+            "h2": h2,
+            "h3": h3,
+            "h4": h4,
+            "bI": bI,
+            "bQ": bQ,
+            "residual_norm_I": float(np.linalg.norm(residual_I)),
+            "residual_norm_Q": float(np.linalg.norm(residual_Q)),
+            "ridge_lambda": ridge_lambda,
+            "design_condition_number": design_condition_number,
+            "estimation_method": estimation_method,
+        }
+        if warning_message is not None:
+            result["warning"] = warning_message
+        return result
+
+    @staticmethod
+    def estimate_rx_impairment_filters(y, r, filter_len, ridge_lambda=0.0):
+        """Estimate RX-side real-based impairment filters."""
+        estimate = IQRealParallelCalibrator.estimate_impairment_filters(
+            y, r, filter_len, ridge_lambda=ridge_lambda
+        )
+        rx_estimate = {
+            "e1": estimate["h1"],
+            "e2": estimate["h2"],
+            "e3": estimate["h3"],
+            "e4": estimate["h4"],
+            "dI": estimate["bI"],
+            "dQ": estimate["bQ"],
+            "residual_norm_I": estimate["residual_norm_I"],
+            "residual_norm_Q": estimate["residual_norm_Q"],
+            "ridge_lambda": estimate["ridge_lambda"],
+            "design_condition_number": estimate["design_condition_number"],
+            "estimation_method": estimate["estimation_method"],
+        }
+        if "warning" in estimate:
+            rx_estimate["warning"] = estimate["warning"]
+        return rx_estimate
+
+    @staticmethod
+    def design_precompensation_filters(h1, h2, h3, h4, filter_len):
+        """Design real FIR TX precompensation filters g1, g2, g3, g4."""
+        filter_len = IQRealParallelCalibrator._validate_filter_len(filter_len)
+        h1 = IQRealParallelCalibrator._as_1d_array(h1, dtype=float, name="h1")
+        h2 = IQRealParallelCalibrator._as_1d_array(h2, dtype=float, name="h2")
+        h3 = IQRealParallelCalibrator._as_1d_array(h3, dtype=float, name="h3")
+        h4 = IQRealParallelCalibrator._as_1d_array(h4, dtype=float, name="h4")
+
+        if min(h1.size, h2.size, h3.size, h4.size) == 0:
+            raise ValueError("h1, h2, h3, and h4 must not be empty")
+
+        output_len = max(h1.size, h2.size, h3.size, h4.size) + filter_len - 1
+        H1 = IQRealParallelCalibrator._build_full_convolution_matrix(
+            h1, filter_len, output_len=output_len
+        )
+        H2 = IQRealParallelCalibrator._build_full_convolution_matrix(
+            h2, filter_len, output_len=output_len
+        )
+        H3 = IQRealParallelCalibrator._build_full_convolution_matrix(
+            h3, filter_len, output_len=output_len
+        )
+        H4 = IQRealParallelCalibrator._build_full_convolution_matrix(
+            h4, filter_len, output_len=output_len
+        )
+
+        block_matrix = np.block([[H1, H2], [H3, H4]])
+        delta = np.zeros(output_len, dtype=float)
+        delta[0] = 1.0
+        zero = np.zeros(output_len, dtype=float)
+        condition_number = float(np.linalg.cond(block_matrix))
+        warning_message = None
+        if (
+            not np.isfinite(condition_number)
+            or condition_number > IQRealParallelCalibrator._COND_WARNING_THRESHOLD
+        ):
+            warning_message = (
+                "precompensation LS matrix is ill-conditioned; "
+                f"condition_number={condition_number}"
+            )
+            warnings.warn(warning_message, RuntimeWarning, stacklevel=2)
+
+        block_pinv = np.linalg.pinv(block_matrix)
+        solution_col_1 = block_pinv @ np.concatenate((delta, zero))
+        solution_col_2 = block_pinv @ np.concatenate((zero, delta))
+        if not (
+            np.all(np.isfinite(solution_col_1))
+            and np.all(np.isfinite(solution_col_2))
+        ):
+            raise np.linalg.LinAlgError(
+                "precompensation filter design produced non-finite coefficients"
+            )
+
+        result = {
+            "g1": solution_col_1[:filter_len].astype(float),
+            "g3": solution_col_1[filter_len:].astype(float),
+            "g2": solution_col_2[:filter_len].astype(float),
+            "g4": solution_col_2[filter_len:].astype(float),
+            "condition_number": condition_number,
+        }
+        if warning_message is not None:
+            result["warning"] = warning_message
+        return result
+
+    @staticmethod
+    def design_postcompensation_filters(e1, e2, e3, e4, filter_len):
+        """Design real FIR RX postcompensation filters f1, f2, f3, f4."""
+        filter_len = IQRealParallelCalibrator._validate_filter_len(filter_len)
+        e1 = IQRealParallelCalibrator._as_1d_array(e1, dtype=float, name="e1")
+        e2 = IQRealParallelCalibrator._as_1d_array(e2, dtype=float, name="e2")
+        e3 = IQRealParallelCalibrator._as_1d_array(e3, dtype=float, name="e3")
+        e4 = IQRealParallelCalibrator._as_1d_array(e4, dtype=float, name="e4")
+
+        if min(e1.size, e2.size, e3.size, e4.size) == 0:
+            raise ValueError("e1, e2, e3, and e4 must not be empty")
+
+        output_len = max(e1.size, e2.size, e3.size, e4.size) + filter_len - 1
+        E1 = IQRealParallelCalibrator._build_full_convolution_matrix(
+            e1, filter_len, output_len=output_len
+        )
+        E2 = IQRealParallelCalibrator._build_full_convolution_matrix(
+            e2, filter_len, output_len=output_len
+        )
+        E3 = IQRealParallelCalibrator._build_full_convolution_matrix(
+            e3, filter_len, output_len=output_len
+        )
+        E4 = IQRealParallelCalibrator._build_full_convolution_matrix(
+            e4, filter_len, output_len=output_len
+        )
+
+        block_matrix = np.block([[E1, E3], [E2, E4]])
+        delta = np.zeros(output_len, dtype=float)
+        delta[0] = 1.0
+        zero = np.zeros(output_len, dtype=float)
+        _, condition_number = IQRealParallelCalibrator._require_identifiable(
+            block_matrix, "IQ postcompensation matrix"
+        )
+        warning_message = None
+
+        block_pinv = np.linalg.pinv(block_matrix)
+        solution_row_1 = block_pinv @ np.concatenate((delta, zero))
+        solution_row_2 = block_pinv @ np.concatenate((zero, delta))
+        if not (
+            np.all(np.isfinite(solution_row_1))
+            and np.all(np.isfinite(solution_row_2))
+        ):
+            raise np.linalg.LinAlgError(
+                "postcompensation filter design produced non-finite coefficients"
+            )
+
+        result = {
+            "f1": solution_row_1[:filter_len].astype(float),
+            "f2": solution_row_1[filter_len:].astype(float),
+            "f3": solution_row_2[:filter_len].astype(float),
+            "f4": solution_row_2[filter_len:].astype(float),
+            "condition_number": condition_number,
+        }
+        if warning_message is not None:
+            result["warning"] = warning_message
+        return result
+
+    @staticmethod
+    def design_precompensation_dc_offset(h1, h2, h3, h4, bI, bQ):
+        """Design constant I/Q TX offsets that cancel real-based RF DC offsets."""
+        h1 = IQRealParallelCalibrator._as_1d_array(h1, dtype=float, name="h1")
+        h2 = IQRealParallelCalibrator._as_1d_array(h2, dtype=float, name="h2")
+        h3 = IQRealParallelCalibrator._as_1d_array(h3, dtype=float, name="h3")
+        h4 = IQRealParallelCalibrator._as_1d_array(h4, dtype=float, name="h4")
+
+        if min(h1.size, h2.size, h3.size, h4.size) == 0:
+            raise ValueError("h1, h2, h3, and h4 must not be empty")
+
+        bI = float(bI)
+        bQ = float(bQ)
+        dc_matrix = np.array(
+            [[np.sum(h1), np.sum(h2)], [np.sum(h3), np.sum(h4)]],
+            dtype=float,
+        )
+        rhs = np.array([-bI, -bQ], dtype=float)
+        condition_number = float(np.linalg.cond(dc_matrix))
+        use_pinv = (
+            not np.isfinite(condition_number)
+            or condition_number > IQRealParallelCalibrator._COND_WARNING_THRESHOLD
+        )
+
+        if use_pinv:
+            warnings.warn(
+                "DC offset precompensation matrix is ill-conditioned; "
+                f"condition_number={condition_number}. Using pseudoinverse LS.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            solution = np.linalg.pinv(dc_matrix) @ rhs
+        else:
+            try:
+                solution = np.linalg.solve(dc_matrix, rhs)
+            except np.linalg.LinAlgError:
+                warnings.warn(
+                    "DC offset precompensation matrix is singular. "
+                    "Using pseudoinverse LS.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                solution = np.linalg.pinv(dc_matrix) @ rhs
+
+        if not np.all(np.isfinite(solution)):
+            raise np.linalg.LinAlgError(
+                "DC offset precompensation produced non-finite coefficients"
+            )
+        return {
+            "aI": float(solution[0]),
+            "aQ": float(solution[1]),
+            "dc_matrix_condition_number": condition_number,
+        }
+
+    @staticmethod
+    def design_postcompensation_dc_offset(f1, f2, f3, f4, dI, dQ):
+        """Design RX postcompensation DC offsets after f1-f4 filtering."""
+        f1 = IQRealParallelCalibrator._as_1d_array(f1, dtype=float, name="f1")
+        f2 = IQRealParallelCalibrator._as_1d_array(f2, dtype=float, name="f2")
+        f3 = IQRealParallelCalibrator._as_1d_array(f3, dtype=float, name="f3")
+        f4 = IQRealParallelCalibrator._as_1d_array(f4, dtype=float, name="f4")
+
+        if min(f1.size, f2.size, f3.size, f4.size) == 0:
+            raise ValueError("f1, f2, f3, and f4 must not be empty")
+
+        dI = float(dI)
+        dQ = float(dQ)
+        cI = -(dI * np.sum(f1) + dQ * np.sum(f2))
+        cQ = -(dI * np.sum(f3) + dQ * np.sum(f4))
+        if not (np.isfinite(cI) and np.isfinite(cQ)):
+            raise np.linalg.LinAlgError(
+                "RX postcompensation DC offset produced non-finite coefficients"
+            )
+        return {"cI": float(cI), "cQ": float(cQ)}
+
+    @staticmethod
+    def apply_precompensation(s, g1, g2, g3, g4, aI=0.0, aQ=0.0):
+        """Apply real-based parallel TX precompensation to a complex signal."""
+        s = IQRealParallelCalibrator._as_1d_array(s, dtype=complex, name="s")
+        sI = np.real(s)
+        sQ = np.imag(s)
+        spI = (
+            IQRealParallelCalibrator._causal_fir_same_length(sI, g1)
+            + IQRealParallelCalibrator._causal_fir_same_length(sQ, g2)
+            + float(aI)
+        )
+        spQ = (
+            IQRealParallelCalibrator._causal_fir_same_length(sI, g3)
+            + IQRealParallelCalibrator._causal_fir_same_length(sQ, g4)
+            + float(aQ)
+        )
+        return spI + 1j * spQ
+
+    @staticmethod
+    def apply_postcompensation(r, f1, f2, f3, f4, cI=0.0, cQ=0.0):
+        """Apply real-based parallel RX postcompensation to a complex signal."""
+        r = IQRealParallelCalibrator._as_1d_array(r, dtype=complex, name="r")
+        rI = np.real(r)
+        rQ = np.imag(r)
+        rcI = (
+            IQRealParallelCalibrator._causal_fir_same_length(rI, f1)
+            + IQRealParallelCalibrator._causal_fir_same_length(rQ, f2)
+            + float(cI)
+        )
+        rcQ = (
+            IQRealParallelCalibrator._causal_fir_same_length(rI, f3)
+            + IQRealParallelCalibrator._causal_fir_same_length(rQ, f4)
+            + float(cQ)
+        )
+        return rcI + 1j * rcQ
 
 
 class IQCompensator:
@@ -296,6 +759,157 @@ class IQCompensator:
             "iq_compensation_filters": filter_info_list,
         })
         return result_dict
+
+
+class DecisionDirectedIQCompensator:
+    """均衡后基于硬判决符号的残余 RX IQ 不平衡补偿器。"""
+
+    _QAM_SCALE = {
+        1: 1.0,
+        2: np.sqrt(2),
+        4: np.sqrt(10),
+        6: np.sqrt(42),
+        8: np.sqrt(170),
+    }
+
+    def __init__(self, params, filter_len=5, ridge_lambda=0.0, iterations=1):
+        self.params = params
+        self.filter_len = IQRealParallelCalibrator._validate_filter_len(filter_len)
+        self.ridge_lambda = float(ridge_lambda)
+        self.iterations = int(iterations)
+        if self.iterations <= 0:
+            raise ValueError("iq_comp_dd_iterations 必须为正整数")
+        self.mcs = self.params.get("MCS")
+        self.ncbps = int(self.params.get("NCBPS"))
+        self.constellation = self._build_constellation()
+        self.diagnostics = None
+
+    def _build_constellation(self):
+        if self.mcs != 1:
+            raise ValueError("判决导向 IQ 补偿当前仅支持 MCS=1 的 PSK/QAM")
+        if self.ncbps == 2:
+            points = np.array([
+                (i + 1j * q) * np.exp(-1j * np.pi / 4) / np.sqrt(2)
+                for i in (-1, 1)
+                for q in (-1, 1)
+            ])
+        elif self.ncbps == 3:
+            points = np.exp(1j * np.pi * np.arange(8) / 4)
+        elif self.ncbps in (1, 4, 6, 8):
+            side = 2 ** (self.ncbps // 2) if self.ncbps > 1 else 2
+            levels = (
+                np.array([-1.0, 1.0])
+                if self.ncbps == 1
+                else (2 * np.arange(side) - (side - 1))
+                / self._QAM_SCALE[self.ncbps]
+            )
+            if self.ncbps == 1:
+                points = levels.astype(complex)
+            else:
+                points = np.array([i + 1j * q for i in levels for q in levels])
+        else:
+            raise ValueError(f"判决导向 IQ 补偿不支持 NCBPS={self.ncbps}")
+        return np.asarray(points, dtype=np.complex128)
+
+    def _slice_symbols(self, symbols):
+        symbols = np.asarray(symbols, dtype=np.complex128)
+        phase = np.exp(1j * np.pi * np.arange(len(symbols)) / 2)
+        baseband = symbols / phase
+        decisions = np.empty_like(baseband)
+        distances = np.empty(len(baseband), dtype=float)
+        chunk_size = 8192
+        for start in range(0, len(baseband), chunk_size):
+            stop = min(start + chunk_size, len(baseband))
+            distance_matrix = np.abs(
+                baseband[start:stop, None] - self.constellation[None, :]
+            ) ** 2
+            indices = np.argmin(distance_matrix, axis=1)
+            decisions[start:stop] = self.constellation[indices]
+            distances[start:stop] = distance_matrix[
+                np.arange(stop - start), indices
+            ]
+        return decisions * phase, distances
+
+    @staticmethod
+    def _evm(reference, measured):
+        return float(
+            np.sqrt(
+                np.mean(np.abs(measured - reference) ** 2)
+                / np.mean(np.abs(reference) ** 2)
+            )
+        )
+
+    def compensate(self, data_dict):
+        required_keys = [
+            "signal_stream",
+            "sample_rate_Hz",
+            "duration_seconds",
+            "signal_length",
+            "padding_bit_num",
+        ]
+        for key in required_keys:
+            if key not in data_dict:
+                raise KeyError(f"输入数据字典缺少必要键值：{key}")
+        signal = np.asarray(data_dict["signal_stream"], dtype=np.complex128)
+        if signal.ndim != 1 or len(signal) <= 2 * self.filter_len + 1:
+            raise ValueError("判决导向 IQ 补偿输入必须是一维且长度足以估计 FIR")
+        if len(signal) != data_dict["signal_length"]:
+            raise ValueError("signal_stream 长度与 signal_length 不匹配")
+
+        compensated = signal
+        iteration_info = []
+        for _ in range(self.iterations):
+            decisions, decision_distances = self._slice_symbols(compensated)
+            estimate = IQRealParallelCalibrator.estimate_rx_impairment_filters(
+                decisions,
+                compensated,
+                self.filter_len,
+                ridge_lambda=self.ridge_lambda,
+            )
+            filters = IQRealParallelCalibrator.design_postcompensation_filters(
+                estimate["e1"],
+                estimate["e2"],
+                estimate["e3"],
+                estimate["e4"],
+                self.filter_len,
+            )
+            dc = IQRealParallelCalibrator.design_postcompensation_dc_offset(
+                filters["f1"],
+                filters["f2"],
+                filters["f3"],
+                filters["f4"],
+                estimate["dI"],
+                estimate["dQ"],
+            )
+            before_evm = self._evm(decisions, compensated)
+            compensated = IQRealParallelCalibrator.apply_postcompensation(
+                compensated,
+                filters["f1"],
+                filters["f2"],
+                filters["f3"],
+                filters["f4"],
+                dc["cI"],
+                dc["cQ"],
+            )
+            after_evm = self._evm(decisions, compensated)
+            iteration_info.append({
+                "decision_evm_before": before_evm,
+                "decision_evm_after": after_evm,
+                "decision_distance_mean": float(np.mean(decision_distances)),
+                "design_condition_number": estimate["design_condition_number"],
+                "post_condition_number": filters["condition_number"],
+            })
+
+        self.diagnostics = iteration_info
+        result = dict(data_dict)
+        result.update({
+            "signal_stream": compensated,
+            "signal_length": len(compensated),
+            "duration_seconds": len(compensated) / data_dict["sample_rate_Hz"],
+            "iq_compensation_method": "decision_directed",
+            "iq_dd_diagnostics": iteration_info,
+        })
+        return result
 
 
 # ======================================================================

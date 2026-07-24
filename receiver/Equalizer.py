@@ -216,7 +216,7 @@ class FreqDomainEqualizer:
     
 if __name__ == "__main__":
     from receiver.sync.CoarseSync import CoarseSync
-    from receiver.DecisionDirectedIQCompensator import DecisionDirectedIQCompensator
+    from receiver.IQCompensator import DecisionDirectedIQCompensator
     from receiver.DeModulator import THzDemodulator
     import os
     import time
