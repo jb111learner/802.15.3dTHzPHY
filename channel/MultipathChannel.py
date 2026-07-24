@@ -2,37 +2,134 @@ import copy
 import numpy as np
 
 
+# 3GPP TR 38.901 V19.4.0, Table 7.7.2-1 through Table 7.7.2-5.
+# Delays are normalized to the requested RMS delay spread at runtime.
+_TDL_PROFILES = {
+    "TDL-A": {
+        "kind": "rayleigh",
+        "taps": (
+            (0.0000, -13.4), (0.3819, 0.0), (0.4025, -2.2),
+            (0.5868, -4.0), (0.4610, -6.0), (0.5375, -8.2),
+            (0.6708, -9.9), (0.5750, -10.5), (0.7618, -7.5),
+            (1.5375, -15.9), (1.8978, -6.6), (2.2242, -16.7),
+            (2.1718, -12.4), (2.4942, -15.2), (2.5119, -10.8),
+            (3.0582, -11.3), (4.0810, -12.7), (4.4579, -16.2),
+            (4.5695, -18.3), (4.7966, -18.9), (5.0066, -16.6),
+            (5.3043, -19.9), (9.6586, -29.7),
+        ),
+    },
+    "TDL-B": {
+        "kind": "rayleigh",
+        "taps": (
+            (0.0000, 0.0), (0.1072, -2.2), (0.2155, -4.0),
+            (0.2095, -3.2), (0.2870, -9.8), (0.2986, -1.2),
+            (0.3752, -3.4), (0.5055, -5.2), (0.3681, -7.6),
+            (0.3697, -3.0), (0.5700, -8.9), (0.5283, -9.0),
+            (1.1021, -4.8), (1.2756, -5.7), (1.5474, -7.5),
+            (1.7842, -1.9), (2.0169, -7.6), (2.8294, -12.2),
+            (3.0219, -9.8), (3.6187, -11.4), (4.1067, -14.9),
+            (4.2790, -9.2), (4.7834, -11.3),
+        ),
+    },
+    "TDL-C": {
+        "kind": "rayleigh",
+        "taps": (
+            (0.0000, -4.4), (0.2099, -1.2), (0.2219, -3.5),
+            (0.2329, -5.2), (0.2176, -2.5), (0.6366, 0.0),
+            (0.6448, -2.2), (0.6560, -3.9), (0.6584, -7.4),
+            (0.7935, -7.1), (0.8213, -10.7), (0.9336, -11.1),
+            (1.2285, -5.1), (1.3083, -6.8), (2.1704, -8.7),
+            (2.7105, -13.2), (4.2589, -13.9), (4.6003, -13.9),
+            (5.4902, -15.8), (5.6077, -17.1), (6.3065, -16.0),
+            (6.6374, -15.7), (7.0427, -21.6), (8.6523, -22.8),
+        ),
+    },
+    "TDL-D": {
+        "kind": "rician",
+        "los_first": (-0.2, -13.5, 13.3),
+        "taps": (
+            (0.0350, -18.8), (0.6120, -21.0), (1.3630, -22.8),
+            (1.4050, -17.9), (1.8040, -20.1), (2.5960, -21.9),
+            (1.7750, -22.9), (4.0420, -27.8), (7.9370, -23.6),
+            (9.4240, -24.8), (9.7080, -30.0), (12.5250, -27.7),
+        ),
+    },
+    "TDL-E": {
+        "kind": "rician",
+        "los_first": (-0.03, -22.03, 22.0),
+        "taps": (
+            (0.5133, -15.8), (0.5440, -18.1), (0.5630, -19.8),
+            (0.5440, -22.9), (0.7112, -22.4), (1.9092, -18.6),
+            (1.9293, -20.8), (1.9589, -22.6), (2.6426, -22.3),
+            (3.7136, -25.6), (5.4524, -20.2), (12.0034, -29.8),
+            (20.6519, -29.2),
+        ),
+    },
+}
+
+
 class MultipathChannel:
     """
-    多径信道模型（第一版工程接入版）
+    多径信道模型：支持 3GPP TDL-A~E 和旧版自定义/PDP 回退。
 
     设计目标：
     1. 接收并返回当前平台统一使用的 signal_dict，而不是裸数组。
     2. 支持可配置的静态多径：delay_samples / tau + static complex gain。
     3. 支持可选分数延迟滤波，输出长度严格保持与输入一致。
     4. 不在本模块中添加 AWGN，噪声仍由 channel/AWGN.py 负责。
-    5. Rayleigh / Rician / Jakes 等时变模型先保留接口，后续在接收端均衡完善后再扩展。
+    5. TDL 模式使用固定的 Rayleigh/Rician 信道实现；旧接口保留原有衰落选项。
     """
 
     _EPS = 1e-12
+    _LIGHT_SPEED_MPS = 299792458.0
+    _DEFAULT_JAKES_SINUSOIDS = 48
 
     def __init__(self, params):
         self.params = params
 
-        self.use_frac_delay = bool(self._get_param("use_frac_delay", True))
+        self.tdl_model = self._normalize_tdl_model(self._get_param("tdl_model", None))
+        self.tdl_delay_spread_ns = self._get_tdl_delay_spread_ns()
+        self.tdl_velocity_mps = self._get_tdl_velocity_mps()
+        self.tdl_fc_hz = self._get_tdl_fc_hz()
+        self.tdl_max_doppler_hz = (
+            abs(self.tdl_velocity_mps) * self.tdl_fc_hz / self._LIGHT_SPEED_MPS
+            if self.tdl_model is not None else 0.0
+        )
+        self.tdl_num_sinusoids = int(
+            self._get_param("tdl_jakes_num_sinusoids", self._DEFAULT_JAKES_SINUSOIDS)
+        )
+        if self.tdl_num_sinusoids < 4 or self.tdl_num_sinusoids % 2:
+            raise ValueError("tdl_jakes_num_sinusoids 必须为不小于 4 的偶数")
+        # TDL profiles use the protocol's static realization and integer delays.
+        self.use_frac_delay = (
+            False
+            if self.tdl_model is not None
+            else bool(self._get_param("use_frac_delay", False))
+        )
         self.frac_filter_half_len = int(self._get_param("frac_filter_half_len", 12))
         self.frac_filter_window = self._get_param("frac_filter_window", "hann")
         
-        self.static_channel = bool(self._get_param("static_channel", False))
-        self.normalize_channel_power = bool(self._get_param("normalize_channel_power", False))
+        self.static_channel = (
+            True if self.tdl_model is not None
+            else bool(self._get_param("static_channel", True))
+        )
+        self.normalize_channel_power = (
+            False if self.tdl_model is not None
+            else bool(self._get_param("normalize_channel_power", False))
+        )
 
         # 是否启用帧间输入历史缓冲区。第一版只用于 static 多径。
         self.enable_multipath_memory = bool(self._get_param("enable_multipath_memory", False))
 
         # 衰落模型控制。当前版本支持 static 和 frame。
         # frame 表示每次 apply() 时，每条 Rayleigh/Rician 路径生成一个帧内固定衰落系数。
-        self.fading_model = str(self._get_param("fading_model", "frame")).lower()
-        self.fading_seed = self._get_param("fading_seed", None)
+        self.fading_model = (
+            "static" if self.tdl_model is not None
+            else str(self._get_param("fading_model", "static")).lower()
+        )
+        self.fading_seed = self._get_param(
+            "fading_seed", self._get_param("random_seed", None)
+        )
         self.block_length = self._get_param("block_length", 256)
         self.rng = np.random.default_rng(self.fading_seed)
 
@@ -52,6 +149,9 @@ class MultipathChannel:
         self.channel_power_gain = None
         # PDP 自动路径生成缓存。PDP 只负责生成路径几何和平均功率，不参与每帧随机衰落。
         self._pdp_paths_cache = None
+        self._tdl_paths_cache = None
+        self._tdl_jakes_state = None
+        self._last_tdl_gain_traces = None
 
         # 大尺度衰落 / 路径损耗缓存。默认不启用，启用后在当前信道实例内保持不变。
         self.enable_large_scale_fading = bool(self._get_param("enable_large_scale_fading", False))
@@ -78,6 +178,49 @@ class MultipathChannel:
         except KeyError:
             return default
 
+    @staticmethod
+    def _normalize_tdl_model(value):
+        """Normalize the public selector while preserving None for legacy mode."""
+        if value is None:
+            return None
+        value = str(value).strip().upper()
+        if value in ("", "NONE", "OFF", "DISABLED"):
+            return None
+        if value in ("A", "B", "C", "D", "E"):
+            value = f"TDL-{value}"
+        if value not in _TDL_PROFILES:
+            raise ValueError(
+                f"tdl_model 必须为 None 或 TDL-A/TDL-B/TDL-C/TDL-D/TDL-E，收到 {value}"
+            )
+        return value
+
+    def _get_tdl_delay_spread_ns(self):
+        if self.tdl_model is None:
+            return None
+        value = float(self._get_param("tdl_delay_spread_ns", 100.0))
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError("tdl_delay_spread_ns 必须为有限正数")
+        return value
+
+    def _get_tdl_velocity_mps(self):
+        if self.tdl_model is None:
+            return 0.0
+        value = float(self._get_param("tdl_velocity_mps", 0.0))
+        if not np.isfinite(value):
+            raise ValueError("tdl_velocity_mps 必须为有限数")
+        return value
+
+    def _get_tdl_fc_hz(self):
+        if self.tdl_model is None:
+            return 0.0
+        value = self._get_param("fc", None)
+        if value is None:
+            value = self._get_param("carrier_frequency_Hz", 0.0)
+        value = float(value)
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError("TDL Doppler 计算要求 fc 为有限正数")
+        return value
+
     def _get_pdp_param(self, key, default=None):
         """读取 PDP 参数，和 _get_param 分开只是为了代码语义更清晰。"""
         return self._get_param(key, default)
@@ -94,6 +237,10 @@ class MultipathChannel:
         self._history_length = 0
         self._processed_samples = 0
         self.rng = np.random.default_rng(self.fading_seed)
+        if self.tdl_model is not None:
+            self._tdl_paths_cache = None
+            self._tdl_jakes_state = None
+            self._last_tdl_gain_traces = None
 
     def _get_configured_paths(self):
         """
@@ -105,6 +252,9 @@ class MultipathChannel:
         3. 否则兼容旧版 chan_delays / chan_gains；
         4. 都没有时，退化为一条直达径。
         """
+        if self.tdl_model is not None:
+            return self._get_tdl_paths_cached()
+
         use_pdp = bool(self._get_param("use_pdp", False))
         pdp_model = str(self._get_param("pdp_model", "manual")).lower()
 
@@ -337,26 +487,31 @@ class MultipathChannel:
             f_los = float(path.get("f_los", 0.0))
             los_phase = float(path.get("los_phase", 0.0))
 
-            resolved_paths.append(
-                {
-                    "index": idx,
-                    "delay_samples": delay_samples,
-                    "gain_type": gain_type,
+            resolved_path = {
+                "index": idx,
+                "delay_samples": delay_samples,
+                "gain_type": gain_type,
 
-                    # static 路径直接使用 gain；
-                    # rayleigh / rician 路径使用 power 生成帧内随机增益。
-                    "gain": static_gain,
-                    "power": power,
+                # static 路径直接使用 gain；
+                # rayleigh / rician 路径使用 power 生成帧内随机增益。
+                "gain": static_gain,
+                "power": power,
 
-                    # 预留给后续多普勒连续模型
-                    "fd": fd,
-                    "K": K,
-                    "f_los": f_los,
-                    "los_phase": los_phase,
+                # 预留给后续多普勒连续模型
+                "fd": fd,
+                "K": K,
+                "f_los": f_los,
+                "los_phase": los_phase,
 
-                    "raw": path,
-                }
-            )
+                "raw": path,
+            }
+            for key in (
+                "tdl_model", "tdl_fading_type", "tdl_normalized_delay",
+                "tdl_power_normalized", "tdl_profile_index",
+            ):
+                if key in path:
+                    resolved_path[key] = path[key]
+            resolved_paths.append(resolved_path)
 
         if not resolved_paths:
             resolved_paths = [
@@ -383,6 +538,149 @@ class MultipathChannel:
             self._pdp_paths_cache = self._generate_pdp_paths()
 
         return copy.deepcopy(self._pdp_paths_cache)
+
+    def _get_tdl_paths_cached(self):
+        """Build one static 3GPP TDL realization and reuse it across frames."""
+        if self._tdl_paths_cache is None:
+            profile = _TDL_PROFILES[self.tdl_model]
+            rows = []
+
+            if profile["kind"] == "rician":
+                los_db, scatter_db, k_db = profile["los_first"]
+                los_power = 10.0 ** (los_db / 10.0)
+                scatter_power = 10.0 ** (scatter_db / 10.0)
+                rows.append({
+                    "normalized_delay": 0.0,
+                    "power_raw": los_power + scatter_power,
+                    "fading_type": "rician",
+                    "K": 10.0 ** (k_db / 10.0),
+                    "los_power_db": los_db,
+                    "scatter_power_db": scatter_db,
+                })
+
+            for normalized_delay, power_db in profile["taps"]:
+                rows.append({
+                    "normalized_delay": float(normalized_delay),
+                    "power_raw": 10.0 ** (float(power_db) / 10.0),
+                    "fading_type": "rayleigh",
+                    "power_db": float(power_db),
+                })
+
+            total_power = sum(row["power_raw"] for row in rows)
+            if not np.isfinite(total_power) or total_power <= self._EPS:
+                raise ValueError(f"{self.tdl_model} profile has invalid total power")
+
+            paths = []
+            for index, row in enumerate(sorted(rows, key=lambda item: item["normalized_delay"])):
+                power = row["power_raw"] / total_power
+                if self.tdl_max_doppler_hz > 0.0:
+                    # Time-varying gains are generated continuously in apply().
+                    gain = 0.0 + 0.0j
+                elif row["fading_type"] == "rician":
+                    gain = self._draw_rician_gain(
+                        power=power,
+                        K=row["K"],
+                        f_los=0.0,
+                        los_phase=0.0,
+                        fs=1.0,
+                    )
+                else:
+                    gain = self._draw_rayleigh_gain(power)
+
+                paths.append({
+                    "tau": row["normalized_delay"] * self.tdl_delay_spread_ns * 1e-9,
+                    "gain_type": "static",
+                    "gain": gain,
+                    "power": power,
+                    "K": row.get("K", 0.0),
+                    "tdl_model": self.tdl_model,
+                    "tdl_fading_type": row["fading_type"],
+                    "tdl_normalized_delay": row["normalized_delay"],
+                    "tdl_power_normalized": power,
+                    "tdl_profile_index": index,
+                    "raw": row,
+                })
+
+            self._tdl_paths_cache = paths
+
+        return copy.deepcopy(self._tdl_paths_cache)
+
+    def _ensure_tdl_jakes_state(self, num_paths):
+        """Create deterministic per-path Jakes phases once per channel realization."""
+        if self._tdl_jakes_state is not None:
+            return
+        sinusoid_index = np.arange(1, self.tdl_num_sinusoids + 1, dtype=float)
+        angles = np.pi * (sinusoid_index - 0.5) / self.tdl_num_sinusoids
+        doppler_frequencies = self.tdl_max_doppler_hz * np.cos(angles)
+        phase_offsets = self.rng.uniform(
+            0.0, 2.0 * np.pi, size=(num_paths, self.tdl_num_sinusoids)
+        )
+        los_phases = self.rng.uniform(0.0, 2.0 * np.pi, size=num_paths)
+        self._tdl_jakes_state = {
+            "doppler_frequencies_hz": doppler_frequencies,
+            "phase_offsets_rad": phase_offsets,
+            "los_phases_rad": los_phases,
+        }
+
+    def _generate_tdl_gain_traces(self, resolved_paths, num_samples, fs):
+        """Generate continuous per-sample TDL gains using a Jakes SOS process."""
+        if self.tdl_max_doppler_hz <= 0.0:
+            return None
+        if fs <= 0.0:
+            raise ValueError("sample_rate_Hz 必须为正数")
+
+        self._ensure_tdl_jakes_state(len(resolved_paths))
+        state = self._tdl_jakes_state
+        sample_indices = self._processed_samples + np.arange(num_samples, dtype=float)
+        time_seconds = sample_indices / fs
+        phase_matrix = (
+            time_seconds[:, None] * 2.0 * np.pi
+            * state["doppler_frequencies_hz"][None, :]
+        )
+        gain_traces = []
+
+        for path_index, path in enumerate(resolved_paths):
+            scattering = np.exp(
+                1j * (
+                    phase_matrix
+                    + state["phase_offsets_rad"][path_index][None, :]
+                )
+            ).sum(axis=1) / np.sqrt(self.tdl_num_sinusoids)
+            power = float(path["power"])
+            if path.get("tdl_fading_type") == "rician":
+                K = float(path.get("K", 0.0))
+                los = np.sqrt(K / (K + 1.0)) * np.exp(
+                    1j * (
+                        state["los_phases_rad"][path_index]
+                        + 2.0 * np.pi * 0.7 * self.tdl_max_doppler_hz * time_seconds
+                    )
+                )
+                gain = np.sqrt(power) * (
+                    los + np.sqrt(1.0 / (K + 1.0)) * scattering
+                )
+            else:
+                gain = np.sqrt(power) * scattering
+            gain_traces.append(gain)
+
+        return gain_traces
+
+    def _activate_tdl_paths(self, resolved_paths, num_samples, fs):
+        """Return diagnostics plus continuous gain traces for the current signal."""
+        if self.tdl_max_doppler_hz <= 0.0:
+            active_paths = self._activate_path_gains_for_frame(resolved_paths, fs)
+            self._last_tdl_gain_traces = None
+            return active_paths, None
+
+        gain_traces = self._generate_tdl_gain_traces(resolved_paths, num_samples, fs)
+        self._last_tdl_gain_traces = [trace.copy() for trace in gain_traces]
+        active_paths = []
+        for path, gains in zip(resolved_paths, gain_traces):
+            active_path = path.copy()
+            active_path["gain"] = complex(gains[0]) if len(gains) else 0.0 + 0.0j
+            active_path["frame_gain"] = active_path["gain"]
+            active_path["tdl_gain_trace_length"] = len(gains)
+            active_paths.append(active_path)
+        return active_paths, gain_traces
 
 
     def _generate_pdp_delays(self, num_paths, use_tau_domain):
@@ -840,6 +1138,45 @@ class MultipathChannel:
         y_full = np.convolve(x, h, mode="full")
         return y_full[: len(x)]
 
+    def _apply_tdl_path_sum(self, x, active_paths, gain_traces=None):
+        """Apply integer-delay TDL paths without forming a dense long FIR convolution."""
+        x = np.asarray(x, dtype=complex)
+        if not active_paths:
+            return np.zeros_like(x, dtype=complex)
+
+        max_delay = max(int(np.round(path["delay_samples"])) for path in active_paths)
+        if self.enable_multipath_memory:
+            self._ensure_history_length(max_delay)
+            x_ext = np.concatenate([self._input_history, x])
+            y_ext = np.zeros_like(x_ext, dtype=complex)
+            for path_index, path in enumerate(active_paths):
+                delayed = self._apply_integer_delay(
+                    x_ext, int(np.round(path["delay_samples"]))
+                )
+                if gain_traces is None:
+                    y_ext += path["gain"] * delayed
+                else:
+                    trace = np.asarray(gain_traces[path_index], dtype=complex)
+                    y_ext[max_delay:max_delay + len(x)] += trace * delayed[
+                        max_delay:max_delay + len(x)
+                    ]
+            y = y_ext[max_delay:max_delay + len(x)]
+            self._input_history = x_ext[-max_delay:].copy() if max_delay else np.zeros(0, dtype=complex)
+            self._history_length = len(self._input_history)
+        else:
+            y = np.zeros_like(x, dtype=complex)
+            for path_index, path in enumerate(active_paths):
+                delayed = self._apply_integer_delay(
+                    x, int(np.round(path["delay_samples"]))
+                )
+                if gain_traces is None:
+                    y += path["gain"] * delayed
+                else:
+                    y += np.asarray(gain_traces[path_index], dtype=complex) * delayed
+
+        self._processed_samples += len(x)
+        return y
+
     def _apply_fir_with_history_state(self, x, h, input_history):
         """
         使用给定输入历史执行 FIR 滤波。
@@ -1101,7 +1438,13 @@ class MultipathChannel:
             self.chan_impulse = h_current
 
         else:
-            active_paths = self._activate_path_gains_for_frame(resolved_paths, fs)
+            if self.tdl_model is not None:
+                active_paths, gain_traces = self._activate_tdl_paths(
+                    resolved_paths, len(x), fs
+                )
+            else:
+                active_paths = self._activate_path_gains_for_frame(resolved_paths, fs)
+                gain_traces = None
 
             self.active_paths = active_paths
             self.active_blocks = [
@@ -1117,7 +1460,9 @@ class MultipathChannel:
 
             self.chan_impulse = self._build_effective_impulse_response(active_paths)
 
-            if self.enable_multipath_memory:
+            if self.tdl_model is not None:
+                y = self._apply_tdl_path_sum(x, active_paths, gain_traces)
+            elif self.enable_multipath_memory:
                 y = self._apply_static_fir_with_history(x, self.chan_impulse)
             else:
                 y = self._apply_static_fir_no_history(x, self.chan_impulse)
@@ -1159,6 +1504,14 @@ class MultipathChannel:
         result_dict["multipath_fir_length"] = len(self.chan_impulse)
         result_dict["multipath_history_length"] = max(len(self.chan_impulse) - 1, 0)
         result_dict["multipath_processed_samples"] = self._processed_samples
+        result_dict["tdl_enabled"] = self.tdl_model is not None
+        result_dict["tdl_model"] = self.tdl_model
+        result_dict["tdl_delay_spread_ns"] = self.tdl_delay_spread_ns
+        result_dict["tdl_velocity_mps"] = self.tdl_velocity_mps
+        result_dict["tdl_carrier_frequency_hz"] = self.tdl_fc_hz
+        result_dict["tdl_max_doppler_hz"] = self.tdl_max_doppler_hz
+        result_dict["tdl_los_doppler_hz"] = 0.7 * self.tdl_max_doppler_hz
+        result_dict["tdl_fading_time_varying"] = self.tdl_max_doppler_hz > 0.0
 
         return result_dict
 

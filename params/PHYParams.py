@@ -5,15 +5,37 @@ from core.BaseParams import BaseParams
 
 
 class PHYParams(BaseParams):
+    _LEGACY_MULTIPATH_KEYS = {
+        "multipath_paths", "chan_delays", "chan_gains", "use_pdp",
+        "use_frac_delay", "frac_filter_half_len", "frac_filter_window",
+        "static_channel", "normalize_channel_power", "enable_multipath_memory",
+        "fading_model", "fading_seed", "block_length", "jakes_num_sinusoids",
+    }
+
+    @classmethod
+    def _is_legacy_multipath_key(cls, key: str) -> bool:
+        return key in cls._LEGACY_MULTIPATH_KEYS or key.startswith("pdp_")
+
     def apply_dict(self, param_dict: Dict[str, Any]) -> List[str]:
         """安全更新参数，忽略 BaseParams 不支持的字段，返回未知键列表。"""
         unknown_keys = []
         for k, v in param_dict.items():
-            if k in self._params:
+            if k in self._params or self._is_legacy_multipath_key(k):
                 self.update(**{k: v})
             else:
                 unknown_keys.append(k)
         return unknown_keys
+
+    def update(self, **kwargs):
+        """更新现代参数，并按需接收旧多径键而不将其放入默认参数表。"""
+        unknown_keys = [
+            key for key in kwargs
+            if key not in self._params and not self._is_legacy_multipath_key(key)
+        ]
+        if unknown_keys:
+            raise KeyError(f"参数 {unknown_keys[0]} 不存在")
+        self._params.update(kwargs)
+        self.validate()
 
     def _init_params(self):
         self._params = {
@@ -42,8 +64,8 @@ class PHYParams(BaseParams):
             "subwave_num":512,                                                                       # 子载波数
             "subframe_ofdm_num": 48,                                                                 # 单数据帧OFDM子帧数量
             "pilot_block_indexes":[0, 16, 32],                                                       # 块状导频索引
-            # "enable_window_filter":False,                                                          # 是否启用加窗与频谱成型
-            # "rolling_width":64,                                                                    # 过渡带宽度
+            # "enable_window_filter":False,                                                            # 是否启用加窗与频谱成型
+            # "rolling_width":64,                                                                      # 过渡带宽度
 
 
             # 调制相关
@@ -52,10 +74,10 @@ class PHYParams(BaseParams):
             "APSK_PHASE_OFFSETS": [np.pi/4, np.pi/12],                                              # 每环相位偏置（可设全0）
             "code_type": "LDPC",                                                                      # 信道编码类型(RS编码/LDPC)
 
-            # RS码相关设置 (OFDM模式建议使用RS(15,11) ， SC-FDE模式建议使用RS(255,192))
-            "rs_nsym": 4,                                                                           # Reed-Solomon校验符号数量 (n-k)
-            "rs_c_exp": 4,                                                                           # Reed-Solomon有限域指数 (GF(2^8)=GF(256))
-            "rs_packet_size": 11,                                                                   # Reed-Solomon编码包大小 (k)
+            # RS码相关设置 (RS(15,11) shortened over GF(256): n=15, k=11, t=2)
+            "rs_nsym": 63,                                                                           # Reed-Solomon校验符号数量 (n-k)
+            "rs_c_exp": 8,                                                                           # Reed-Solomon有限域指数 (GF(2^8)=GF(256))
+            "rs_packet_size": 192,                                                                   # Reed-Solomon编码包大小 (k)
 
             # LDPC码相关设置
             "ldpc_n": 672,                                                                          # Engineering LDPC codeword length
@@ -146,48 +168,16 @@ class PHYParams(BaseParams):
             "iq_comp_filter_len": 5,               # IQ 损伤/补偿 FIR 长度
             "iq_comp_ridge_lambda": 0.0,           # LS 岭回归系数，0 表示使用伪逆
             "iq_compensation_mode": "per_frame",  # per_frame / first_frame
-
             
-            # 多径信道相关参数（第一版：静态多径 + 可选分数延迟，默认关闭以保持原 AWGN 链路不变）
-            "enable_multipath": True,                                                                # 是否启用多径信道
-            "multipath_paths": [                                                                     # 多径路径列表；delay_samples 优先于 tau
-                {"delay_samples": 0.0,  "gain_type": "static", "gain": 1.0 + 0.0j},
-                # {"delay_samples": 8.0,  "gain_type": "static", "gain": 0.45 * np.exp(-1j * np.pi / 6)},
-                # {"delay_samples": 16.0, "gain_type": "static", "gain": 0.25 * np.exp(-1j * np.pi / 3)},
-                # {"delay_samples": 32.0,  "gain_type": "static", "gain": 0.25 * np.exp(-1j * np.pi / 2)},
-            ],
-            # ==================PDP 相关参数==================
-            # PDP 功率时延谱路径生成参数
-            "use_pdp": False,                          # 是否使用 PDP 自动生成 multipath_paths
-            "pdp_model": "manual",                     # manual / uniform / exponential / custom
-            "pdp_num_paths": 6,                        # PDP 自动生成的路径数量
-            "pdp_total_power": 1.0,                    # PDP 路径平均功率总和
+            # 3GPP TR 38.901 TDL 多径模式。TDL 模式启用时，仅需选择模型和 DS。
+            # 10/30/100/300/1000 ns 均可作为 tdl_delay_spread_ns。
+            "enable_multipath": True,
+            "tdl_model": "TDL-A",                     # None=旧 multipath/PDP 回退；TDL-A~TDL-E=标准 TDL
+            "tdl_delay_spread_ns": 100.0,              # 目标 RMS delay spread，单位 ns
+            "tdl_velocity_mps": 0.0,                    # 移动速度；0=固定随机信道，>0=连续 Jakes 衰落
 
-            # PDP 时延配置。优先使用 pdp_max_delay_samples；若为 None，则可使用 pdp_max_tau。
-            "pdp_max_delay_samples": 32.0,             # 最大路径时延，单位：采样点
-            "pdp_max_tau": None,                       # 最大路径时延，单位：秒，后续由 tau*fs 转换
-            "pdp_random_delays": False,                # 是否随机生成路径时延；False 时使用均匀时延网格
-            "pdp_seed": None,                          # PDP 随机时延种子；None 时不固定随机几何
-
-            # exponential PDP 参数
-            "pdp_rms_delay_samples": 8.0,              # 指数 PDP 的衰减尺度，单位：采样点
-            "pdp_rms_tau": None,                       # 指数 PDP 的衰减尺度，单位：秒
-
-            # custom PDP 参数
-            "pdp_custom_delay_samples": None,          # 自定义 PDP 路径时延，单位：采样点
-            "pdp_custom_taus": None,                   # 自定义 PDP 路径时延，单位：秒
-            "pdp_custom_powers": None,                 # 自定义 PDP 路径平均功率
-
-            # PDP 生成路径的增益类型
-            "pdp_gain_type": "rayleigh",               # static / rayleigh / rician
-            "pdp_include_los": False,                   # 是否将第 0 条路径作为 LOS 路径
-            "pdp_los_gain_type": "rician",             # LOS 路径增益类型：static / rician / rayleigh
-            "pdp_rician_K": 10.0,                      # PDP 中 LOS Rician 路径的 K 因子
-            "pdp_los_phase": 0.0,                      # LOS 初始相位
-            "pdp_f_los": 0.0,                          # LOS 多普勒，当前 frame/block 模型下用于相位推进
-
-            "pdp_normalize_power": False,               # 是否把 PDP 平均功率归一化到 pdp_total_power
-            # ============================================
+            # 旧 multipath_paths/PDP 配置不再作为现代 PHY 参数暴露；
+            # MultipathChannel 仍保留兼容解析，传入 tdl_model=None 时使用旧路径。
 
             # =========大尺度衰落 / 路径损耗参数===================
             "enable_large_scale_fading": False,        # 是否启用大尺度衰落
@@ -201,20 +191,8 @@ class PHYParams(BaseParams):
             "large_scale_seed": None,                  # 阴影衰落随机种子
             # ================================================
 
-            "use_frac_delay": False,                                                                  # 是否启用分数延迟滤波
-            "frac_filter_half_len": 12,                                                              # 分数延迟 FIR 半长，滤波器长度为 2L+1
-            "frac_filter_window": "hann",                                                            # 分数延迟滤波器窗函数：hann / hamming / rect
-            "static_channel": True,                                                                 # 调试开关：True 时强制所有路径按静态增益处理
-            "normalize_channel_power": False,                                                        # 是否按 sum(|gain|^2) 对路径增益归一化
-            "enable_multipath_memory": False,                                                        # 是否启用静态多径的帧间输入历史缓冲区
-            "fading_model": "static",          # static / frame / block / sample；当前实现 static 和 frame
-            "fading_seed": None,              # 衰落随机种子；None 表示每次随机
-            "block_length": 256,             # 块衰落，fading_model="block" 时，每多少个采样点更新一次路径增益
-            "jakes_num_sinusoids": 48,        # 后续 Jakes 模型使用，当前预留
-
             # 接收机相关
             "equalizer_method": "zf",                                                               # 均衡方法（ZF/MMSE）
-            "enable_channel_estimation": True,                                                      # 是否启用信道估计与补偿
 
             # RS 解码器相关参数
             "decode_mode": "hard",                                                                 # 译码算法（hard / chase）
