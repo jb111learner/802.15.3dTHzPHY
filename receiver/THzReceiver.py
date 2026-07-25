@@ -15,10 +15,7 @@ from receiver.RxOFDMProcesser import RxOFDMProcesser
 from receiver.Decoder import Decoder
 from receiver.DeScrambler import DeScrambler
 from receiver.Downsampler import Downsampler
-from receiver.IQCompensator import (
-    DecisionDirectedIQCompensator,
-    IQCompensator,
-)
+from receiver.IQCompensator import DecisionDirectedIQCompensator
 
 
 class THzReceiver(BaseReceiver):
@@ -42,35 +39,22 @@ class THzReceiver(BaseReceiver):
         self.fine_sync = FineSync(transmitter)
         self.cfo_estimator = CFOEstimator(transmitter)
         self.downsampler = Downsampler(transmitter)
-        self.iq_compensation_method = self.params.get("iq_compensation_method")
-        self.iq_compensator = None
         self.iq_dd_compensator = None
-        if (self.params.get("enable_iq_compensation")
-                and self.iq_compensation_method == "ces"):
-            self.iq_compensator = IQCompensator(
-                transmitter,
-                filter_len=self.params.get("iq_comp_filter_len"),
-                ridge_lambda=self.params.get("iq_comp_ridge_lambda"),
-                compensation_mode=self.params.get("iq_compensation_mode"),
-            )
-        elif (self.params.get("enable_iq_compensation")
-              and self.iq_compensation_method == "decision_directed"):
+        if self.params.get("enable_iq_compensation"):
             self.iq_dd_compensator = DecisionDirectedIQCompensator(
                 params,
                 filter_len=self.params.get("iq_comp_filter_len"),
                 ridge_lambda=self.params.get("iq_comp_ridge_lambda"),
                 iterations=self.params.get("iq_comp_dd_iterations"),
             )
-        elif (self.params.get("enable_iq_compensation")
-              and self.iq_compensation_method not in ("ces", "decision_directed")):
-            raise ValueError(
-                "iq_compensation_method 必须为 'ces' 或 'decision_directed'"
-            )
         self.channel_estimator = ChannelEstimator(transmitter)
         self.equalizer = FreqDomainEqualizer(transmitter)
-        self.enable_channel_est = params.get("enable_channel_estimation")
+        self.enable_channel_est = params.get("enable_channel_equalization")
         if self.enable_channel_est is None:
             self.enable_channel_est = True
+        self.enable_cfo = params.get("enable_cfo_compensation")
+        if self.enable_cfo is None:
+            self.enable_cfo = True
         self.noise_estimator = NoiseEstimator(transmitter)
         self.demodulator = THzDemodulator(params)
         self.decoder = Decoder(params)
@@ -133,15 +117,6 @@ class THzReceiver(BaseReceiver):
         self.rx_cfo_fine["signal_stream"] = sig
         self.rx_cfo_fine["signal_length"] = len(sig)
         return self.rx_cfo_fine
-
-    def compensate_iq_imbalance(self, signal_dict):
-        """在符号率下利用每帧 CES 估计并补偿 RX IQ 不平衡。"""
-        if self.iq_compensator is None:
-            return signal_dict
-        self.rx_iq_compensated = self.iq_compensator.compensate(
-            signal_dict, tail_mode="error"
-        )
-        return self.rx_iq_compensated
 
     def compensate_iq_decision_directed(self, signal_dict):
         """对均衡后的数据符号执行判决导向残余 IQ 补偿。"""
@@ -219,34 +194,41 @@ class THzReceiver(BaseReceiver):
         sig = self.coarse_sync_detect(sig)
 
         # ③ 粗 CFO（逐帧估计+补偿）
-        sig = self.compensate_cfo_coarse(sig)
+        if self.enable_cfo:
+            sig = self.compensate_cfo_coarse(sig)
 
         # ④ 细同步（SFD 帧定界）
         sig = self.fine_sync_frame(sig)
 
-        # ⑤ 下采样
+        # ⑤ 下采样（过采样率 → 符号率）
         sig = self.downsample(sig)
 
-        # ⑥ 细 CFO（逐帧估计+补偿）
-        sig = self.compensate_cfo_fine(sig)
+        # ⑥ 细 CFO（逐帧估计+补偿，符号率）
+        if self.enable_cfo:
+            sig = self.compensate_cfo_fine(sig)
 
-        # ⑦ 可选 CES IQ 补偿（仅用于具备独立 I/Q 激励的训练序列）
-        sig = self.compensate_iq_imbalance(sig)
-
-        # ⑧ 噪声方差估计（基于补偿后的 SYNC，需在 OFDM 解调前）
+        # ⑦ 噪声方差估计（基于 SYNC，需在 OFDM 解调前）
         self.estimate_noise(sig)
 
         if self.enable_channel_est:
             if self.link_mode == "ofdm":
-                # OFDM 解调（内置导频LS + 相位跟踪 + 均衡）
+                # OFDM: 导频LS信道估计 + 相位跟踪 + 均衡
                 sig = self.ofdm_demodulate(sig)
             else:
-                # SC-FDE: 信道估计 + 频域均衡
+                # SC-FDE: CES信道估计 + 频域均衡
                 sig = self.estimate_channel(sig)
                 sig = self.equalize(sig)
-            # 判决导向补偿只接受均衡后的数据符号。
-            sig = self.compensate_iq_decision_directed(sig)
-        # 关闭信道估计时 sig 保持原样（均衡前符号流）
+        else:
+            # 关闭信道估计/均衡——仍执行去前导+去CP+FFT/IFFT
+            if self.link_mode == "ofdm":
+                sig = self.ofdm_demodulate(sig)
+            else:
+                n_sc = self.params.get("subframe_length")
+                sig["channel_freq_response"] = np.ones(n_sc, dtype=np.complex128)
+                sig = self.equalize(sig)
+
+        # ⑩ 判决导向IQ补偿（均衡后，对齐Equalizer.py测试流程）
+        sig = self.compensate_iq_decision_directed(sig)
 
         # ⑪ 解调（LLR，使用噪声方差）
         sig = self.demodulate(sig)
@@ -257,46 +239,103 @@ class THzReceiver(BaseReceiver):
 
 # ==================== 测试 ====================
 if __name__ == "__main__":
+    import os
+    import matplotlib.pyplot as plt
+    from receiver.DeModulator import THzDemodulator
 
-    params = PHYParams()
-    tx = THzTransmitter(params)
-    tx.run()
-    ch = THzChannel(params)
-    rx = ch.run(tx.tx_signal_dict)
+    out_dir = "simulation_results"
+    os.makedirs(out_dir, exist_ok=True)
 
-    receiver = THzReceiver(params, tx)
-    rx_data = receiver.run(rx)
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "DejaVu Serif", "STIX"],
+        "axes.unicode_minus": False, "figure.dpi": 150, "savefig.dpi": 300,
+        "savefig.bbox": "tight", "axes.linewidth": 0.8,
+        "xtick.direction": "in", "ytick.direction": "in",
+        "xtick.major.size": 4, "ytick.major.size": 4,
+        "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
+    })
 
-    tx_bits = tx.data_bits_dict["signal_stream"]
-    rx_bits = rx_data["signal_stream"]
-    cmp = min(len(tx_bits), len(rx_bits))
-    ber = np.sum(tx_bits[:cmp] != rx_bits[:cmp]) / cmp
-    print(f"  noise_var = {receiver.noise_var:.2e}")
-    print(f"  BER = {ber:.2e}  ({np.sum(tx_bits[:cmp] != rx_bits[:cmp])} / {cmp})")    
+    test_cases = [
+        ("no_iq",       False, False),   # 无IQ不平衡
+        ("iq_no_comp",  True,  False),   # 有IQ不平衡，不补偿
+        ("iq_comp",     True,  True),    # 有IQ不平衡，补偿
+    ]
 
+    for mode in ["sc-fde", "ofdm"]:
+        print(f"\n{'='*60}")
+        print(f"  {mode.upper()}  —  IQ 不平衡补偿测试")
+        print(f"{'='*60}")
 
-# # ==================== 测试 ====================
-# if __name__ == "__main__":
-#     for mode in ["sc-fde", "ofdm"]:
-#         print(f"\n{'='*55}")
-#         print(f"     {mode.upper()} 模式")
-#         print(f"{'='*55}")
+        for tag, iq_on, iq_comp in test_cases:
+            print(f"\n--- {mode} / {tag} ---")
 
-#         params = PHYParams()
-#         params.update(link_mode=mode)
-#         tx = THzTransmitter(params)
-#         tx.run()
-#         ch = THzChannel(params)
-#         rx = ch.run(tx.tx_signal_dict)
+            params = PHYParams()
+            params.update(
+                link_mode=mode,
+                enable_awgn=True, SNRdB=24,
+                enable_cfo=False, enable_phase_noise=False,
+                enable_multipath=False,
+                code_type="LDPC",
+                enable_iq_imbalance=iq_on,
+                enable_iq_compensation=iq_comp,
+                random_seed=20260722, seed_strategy="固定种子",
+            )
+            if iq_on:
+                params.update(
+                    iq_imbalance_position="rx",
+                    iq_imbalance_model="fd",
+                    rx_iq_gain_imbalance_db=2.0,
+                    rx_iq_phase_imbalance_deg=5.0,
+                    rx_iq_gI_taps=[1.0, 0.08, -0.03],
+                    rx_iq_gQ_taps=[1.0, -0.12, 0.04],
+                )
+            np.random.seed(20260722)
+            tx = THzTransmitter(params); tx.run()
+            ch = THzChannel(params); rx = ch.run(tx.tx_signal_dict)
+            recv = THzReceiver(params, tx); rx_data = recv.run(rx)
 
-#         receiver = THzReceiver(params, tx)
-#         rx_data = receiver.run(rx)
+            # ———— BER ————
+            tx_bits = tx.data_bits_dict["signal_stream"]
+            rx_bits = rx_data["signal_stream"]
+            cmp = min(len(tx_bits), len(rx_bits))
+            ber = np.sum(tx_bits[:cmp] != rx_bits[:cmp]) / cmp
 
-#         tx_bits = tx.data_bits_dict["signal_stream"]
-#         rx_bits = rx_data["signal_stream"]
-#         cmp = min(len(tx_bits), len(rx_bits))
-#         ber = np.sum(tx_bits[:cmp] != rx_bits[:cmp]) / cmp
-#         print(f"  noise_var = {receiver.noise_var:.2e}")
-#         print(f"  BER = {ber:.2e}  ({np.sum(tx_bits[:cmp] != rx_bits[:cmp])} / {cmp})")
+            # ———— EVM & IRR（补偿后符号）————
+            # DD补偿后信号在 rx_iq_compensated 中，未补偿时退回 rx_equalized
+            eq_dict = recv.rx_iq_compensated if recv.rx_iq_compensated is not None \
+                      else recv.rx_equalized
+            rx_syms = eq_dict["signal_stream"]
+            tx_syms = tx.modulated_data_dict["signal_stream"]
+            cmp_sym = min(len(tx_syms), len(rx_syms))
+            tx_cmp = tx_syms[:cmp_sym]
+            rx_cmp = rx_syms[:cmp_sym]
+            evm = np.sqrt(np.mean(np.abs(rx_cmp - tx_cmp)**2)
+                          / np.mean(np.abs(tx_cmp)**2))
+            image_design = np.column_stack((tx_cmp, np.conj(tx_cmp)))
+            direct_gain, image_gain = np.linalg.lstsq(
+                image_design, rx_cmp, rcond=None)[0]
+            irr_db = 10 * np.log10(
+                (np.abs(direct_gain)**2 + 1e-15)
+                / (np.abs(image_gain)**2 + 1e-15))
 
-#     print("\nDone")
+            print(f"  noise_var={recv.noise_var:.2e}  BER={ber:.2e}"
+                  f"  EVM={100*evm:.2f}%  IRR={irr_db:.2f} dB")
+
+            # ———— 星座图 ————
+            fig, ax = plt.subplots(figsize=(5.5, 5.5))
+            ax.plot(tx_cmp[::10].real, tx_cmp[::10].imag, ".", ms=2,
+                    alpha=0.3, label="TX")
+            ax.plot(rx_cmp[::10].real, rx_cmp[::10].imag, ".", ms=2,
+                    alpha=0.7, label="RX")
+            ax.set_xlabel("I"); ax.set_ylabel("Q")
+            ax.set_title(f"{mode.upper()} — {tag}  |  EVM={100*evm:.1f}%  "
+                         f"IRR={irr_db:.1f} dB", fontsize=10, pad=6)
+            ax.axis("equal"); ax.legend(fontsize=8, markerscale=3)
+            fig.tight_layout()
+            for ext in ["pdf", "png"]:
+                fig.savefig(f"{out_dir}/iq_{mode}_{tag}.{ext}",
+                            dpi=600 if ext == "pdf" else 300)
+            plt.close(fig)
+
+    print(f"\nFigures saved to {out_dir}/")

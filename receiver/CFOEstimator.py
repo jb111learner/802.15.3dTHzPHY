@@ -16,14 +16,15 @@ class CFOEstimator:
     def __init__(self, transmitter):
         self.params = transmitter.params
         self.link_mode = self.params.get("link_mode").lower()
-        subframe_len = self.params.get("subframe_length")
         gi_len = self.params.get("gi_length")
         preamble_len = len(transmitter.preamble)
         if self.link_mode == "ofdm":
+            block_len = self.params.get("subwave_num")
             subframe_count = self.params.get("subframe_ofdm_num")
         else:
+            block_len = self.params.get("subframe_length")
             subframe_count = self.params.get("subframe_num")
-        self.frame_symbol_num = (subframe_len + gi_len) * subframe_count + preamble_len
+        self.frame_symbol_num = (block_len + gi_len) * subframe_count + preamble_len
         self.oversampling = self.params.get("oversampling")
         self.frame_sample_num = self.frame_symbol_num * self.oversampling
 

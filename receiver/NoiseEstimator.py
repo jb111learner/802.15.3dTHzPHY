@@ -112,14 +112,15 @@ class NoiseEstimator:
         self.estimation_mode = estimation_mode  # 'global' 或 'per_frame'
 
         # 计算帧长度（符号级）— SC-FDE / OFDM 自适应
-        subframe_len = self.params.get("subframe_length")
         gi_len = self.params.get("gi_length")
         preamble_len = len(transmitter.preamble)
         if self.link_mode == "ofdm":
+            block_len = self.params.get("subwave_num")
             subframe_count = self.params.get("subframe_ofdm_num")
         else:
+            block_len = self.params.get("subframe_length")
             subframe_count = self.params.get("subframe_num")
-        self.frame_symbol_num = (subframe_len + gi_len) * subframe_count + preamble_len
+        self.frame_symbol_num = (block_len + gi_len) * subframe_count + preamble_len
 
         # 输出缓存
         self.noise_var = None   # 若 global，则为标量；若 per_frame，则为列表

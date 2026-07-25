@@ -48,7 +48,13 @@ class FreqDomainEqualizer:
         # MMSE需要噪声方差
         if self.method == 'mmse' and "noise_var" not in data_dict:
             raise KeyError("MMSE 均衡需要 noise_var")
-        # 暂不检查信号长度一致性，交给后续处理
+        # 过采样检测：信号长度不足一帧时警告
+        rx_len = data_dict["signal_length"]
+        expected_frames = rx_len / self.frame_symbol_num
+        if expected_frames < 0.5:
+            raise ValueError(
+                f"信号长度({rx_len})不足一帧({self.frame_symbol_num}符号)。"
+                f"请确认信号已通过 Downsampler 降至符号率。")
         self.sample_rate = data_dict["sample_rate_Hz"]
         self.padding_bit_num = data_dict["padding_bit_num"]
 
@@ -128,8 +134,14 @@ class FreqDomainEqualizer:
 
         # 3. 计算均衡权重
         if self.method == 'zf':
-            eps = 1e-12
-            W = 1.0 / (H + eps)
+            # ZF with |H| clipping: prevent noise amplification at deep nulls
+            H_mag = np.abs(H)
+            thresh = max(np.max(H_mag) * 0.05, 1e-10)
+            H_safe = H.copy()
+            weak_mask = H_mag < thresh
+            if np.any(weak_mask):
+                H_safe[weak_mask] = (H[weak_mask] / (H_mag[weak_mask] + 1e-15)) * thresh
+            W = 1.0 / H_safe
         else:  # mmse
             if N0 is None:
                 raise ValueError("MMSE需要提供噪声方差")
@@ -253,7 +265,7 @@ if __name__ == "__main__":
             enable_phase_noise=False,
             enable_multipath=False,
             link_mode="sc-fde",
-            code_type="RS",
+            code_type="LDPC",
             Preamble_type="short",
             subframe_num=test_subframe_num,
             duration=None,

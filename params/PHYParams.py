@@ -47,14 +47,14 @@ class PHYParams(BaseParams):
             "sample_length": None,                                                                 # 符号总长度（Sa)
             "random_seed": None,                                                                   # 固定/手动种子
             "seed_strategy": "递增种子",                                                            # 随机种子策略("固定种子", "递增种子", "时间种子")
-            "link_mode":"sc-fde",                                                                  # 链路模式（"SC-FDE", "OFDM"）
+            "link_mode":"ofdm",                                                                  # 链路模式（"SC-FDE", "OFDM"）
 
 
             # 基础参数
             "fc": 1000e9,                                                                           # 载波频率（1 THz）
             "bandwidth": 30e9,                                                                      # 信号带宽（30 GHz）
-            "subframe_num": 45,#51,                                                                     # 数据载荷子帧数量
-            "subframe_length": 512,#480,                                                                 # 数据子帧长度(symbols)
+            "subframe_num": 51,                                                                     # 数据载荷子帧数量
+            "subframe_length": 480,                                                                 # 数据子帧长度(symbols)
             "gi_length": 32,                                                                        # GI长度(symbols)
             "gi_type": "cp",                                                                        # GI类型（循环前缀"cp"或格雷序列"golay"）
             "c_init": 0x12345678,                                                                   # 扰码器参数
@@ -64,8 +64,8 @@ class PHYParams(BaseParams):
             "subwave_num":512,                                                                       # 子载波数
             "subframe_ofdm_num": 48,                                                                 # 单数据帧OFDM子帧数量
             "pilot_block_indexes":[0, 16, 32],                                                       # 块状导频索引
-            # "enable_window_filter":False,                                                            # 是否启用加窗与频谱成型
-            # "rolling_width":64,                                                                      # 过渡带宽度
+            # "enable_window_filter":False,                                                          # 是否启用加窗与频谱成型
+            # "rolling_width":64,                                                                    # 过渡带宽度
 
 
             # 调制相关
@@ -74,10 +74,10 @@ class PHYParams(BaseParams):
             "APSK_PHASE_OFFSETS": [np.pi/4, np.pi/12],                                              # 每环相位偏置（可设全0）
             "code_type": "LDPC",                                                                      # 信道编码类型(RS编码/LDPC)
 
-            # RS码相关设置 (RS(15,11) shortened over GF(256): n=15, k=11, t=2)
-            "rs_nsym": 63,                                                                           # Reed-Solomon校验符号数量 (n-k)
-            "rs_c_exp": 8,                                                                           # Reed-Solomon有限域指数 (GF(2^8)=GF(256))
-            "rs_packet_size": 192,                                                                   # Reed-Solomon编码包大小 (k)
+            # RS码相关设置 (OFDM模式建议使用RS(15,11) ， SC-FDE模式建议使用RS(255,192))
+            "rs_nsym": 4,                                                                           # Reed-Solomon校验符号数量 (n-k)
+            "rs_c_exp": 4,                                                                           # Reed-Solomon有限域指数 (GF(2^8)=GF(256))
+            "rs_packet_size": 11,                                                                   # Reed-Solomon编码包大小 (k)
 
             # LDPC码相关设置
             "ldpc_n": 672,                                                                          # Engineering LDPC codeword length
@@ -101,7 +101,7 @@ class PHYParams(BaseParams):
             "filter_length": 32,                                                                    # 滤波器长度 
 
             # 前导码相关
-            "Preamble_type": "long",                                                                # 前导码类型
+            "Preamble_type": "short",                                                                # 前导码类型
             "phase_rotation": np.pi/4,                                                              # 前导码相位旋转角度（弧度）
 
             # 其他参数
@@ -112,11 +112,12 @@ class PHYParams(BaseParams):
 
             # 信道相关
             "enable_awgn": True,                                                                    # 是否启用AWGN噪声
-            "enable_phase_noise": True,                                                             # 是否启用相位噪声
-            "enable_cfo": True,                                                                     # 是否启用载波频率偏移
+            "enable_phase_noise": False,                                                             # 是否启用相位噪声
+            "enable_cfo": False,                                                                     # 是否启用载波频率偏移
+            "enable_cfo_compensation": False,                                                        # 是否启用CFO补偿
             "noise_temperature": None,                                                              # 信道噪声温度（开尔文）
             "noise_figure_db": None,                                                                # 信道噪声系数（dB）
-            "SNRdB": 24,                                                                            # 信噪比（dB），与温度+带宽二选一
+            "SNRdB": 20,                                                                            # 信噪比（dB），与温度+带宽二选一
             "phase_noise_std": 0.01,                                                                # 相位噪声标准差（弧度）
             "phase_noise_bw": 100e3,                                                                # 相位噪声低通带宽（Hz）
             "ppm": 1,                                                                             # 频偏ppm值 
@@ -146,7 +147,7 @@ class PHYParams(BaseParams):
             "pa_q2": 1.8972,
 
             # IQ 不平衡参数
-            "enable_iq_imbalance": True,           # 是否启用 I/Q 不平衡
+            "enable_iq_imbalance": False,           # 是否启用 I/Q 不平衡
             "iq_imbalance_position": "rx",         # tx / rx / both，默认模拟接收机 IQ 不平衡
             "iq_imbalance_model": "fid",           # 当前仅实现 frequency-independent IQ imbalance
             "iq_power_normalize": True,           # 默认不对 IQ 不平衡输出做功率归一化
@@ -165,13 +166,15 @@ class PHYParams(BaseParams):
 
             # RX IQ 不平衡补偿参数（独立于信道损伤注入开关）
             "enable_iq_compensation": True,        # 是否在接收机细 CFO 后启用 IQ 补偿
+            "iq_compensation_method": "decision_directed",       # IQ补偿方法: ces / decision_directed
             "iq_comp_filter_len": 5,               # IQ 损伤/补偿 FIR 长度
             "iq_comp_ridge_lambda": 0.0,           # LS 岭回归系数，0 表示使用伪逆
             "iq_compensation_mode": "per_frame",  # per_frame / first_frame
+            "iq_comp_dd_iterations": 3,            # 判决导向IQ补偿迭代次数
             
             # 3GPP TR 38.901 TDL 多径模式。TDL 模式启用时，仅需选择模型和 DS。
             # 10/30/100/300/1000 ns 均可作为 tdl_delay_spread_ns。
-            "enable_multipath": True,
+            "enable_multipath": False,
             "tdl_model": "TDL-A",                     # None=旧 multipath/PDP 回退；TDL-A~TDL-E=标准 TDL
             "tdl_delay_spread_ns": 100.0,              # 目标 RMS delay spread，单位 ns
             "tdl_velocity_mps": 0.0,                    # 移动速度；0=固定随机信道，>0=连续 Jakes 衰落
@@ -193,6 +196,7 @@ class PHYParams(BaseParams):
 
             # 接收机相关
             "equalizer_method": "zf",                                                               # 均衡方法（ZF/MMSE）
+            "enable_channel_equalization": True,                                                      # 是否启用信道估计与补偿
 
             # RS 解码器相关参数
             "decode_mode": "hard",                                                                 # 译码算法（hard / chase）

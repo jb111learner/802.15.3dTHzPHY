@@ -25,8 +25,9 @@ class RxOFDMProcesser:
         self.preamble_len = len(transmitter.preamble)
 
         # —————— 信道估计开关 ——————
-        self.enable_ch_est = self.params.get("enable_channel_estimation")
-        if self.enable_ch_est is None:
+        try:
+            self.enable_ch_est = self.params.get("enable_channel_equalization")
+        except KeyError:
             self.enable_ch_est = True
 
         # —————— OFDM 参数 ——————
@@ -196,6 +197,15 @@ class RxOFDMProcesser:
             phi_last = pv[-1]
             dphi_per_sym = (phi_last - phi_0) / (pilot_syms[-1] - pilot_syms[0])
 
+            # ---- Gate: 低SNR下跳过伪相位跟踪 ----
+            dphi_threshold = 0.01  # rad/sym, 真实CFO(100Hz@30GHz)≈0.1 rad/sym
+            if abs(dphi_per_sym) < dphi_threshold:
+                if abs(dphi_per_sym) > 1e-6:
+                    print(f"  [OFDM] frame {s}: |dphi|={abs(dphi_per_sym):.1e} < "
+                          f"threshold, 跳过相位跟踪")
+                dphi_per_sym = 0.0
+                phi_0 = 0.0
+
             # ---- Apply linear phase ramp to all data symbols ----
             for sym in range(n_sym):
                 if sym in pilot_set:
@@ -264,11 +274,22 @@ class RxOFDMProcesser:
                 freq_grid, H_init_list)
             self.H_est_per_subframe = H_est_list
         else:
-            # 跳过均衡：直接用频域数据（无信道补偿）
-            eq_grid = freq_grid
-            H_est_list = [np.ones(self.N_SC, dtype=np.complex128)] * self.frame_num
-            h_est_list = [np.zeros(self.gi_len, dtype=np.complex128)] * self.frame_num
-            h_est_list[0][0] = 1.0
+            # 旁路：仅 pilot-LS + ZF（补偿滤波器响应），跳过相位跟踪
+            eps = np.finfo(np.complex128).eps
+            eq_grid = np.zeros_like(freq_grid)
+            H_est_list = []
+            h_est_list = []
+            for s in range(self.frame_num):
+                H_raw = np.zeros(self.N_SC, dtype=np.complex128)
+                for p_idx in self.pilot_indexes:
+                    col = p_idx * self.frame_num + s
+                    H_raw += freq_grid[:, col] / (self.pilot_seq + eps)
+                H_raw /= len(self.pilot_indexes)
+                for sym in range(self.N_SYM):
+                    col = sym * self.frame_num + s
+                    eq_grid[:, col] = freq_grid[:, col] / (H_raw + eps)
+                H_est_list.append(H_raw.copy())
+                h_est_list.append(np.fft.ifft(H_raw)[:self.gi_len])
 
         # ———— 4. 提取数据符号 ————
         data_symbols = self._extract_data_symbols(eq_grid)

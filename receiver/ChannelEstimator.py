@@ -25,7 +25,11 @@ class ChannelEstimator:
         # —————— CES 公共参数 ——————
         self.N_ces = len(transmitter.preamble_gen.a512)    # 512 (a512/b512长度)
         self.Lh = self.params.get("gi_length")             # CP长度，也是CIR保留长度
-        self.nfft = self.params.get("subframe_length")     # FFT点数 = 512
+        # OFDM: 512子载波, SC-FDE: 480子载波
+        if self.link_mode == "ofdm":
+            self.nfft = self.params.get("subwave_num")     # 512
+        else:
+            self.nfft = self.params.get("subframe_length") # 480
         self.len_b128 = len(transmitter.preamble_gen.b128) # 128
         self.sync_len = len(transmitter.sync)              # SYNC符号数
         self.sfd_len = len(transmitter.sfd)                # SFD符号数
@@ -45,7 +49,7 @@ class ChannelEstimator:
             # OFDM: 每帧 = 前导码 + 48个OFDM符号×(子载波+GI)
             subframe_ofdm_num = self.params.get("subframe_ofdm_num")  # 48
             self.frame_symbol_num = preamble_len + \
-                (subframe_len + gi_len) * subframe_ofdm_num
+                (self.params.get("subwave_num") + gi_len) * subframe_ofdm_num
         else:
             # SC-FDE: 每帧 = 前导码 + subframe_num个块×(块长+GI)
             self.frame_symbol_num = preamble_len + \
