@@ -10,6 +10,7 @@ class PHYParams(BaseParams):
         "use_frac_delay", "frac_filter_half_len", "frac_filter_window",
         "static_channel", "normalize_channel_power", "enable_multipath_memory",
         "fading_model", "fading_seed", "block_length", "jakes_num_sinusoids",
+        "tdl_jakes_num_sinusoids",
     }
 
     @classmethod
@@ -175,7 +176,7 @@ class PHYParams(BaseParams):
             # 3GPP TR 38.901 TDL 多径模式。TDL 模式启用时，仅需选择模型和 DS。
             # 10/30/100/300/1000 ns 均可作为 tdl_delay_spread_ns。
             "enable_multipath": False,
-            "tdl_model": "TDL-A",                     # None=旧 multipath/PDP 回退；TDL-A~TDL-E=标准 TDL
+            "tdl_model": None,                        # None=旧 multipath/PDP 回退；TDL-A~TDL-E=标准 TDL
             "tdl_delay_spread_ns": 100.0,              # 目标 RMS delay spread，单位 ns
             "tdl_velocity_mps": 0.0,                    # 移动速度；0=固定随机信道，>0=连续 Jakes 衰落
 

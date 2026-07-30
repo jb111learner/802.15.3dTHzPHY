@@ -19,11 +19,9 @@ class BaseParams:
         """校验参数合法性（子类必须重写）"""
         raise NotImplementedError("子类必须实现 validate() 方法")
 
-    def get(self, key):
-        """获取参数值"""
-        if key not in self._params:
-            raise KeyError(f"参数 {key} 不存在")
-        return self._params[key]
+    def get(self, key, default=None):
+        """获取参数值，支持默认值"""
+        return self._params.get(key, default)
 
     def update(self, **kwargs):
         """动态更新参数（支持批量更新）"""

@@ -197,14 +197,14 @@ class RxOFDMProcesser:
             phi_last = pv[-1]
             dphi_per_sym = (phi_last - phi_0) / (pilot_syms[-1] - pilot_syms[0])
 
-            # ---- Gate: 低SNR下跳过伪相位跟踪 ----
-            dphi_threshold = 0.01  # rad/sym, 真实CFO(100Hz@30GHz)≈0.1 rad/sym
-            if abs(dphi_per_sym) < dphi_threshold:
-                if abs(dphi_per_sym) > 1e-6:
-                    print(f"  [OFDM] frame {s}: |dphi|={abs(dphi_per_sym):.1e} < "
-                          f"threshold, 跳过相位跟踪")
-                dphi_per_sym = 0.0
-                phi_0 = 0.0
+            # # ---- Gate: 低SNR下跳过伪相位跟踪 ----
+            # dphi_threshold = 0.01  # rad/sym, 真实CFO(100Hz@30GHz)≈0.1 rad/sym
+            # if abs(dphi_per_sym) < dphi_threshold:
+            #     if abs(dphi_per_sym) > 1e-6:
+            #         print(f"  [OFDM] frame {s}: |dphi|={abs(dphi_per_sym):.1e} < "
+            #               f"threshold, 跳过相位跟踪")
+            #     dphi_per_sym = 0.0
+            #     phi_0 = 0.0
 
             # ---- Apply linear phase ramp to all data symbols ----
             for sym in range(n_sym):

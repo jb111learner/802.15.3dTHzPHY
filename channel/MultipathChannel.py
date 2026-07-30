@@ -172,11 +172,9 @@ class MultipathChannel:
         self._processed_samples = 0
 
     def _get_param(self, key, default=None):
-        """兼容 BaseParams.get()：参数不存在时返回默认值。"""
-        try:
-            return self.params.get(key)
-        except KeyError:
-            return default
+        """读取参数，不存在时返回默认值。"""
+        val = self.params.get(key, None)
+        return val if val is not None else default
 
     @staticmethod
     def _normalize_tdl_model(value):

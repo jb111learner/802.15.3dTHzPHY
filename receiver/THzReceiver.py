@@ -178,7 +178,10 @@ class THzReceiver(BaseReceiver):
             signal_dict["signal_stream"] = np.concatenate([llr, pad])
             signal_dict["signal_length"] = expected_len
         self.decoded_bits = self.decoder.decode(signal_dict)
-        self.data_bits = self.descrambler.descramble(self.decoded_bits)
+        if self.params.get("scramble"):
+            self.data_bits = self.descrambler.descramble(self.decoded_bits)
+        else:
+            self.data_bits = self.decoded_bits
         return self.data_bits
 
     # ==================== 主流程 ====================

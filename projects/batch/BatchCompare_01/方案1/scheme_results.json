@@ -1,0 +1,72 @@
+[
+  {
+    "snr": 10.0,
+    "result": {
+      "SNRdB": 10.0,
+      "BER": 0.07102167038690477,
+      "total_bits": 258048,
+      "total_errors": 18327,
+      "total_frames": 1
+    }
+  },
+  {
+    "snr": 11.0,
+    "result": {
+      "SNRdB": 11.0,
+      "BER": 0.05705915178571429,
+      "total_bits": 258048,
+      "total_errors": 14724,
+      "total_frames": 1
+    }
+  },
+  {
+    "snr": 12.0,
+    "result": {
+      "SNRdB": 12.0,
+      "BER": 0.04316251240079365,
+      "total_bits": 258048,
+      "total_errors": 11138,
+      "total_frames": 1
+    }
+  },
+  {
+    "snr": 13.0,
+    "result": {
+      "SNRdB": 13.0,
+      "BER": 0.03001767113095238,
+      "total_bits": 258048,
+      "total_errors": 7746,
+      "total_frames": 1
+    }
+  },
+  {
+    "snr": 14.0,
+    "result": {
+      "SNRdB": 14.0,
+      "BER": 0.015301416790674604,
+      "total_bits": 516096,
+      "total_errors": 7897,
+      "total_frames": 2
+    }
+  },
+  {
+    "snr": 15.0,
+    "result": {
+      "SNRdB": 15.0,
+      "BER": 0.003145594175170068,
+      "total_bits": 1806336,
+      "total_errors": 5682,
+      "total_frames": 7
+    }
+  },
+  {
+    "snr": 16.0,
+    "result": {
+      "SNRdB": 16.0,
+      "BER": 0.00029988457722832725,
+      "total_bits": 16773120,
+      "total_errors": 5030,
+      "total_frames": 65
+    }
+  }
+]

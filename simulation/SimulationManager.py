@@ -105,14 +105,20 @@ class SimulationManager:
         rx_bits = rx_data.get("signal_stream") if rx_data else None
         ber = self.compute_ber(tx_bits, rx_bits)
 
+        tx_bit_len = len(tx_bits) if tx_bits is not None else 0
         return {
             "params": params,
             "seed": params.get("random_seed"),
             "tx_signal": tx_signal_dict,
             "rx_signal": rx_signal_dict,
             "rx_data": rx_data,
+            "rx_matched": getattr(receiver, 'rx_matched', None),
+            "rx_downsampled": getattr(receiver, 'rx_downsampled', None),
+            "rx_equalized": getattr(receiver, 'rx_equalized', None),
             "noise_var": receiver.noise_var,
             "ber": ber,
+            "tx_bit_len": tx_bit_len,
+            "tx_modulated": transmitter.modulated_data_dict if hasattr(transmitter, 'modulated_data_dict') else None,
         }
 
     @staticmethod

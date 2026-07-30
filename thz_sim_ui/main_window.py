@@ -88,28 +88,48 @@ class MainWindow(QMainWindow):
         else:
             self._save_single_project()
 
+    def _collect_all_params(self) -> dict:
+        """合并参数配置 + 信道集成 + 任务运行参数"""
+        params = {}
+        # 链路参数
+        param_page = self.pages.get('parameter_config')
+        if param_page and hasattr(param_page, 'get_all_parameters'):
+            params.update(param_page.get_all_parameters())
+        # 信道参数
+        channel_page = self.pages.get('channel_integration')
+        if channel_page and hasattr(channel_page, 'get_channel_params'):
+            params['_channel_params'] = channel_page.get_channel_params()
+        return params
+
+    def _apply_all_params(self, params: dict) -> None:
+        """将参数字典分发到各配置页面"""
+        param_page = self.pages.get('parameter_config')
+        if param_page and hasattr(param_page, 'set_all_parameters'):
+            param_page.set_all_parameters(params)
+        channel_page = self.pages.get('channel_integration')
+        if channel_page and hasattr(channel_page, 'set_channel_params'):
+            channel_page.set_channel_params(params.get('_channel_params', {}))
+
     def _save_single_project(self) -> None:
-        param_page = self.pages['parameter_config']
-        if hasattr(param_page, 'get_all_parameters'):
-            params = param_page.get_all_parameters()
-            project_name = params.get('工程名称', 'Unnamed_Project')
-            if not project_name.strip():
-                project_name = 'Unnamed_Project'
-            if not self.current_project_folder or not Path(self.current_project_folder).exists():
-                project_folder = self._default_single_project_root / project_name
-            else:
-                project_folder = Path(self.current_project_folder)
-            project_folder.mkdir(parents=True, exist_ok=True)
-            self.current_project_folder = str(project_folder)
-            config_file = project_folder / "config.json"
-            with open(config_file, "w", encoding='utf-8') as f:
-                json.dump(params, f, ensure_ascii=False, indent=4)
-            import time
-            self.backend._state.project_name = project_name
-            self.backend._state.last_saved_at = time.strftime("%Y-%m-%d %H:%M:%S")
-            self.project_label.setText(f'工程：{project_name}')
-            self.backend.message_emitted.emit(f'工程配置已保存到 {project_folder}')
-            self.backend.state_changed.emit(self.backend.snapshot())
+        params = self._collect_all_params()
+        project_name = params.get('工程名称', 'Unnamed_Project')
+        if not project_name.strip():
+            project_name = 'Unnamed_Project'
+        if not self.current_project_folder or not Path(self.current_project_folder).exists():
+            project_folder = self._default_single_project_root / project_name
+        else:
+            project_folder = Path(self.current_project_folder)
+        project_folder.mkdir(parents=True, exist_ok=True)
+        self.current_project_folder = str(project_folder)
+        config_file = project_folder / "config.json"
+        with open(config_file, "w", encoding='utf-8') as f:
+            json.dump(params, f, ensure_ascii=False, indent=4)
+        import time
+        self.backend._state.project_name = project_name
+        self.backend._state.last_saved_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.project_label.setText(f'工程：{project_name}')
+        self.backend.message_emitted.emit(f'工程配置已保存到 {project_folder}')
+        self.backend.state_changed.emit(self.backend.snapshot())
 
     def _save_batch_compare_project(self) -> None:
         batch_page = self.pages['batch_compare']
@@ -154,17 +174,15 @@ class MainWindow(QMainWindow):
             project_folder = Path(folder)
             config_file = project_folder / "config.json"
             batch_config_file = project_folder / "batch_config.json"
-            
+
             if batch_config_file.exists():
                 QMessageBox.warning(self, "错误", "这是一个批量对比工程，请在批量对比页面导入")
                 return
-            
+
             if config_file.exists():
                 with open(config_file, "r", encoding='utf-8') as f:
                     params = json.load(f)
-                param_page = self.pages['parameter_config']
-                if hasattr(param_page, 'set_all_parameters'):
-                    param_page.set_all_parameters(params)
+                self._apply_all_params(params)
                 project_name = params.get('工程名称', '')
                 if not project_name.strip():
                     project_name = project_folder.name
@@ -209,10 +227,7 @@ class MainWindow(QMainWindow):
             self._run_single_simulation()
 
     def _run_single_simulation(self) -> None:
-        param_page = self.pages['parameter_config']
-        if not hasattr(param_page, 'get_all_parameters'):
-            return
-        params = param_page.get_all_parameters()
+        params = self._collect_all_params()
         project_name = params.get('工程名称', 'Unnamed_Project')
         if not project_name.strip():
             project_name = 'Unnamed_Project'

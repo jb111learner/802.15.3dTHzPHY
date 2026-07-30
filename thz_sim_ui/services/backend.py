@@ -50,7 +50,8 @@ class BatchCompareThread(QThread):
         self._total_tasks = 0
         self._current_task = None
         self._scheme_progress = {}
-        self._save_intermediate = params.get('保存中间结果', '是') == '是'
+        self._max_frames = int(params.get('每点最大帧数', 300))
+        self._min_errors = int(params.get('每点最少错误比特', 5000))
         self._last_progress_update = 0
         self._progress_update_interval = 0.2
         self._plot_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
@@ -60,9 +61,7 @@ class BatchCompareThread(QThread):
         snr_min = self.params.get('SNR最小值', 0)
         snr_max = self.params.get('SNR最大值', 30)
         snr_step = self.params.get('SNR步长', 2)
-        run_mode = self.params.get('运行方式', '串行运行')
-        max_concurrency = self.params.get('最大并发数', 8)
-
+        # 串行运行（每配置逐 SNR 顺序执行）
         snr_points = []
         current_snr = snr_min
         while current_snr <= snr_max:
@@ -78,10 +77,7 @@ class BatchCompareThread(QThread):
         for scheme_idx, config in enumerate(configs):
             self._scheme_progress[scheme_idx] = 0
 
-        if run_mode == '并行运行':
-            self._run_parallel(configs, snr_points, max_concurrency)
-        else:
-            self._run_serial(configs, snr_points)
+        self._run_serial(configs, snr_points)
 
         if self._is_running:
             self.progress.emit(100)
@@ -169,27 +165,63 @@ class BatchCompareThread(QThread):
         return scheme_results
 
     def _run_single_simulation(self, scheme_name, snr, scheme_folder, snr_idx, scheme_idx, snr_count):
-        sm = SimulationManager(base_params=PHYParams())
-        sm.set_control_params({'SNRdB': snr})
+        # 对齐 ofdm_sc_rs_ldpc_snr.py 的 run_one_snr 模式
+        config_path = os.path.join(
+            os.path.dirname(__file__), '..', '..', 'projects', 'single',
+            scheme_name, 'config.json')
+        ui_params = {}
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                import json
+                ui_params = json.load(f)
 
-        snr_folder = os.path.join(scheme_folder, f'SNR_{snr}dB')
-        os.makedirs(snr_folder, exist_ok=True)
+        mapped = BackendService.map_ui_params_to_phy_params(ui_params)
+        mapped['SNRdB'] = snr
+        mapped['data_source'] = 'PRBS'
+        mapped['duration'] = 5e-6
+        mapped['sample_length'] = None
+
+        from params.PHYParams import PHYParams
+        from transmitter.THzTransmitter import THzTransmitter
+        from channel.THzChannel import THzChannel
+        from receiver.THzReceiver import THzReceiver
+        import numpy as np
+
+        params = PHYParams()
+        valid_keys = set(params._params) | PHYParams._LEGACY_MULTIPATH_KEYS
+        for k, v in mapped.items():
+            if v is not None and k in valid_keys:
+                params._params[k] = v
 
         try:
-            result = sm.run_monte_carlo()
-            serializable_result = self._convert_to_serializable(result)
-            result_path = os.path.join(snr_folder, 'result.json')
-            with open(result_path, 'w', encoding='utf-8') as f:
-                import json
-                json.dump(serializable_result, f, ensure_ascii=False, indent=2)
+            total_bits, total_errors, total_frames = 0, 0, 0
+            # 首次创建 TX/Ch/RX，后续复用（TX 仅 re-run 生成新比特）
+            tx = THzTransmitter(params); tx.run()  # 初始化 sync_upsampled 等
+            ch = THzChannel(params)
+            recv = THzReceiver(params, tx)
+            while total_errors < self._min_errors and total_frames < self._max_frames:
+                tx.assembler.duration = params.get('duration')  # 重置（run 会改 sample_length）
+                tx.assembler.sample_length = None
+                tx.run()
+                rx = ch.run(tx.tx_signal_dict)
+                rx_data = recv.run(rx)
+                tx_bits = tx.data_bits_dict["signal_stream"]
+                rx_bits = rx_data["signal_stream"]
+                cmp = min(len(tx_bits), len(rx_bits))
+                errors = int(np.sum(tx_bits[:cmp] != rx_bits[:cmp]))
+                total_bits += cmp
+                total_errors += errors
+                total_frames += 1
 
-            self._save_single_simulation_plots(result, snr_folder) if self._save_intermediate else None
+            final_ber = total_errors / total_bits if total_bits > 0 else float('nan')
+            result = {'SNRdB': snr, 'BER': final_ber,
+                       'total_bits': total_bits, 'total_errors': total_errors,
+                       'total_frames': total_frames}
 
             with self._progress_lock:
                 self._completed_tasks += 1
                 self._scheme_progress[scheme_idx] = self._scheme_progress.get(scheme_idx, 0) + 1
                 scheme_prog = int((self._scheme_progress[scheme_idx] / snr_count) * 100)
-                
                 current_time = time.time()
                 if current_time - self._last_progress_update >= self._progress_update_interval:
                     self.scheme_progress.emit(scheme_idx, scheme_prog)
@@ -198,7 +230,7 @@ class BatchCompareThread(QThread):
                         self.batch_progress.emit(overall_progress)
                     self._last_progress_update = current_time
 
-            return serializable_result
+            return result
         except Exception as e:
             print(f"仿真失败 {scheme_name} @ {snr}dB: {e}")
             import traceback
@@ -229,101 +261,79 @@ class BatchCompareThread(QThread):
     def _batch_save_transmitter_plots(self, result, output_dir):
         import matplotlib.pyplot as plt
         import numpy as np
-        import matplotlib
 
         with self._lock:
-            plt.clf()
-            plt.close('all')
-            matplotlib.rcParams.update(matplotlib.rcParamsDefault)
+            plt.clf(); plt.close('all')
 
             tx_signal_dict = result.get('tx_signal', {})
-            tx_signal = tx_signal_dict.get('signal_stream', np.array([]))
-
+            tx_signal = np.asarray(tx_signal_dict.get('signal_stream', []))
             if len(tx_signal) == 0:
-                print("发射信号为空，跳过图表生成")
                 return
 
             params = result.get('params')
-            symbol_period = 8
+            sps = 4; preamble_len_sym = 3328
             if params is not None:
-                symbol_period = params.get("oversampling") if hasattr(params, 'get') else 8
-                if symbol_period is None:
-                    symbol_period = 8
+                sps = int(params.get("oversampling", 4) or 4)
+                preamble_len_sym = 3328 if params.get("Preamble_type", "short") == "short" else 5120
 
-            n = len(tx_signal)
-            time_window = min(5000, n)
-            time_start = max(0, n - time_window)
-            time_slice = tx_signal[time_start:time_start + time_window]
+            pskip = preamble_len_sym * sps
+            payload = tx_signal[pskip:] if len(tx_signal) > pskip else tx_signal
+            if len(payload) == 0:
+                payload = tx_signal
+            payload = payload / (np.sqrt(np.mean(np.abs(payload)**2)) + 1e-15)
+            fs = tx_signal_dict.get("sample_rate_Hz", 1.0)
+            color = '#2C68B4'
+            mode = str(params.get("link_mode", "sc-fde")).upper() if params is not None else "SC-FDE"
 
-            fig = plt.figure(figsize=(10, 5))
-            plt.plot(np.arange(len(time_slice)), np.real(time_slice), label='Real', alpha=0.8, linewidth=0.8, color=self._plot_colors[0])
-            plt.plot(np.arange(len(time_slice)), np.imag(time_slice), label='Imag', alpha=0.8, linewidth=0.4, color=self._plot_colors[1])
-            plt.title(f'TX Signal Time Domain (last {len(time_slice)} samples)')
-            plt.xlabel('Sample')
-            plt.ylabel('Amplitude')
-            plt.grid(True, alpha=0.3)
-            plt.legend()
-            fig.tight_layout()
-            fig.savefig(output_dir / "transmitter_time.png", dpi=300, bbox_inches='tight')
-            plt.close(fig)
+            plt.rcParams.update({
+                "font.family": "serif", "axes.unicode_minus": False,
+                "axes.linewidth": 0.8, "xtick.direction": "in", "ytick.direction": "in",
+                "xtick.major.size": 4, "ytick.major.size": 4,
+                "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
+            })
 
-            fig = plt.figure(figsize=(10, 5))
-            if len(tx_signal) > 0 and np.any(tx_signal != 0):
-                fft_signal = np.fft.fft(tx_signal)
-                sample_rate = tx_signal_dict.get("sample_rate_Hz", 1e9)
-                if sample_rate > 0:
-                    freq = np.fft.fftfreq(len(fft_signal), 1/sample_rate)
-                    magnitude = np.abs(fft_signal)
-                    magnitude_db = 20 * np.log10(np.maximum(magnitude, 1e-12))
-                    plt.plot(freq/1e9, magnitude_db, color=self._plot_colors[0])
-                    plt.title('TX Signal Spectrum')
-                    plt.xlabel('Frequency (GHz)')
-                    plt.ylabel('Magnitude (dB)')
-                    plt.grid(True, alpha=0.3)
-            else:
-                plt.text(0.5, 0.5, 'No valid signal data', ha='center', va='center', transform=plt.gca().transAxes)
-            fig.tight_layout()
-            fig.savefig(output_dir / "transmitter_spectrum.png", dpi=300, bbox_inches='tight')
-            plt.close(fig)
+            # time envelope
+            fig, ax = plt.subplots(figsize=(6, 3))
+            n_show = min(600, len(payload)//sps)
+            env = np.abs(payload[:n_show*sps]); t = np.arange(len(env))/sps
+            ax.plot(t, env, color=color, lw=0.6)
+            ax.axhline(y=1.0, color="gray", ls="--", lw=0.5, alpha=0.5, label="mean")
+            ax.set_xlabel("Symbol index"); ax.set_ylabel("|Amplitude|")
+            ax.set_title(f"{mode} time envelope", fontsize=10, pad=4)
+            ax.legend(fontsize=8); ax.set_xlim([0, n_show])
+            fig.tight_layout(); fig.savefig(output_dir / "transmitter_time.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
-            power_window = min(1000, n)
-            power_signal = tx_signal[max(0, n - power_window):]
-            fig = plt.figure(figsize=(10, 5))
-            plt.plot(np.arange(len(power_signal)), np.abs(power_signal)**2, linewidth=0.8, color=self._plot_colors[2])
-            plt.title(f'TX Signal Power ({len(power_signal)} samples)')
-            plt.xlabel('Sample')
-            plt.ylabel('Power (W)')
-            plt.grid(True, alpha=0.3)
-            fig.tight_layout()
-            fig.savefig(output_dir / "transmitter_power.png", dpi=300, bbox_inches='tight')
-            plt.close(fig)
+            # spectrum
+            fig, ax = plt.subplots(figsize=(6, 3.5))
+            nfft = 2048; seg = payload[:nfft]
+            spec = np.fft.fftshift(np.fft.fft(seg, nfft))
+            freq = np.fft.fftshift(np.fft.fftfreq(nfft, 1/fs)) if fs > 0 else np.arange(nfft)
+            ax.plot(freq/1e9, 20*np.log10(np.abs(spec)+1e-15), color=color, lw=0.4)
+            ax.set_xlabel("Frequency (GHz)"); ax.set_ylabel("Magnitude (dB)")
+            ax.set_title(f"{mode} spectrum", fontsize=10, pad=4)
+            bw = 0.5*fs; ax.set_xlim([-bw/1e9, bw/1e9]); ax.set_ylim([-20, 60])
+            fig.tight_layout(); fig.savefig(output_dir / "transmitter_spectrum.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
-            constellation_window = min(5000, n)
-            constellation_signal = tx_signal[max(0, n - constellation_window):]
-            fig = plt.figure(figsize=(6, 6))
-            plt.scatter(np.real(constellation_signal), np.imag(constellation_signal), s=5, alpha=0.6, c=self._plot_colors[1])
-            plt.title('TX Constellation')
-            plt.xlabel('Real')
-            plt.ylabel('Imag')
-            plt.grid(True, alpha=0.3)
-            plt.axis('equal')
-            fig.tight_layout()
-            fig.savefig(output_dir / "transmitter_constellation.png", dpi=300, bbox_inches='tight')
-            plt.close(fig)
+            # PAPR CCDF
+            fig, ax = plt.subplots(figsize=(6, 4))
+            blk_len = 480 * sps; pv = []
+            for b in range(0, len(payload)-blk_len, blk_len):
+                blk = payload[b:b+blk_len]
+                pv.append(10*np.log10(np.max(np.abs(blk)**2)/(np.mean(np.abs(blk)**2)+1e-15)))
+            if pv:
+                pv = np.sort(pv); ccdf = 1.0 - np.arange(len(pv))/len(pv)
+                ax.semilogy(pv, ccdf, color=color, lw=1.2)
+            ax.set_xlabel("PAPR (dB)"); ax.set_ylabel("CCDF")
+            ax.set_title(f"{mode} PAPR CCDF", fontsize=10, pad=4); ax.set_ylim([1e-3,1])
+            fig.tight_layout(); fig.savefig(output_dir / "transmitter_papr.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
-            eye_window = min(2000 * symbol_period, n)
-            eye_signal = np.real(tx_signal[:eye_window])
-            fig = plt.figure(figsize=(10, 5))
-            for i in range(0, len(eye_signal) - symbol_period + 1, symbol_period):
-                plt.plot(np.arange(symbol_period), eye_signal[i:i + symbol_period], color=self._plot_colors[0], alpha=0.1, linewidth=0.8)
-            plt.title('TX Signal Eye Diagram (Real)')
-            plt.xlabel('Sample in symbol period')
-            plt.ylabel('Signal amplitude (Real)')
-            plt.grid(True, alpha=0.3)
-            plt.xlim(0, symbol_period)
-            fig.tight_layout()
-            fig.savefig(output_dir / "transmitter_eye.png", dpi=300, bbox_inches='tight')
-            plt.close(fig)
+            # amplitude histogram
+            fig, ax = plt.subplots(figsize=(6, 4))
+            amps = np.abs(payload)
+            ax.hist(amps, bins=80, density=True, histtype="step", color=color, lw=1.2)
+            ax.set_xlabel("|Amplitude|"); ax.set_ylabel("Probability density")
+            ax.set_title(f"{mode} amplitude distribution", fontsize=10, pad=4)
+            fig.tight_layout(); fig.savefig(output_dir / "transmitter_histogram.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
             print(f"已保存 TX 图表到 {output_dir}")
 
@@ -347,9 +357,7 @@ class BatchCompareThread(QThread):
             params = result.get('params')
             symbol_period = 8
             if params is not None:
-                symbol_period = params.get("oversampling") if hasattr(params, 'get') else 8
-                if symbol_period is None:
-                    symbol_period = 8
+                symbol_period = params.get("oversampling", 8) or 8
 
             n = len(rx_signal)
             time_plot_len = min(1000, n)
@@ -547,43 +555,45 @@ class BatchCompareThread(QThread):
         compare_folder = os.path.join(self.project_folder, 'compare_results')
         os.makedirs(compare_folder, exist_ok=True)
 
-        fig = plt.figure(figsize=(10, 6))
+        plt.rcParams.update({
+            "font.family": "serif", "axes.unicode_minus": False,
+            "axes.linewidth": 0.8, "xtick.direction": "in", "ytick.direction": "in",
+            "xtick.major.size": 4, "ytick.major.size": 4,
+            "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
+        })
+        fig, ax = plt.subplots(figsize=(8, 5.5))
+        ax.set_facecolor("white"); fig.patch.set_facecolor("white")
+        colors = ['#2C68B4', '#D95F02', '#3A9D3A', '#9467BD', '#E54B4F', '#8C6B4F']
         has_data = False
 
-        for scheme_data in self.results:
-            scheme_name = scheme_data['scheme'].get('结果标签', '未知方案')
-            snrs = []
-            bers = []
-
-            for item in scheme_data['results']:
-                snr = item.get('snr')
+        for i, scheme_data in enumerate(self.results):
+            scheme_name = scheme_data['scheme'].get('结果标签', f'方案{i+1}')
+            snrs, bers = [], []
+            for item in scheme_data.get('results', []):
                 result = item.get('result')
-                if result and isinstance(result, list) and len(result) > 0:
-                    try:
-                        metrics = result[0].get('metrics', {})
-                        ber = metrics.get('ber', 1.0) if isinstance(metrics, dict) else 1.0
-                        if ber > 0:
-                            snrs.append(snr)
-                            bers.append(ber)
-                    except Exception:
-                        pass
+                if isinstance(result, dict):
+                    ber = result.get('BER')
+                    if ber is not None and ber > 0:
+                        snrs.append(item.get('snr'))
+                        bers.append(ber)
 
             if snrs:
-                plt.semilogy(snrs, bers, marker='o', label=scheme_name, linewidth=2, markersize=6)
+                color = colors[i % len(colors)]
+                ax.semilogy(snrs, bers, marker='o', ms=6, lw=1.3,
+                            color=color, label=scheme_name)
                 has_data = True
 
-        plt.xlabel('SNR (dB)')
-        plt.ylabel('BER')
-        plt.title('BER Comparison')
+        ax.set_xlabel("SNR (dB)"); ax.set_ylabel("BER")
+        ax.set_title("BER Comparison", fontsize=11, pad=6)
         if has_data:
-            plt.legend()
-        plt.grid(True, which='both', alpha=0.3)
-        plt.tight_layout()
+            ax.legend(loc="lower left", fontsize=9)
+        ax.grid(True, which="major", alpha=0.25, ls="--", lw=0.4)
+        ax.grid(True, which="minor", alpha=0.10, ls="--", lw=0.3)
+        fig.tight_layout()
         chart_path = os.path.join(compare_folder, 'ber_compare.png')
         fig.savefig(chart_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
 
-        # 发送信号通知图片已保存
         self.compare_chart_saved.emit(chart_path)
 
     def stop(self):
@@ -653,6 +663,7 @@ class BackendService(QObject):
     def map_ui_params_to_phy_params(ui_params: dict[str, object]) -> dict[str, object]:
         mapped_params = {}
 
+        # ── 链路参数 ──
         if '载频' in ui_params:
             mapped_params['fc'] = float(ui_params['载频']) * 1e9
         if '带宽' in ui_params:
@@ -661,72 +672,127 @@ class BackendService(QObject):
             mapped_params['sample_rate'] = float(ui_params['采样率']) * 1e6
         if '时长' in ui_params:
             mapped_params['duration'] = float(ui_params['时长']) * 1e-3
-        if '数据帧长度' in ui_params:
-            mapped_params['subframe_length'] = int(ui_params['数据帧长度'])
+
+        # 波形类型
+        if '波形类型' in ui_params:
+            wf = str(ui_params['波形类型'])
+            mapped_params['link_mode'] = 'ofdm' if 'OFDM' in wf else 'sc-fde'
+
+        # 数据源
+        if '数据源配置' in ui_params:
+            src = str(ui_params['数据源配置'])
+            if src == '文件输入':
+                mapped_params['data_source'] = '文件输入'
+                if '文件地址' in ui_params and str(ui_params['文件地址']).strip():
+                    mapped_params['file_path'] = str(ui_params['文件地址'])
+            else:
+                mapped_params['data_source'] = 'PRBS'
+
+        # 帧结构
+        if '数据子帧长度' in ui_params:
+            mapped_params['subframe_length'] = int(ui_params['数据子帧长度'])
         if '单帧数据子帧数量' in ui_params:
             mapped_params['subframe_num'] = int(ui_params['单帧数据子帧数量'])
-        if 'GI长度' in ui_params:
-            mapped_params['gi_length'] = int(ui_params['GI长度'])
+        if 'CP长度' in ui_params:
+            mapped_params['gi_length'] = int(ui_params['CP长度'])
 
-        if '比特源配置' in ui_params:
-            mapped_params['bit_source'] = str(ui_params['比特源配置'])
-        modulation_map = {
-            'BPSK': 1,
-            'QPSK': 2,
-            '8PSK': 3,
-            '16QAM': 4,
-            '64QAM': 6,
-        }
+        # 调制
+        modulation_map = {'BPSK': 1, 'QPSK': 2, '8PSK': 3, '16QAM': 4, '64QAM': 6}
         if '调制方式' in ui_params and str(ui_params['调制方式']) in modulation_map:
             mapped_params['NCBPS'] = modulation_map[str(ui_params['调制方式'])]
 
-        if '编码方式' in ui_params:
-            coding_map = {
-                'LDPC': 'LDPC',
-                'RS(255,192)': 'RS',
-                'RS(255, 192)': 'RS',
-            }
-            mapped_params['code_type'] = coding_map.get(str(ui_params['编码方式']), str(ui_params['编码方式']))
+        # 编码
+        if '信道编码类型' in ui_params:
+            code_str = str(ui_params['信道编码类型'])
+            if 'LDPC' in code_str:
+                mapped_params['code_type'] = 'LDPC'
+                mapped_params['ldpc_standard_rate'] = '14/15'
+            elif 'RS' in code_str:
+                mapped_params['code_type'] = 'RS'
+                if '11,15' in code_str or '11，15' in code_str:
+                    mapped_params['rs_nsym'] = 4
+                    mapped_params['rs_c_exp'] = 4
+                    mapped_params['rs_packet_size'] = 11
+                else:
+                    mapped_params['rs_nsym'] = 63
+                    mapped_params['rs_c_exp'] = 8
+                    mapped_params['rs_packet_size'] = 192
 
+        # RS 译码
+        if 'RS译码方式' in ui_params:
+            mapped_params['decode_mode'] = 'chase' if 'Chase' in str(ui_params['RS译码方式']) else 'hard'
+        if 'Chase译码试探数' in ui_params:
+            mapped_params['chase_num_per_packet'] = int(ui_params['Chase译码试探数'])
+
+        # 前导码
+        if '前导码配置' in ui_params:
+            preamble_map = {'短前导': 'short', '长前导': 'long'}
+            mapped_params['Preamble_type'] = preamble_map.get(str(ui_params['前导码配置']), 'short')
+
+        # OFDM
+        if 'OFDM子载波数' in ui_params:
+            mapped_params['subwave_num'] = int(ui_params['OFDM子载波数'])
+        if '单帧OFDM符号数' in ui_params:
+            mapped_params['subframe_ofdm_num'] = int(ui_params['单帧OFDM符号数'])
+        if '块状导频索引' in ui_params:
+            import ast
+            try:
+                mapped_params['pilot_block_indexes'] = ast.literal_eval(str(ui_params['块状导频索引']))
+            except (ValueError, SyntaxError):
+                mapped_params['pilot_block_indexes'] = [0, 16, 32]
+
+        # 波形成形
         if '波形成形' in ui_params:
             mapped_params['filter_type'] = str(ui_params['波形成形'])
         if '滚降因子' in ui_params:
             mapped_params['rolloff'] = float(ui_params['滚降因子'])
         if '滤波器跨度' in ui_params:
             mapped_params['filter_length'] = int(ui_params['滤波器跨度'])
+        if '过采样率' in ui_params:
+            ovs = str(ui_params['过采样率']).replace('x', '')
+            mapped_params['oversampling'] = int(ovs) if ovs.isdigit() else 4
+
+        # 接收端补偿开关
+        if '频偏补偿' in ui_params:
+            mapped_params['enable_cfo_compensation'] = (str(ui_params['频偏补偿']) == '是')
+        if 'IQ补偿' in ui_params:
+            mapped_params['enable_iq_compensation'] = (str(ui_params['IQ补偿']) == '是')
+        if '信道估计与均衡' in ui_params:
+            mapped_params['enable_channel_equalization'] = (str(ui_params['信道估计与均衡']) == '是')
+
+        # 扰码
         if '扰码配置' in ui_params:
             mapped_params['scramble'] = (str(ui_params['扰码配置']) == '启用')
 
-        if '前导码配置' in ui_params:
-            preamble_map = {
-                '短前导': 'short',
-                '长前导': 'long',
-                '双前导': 'short',
-            }
-            mapped_params['Preamble_type'] = preamble_map.get(str(ui_params['前导码配置']), 'short')
-
-        if 'SNR' in ui_params:
-            mapped_params['SNRdB'] = float(ui_params['SNR'])
-        if '路径损耗' in ui_params:
-            mapped_params['path_loss'] = float(ui_params['路径损耗'])
-        if '载频偏移' in ui_params:
-            mapped_params['ppm'] = float(ui_params['载频偏移'])
-        if '多径路径数' in ui_params:
-            mapped_params['multipath_count'] = int(ui_params['多径路径数'])
-
-        if '译码参数' in ui_params:
-            decode_map = {
-                '硬译码': 'hard',
-                '软译码': 'soft',
-            }
-            mapped_params['decode_mode'] = decode_map.get(str(ui_params['译码参数']), str(ui_params['译码参数']))
-
-        if '运行次数' in ui_params:
-            mapped_params['run_times'] = int(ui_params['运行次数'])
+        # 运行参数（单方案始终 run_times=1）
+        mapped_params['run_times'] = 1
         if '随机种子策略' in ui_params:
             mapped_params['seed_strategy'] = str(ui_params['随机种子策略'])
-        if '保存中间结果' in ui_params:
-            mapped_params['save_intermediate'] = str(ui_params['保存中间结果'])
+
+        # ── 信道参数 (来自 channel_integration 页面) ──
+        channel_params = ui_params.get('_channel_params', {})
+        if isinstance(channel_params, dict):
+            for k, v in channel_params.items():
+                mapped_params[k] = v
+            # CFO 注入时自动启用补偿
+            if mapped_params.get("enable_cfo"):
+                mapped_params.setdefault("enable_cfo_compensation", True)
+
+        # 兼容旧参数名 (向后兼容旧的 config.json)
+        if '数据帧长度' in ui_params and 'subframe_length' not in mapped_params:
+            mapped_params['subframe_length'] = int(ui_params['数据帧长度'])
+        if 'GI长度' in ui_params and 'gi_length' not in mapped_params:
+            mapped_params['gi_length'] = int(ui_params['GI长度'])
+        if '比特源配置' in ui_params and 'data_source' not in mapped_params:
+            mapped_params['data_source'] = str(ui_params['比特源配置'])
+        if '编码方式' in ui_params:
+            old_code = str(ui_params['编码方式'])
+            if 'LDPC' in old_code:
+                mapped_params.setdefault('code_type', 'LDPC')
+            elif 'RS' in old_code:
+                mapped_params.setdefault('code_type', 'RS')
+        if 'SNR' in ui_params and 'SNRdB' not in mapped_params:
+            mapped_params['SNRdB'] = float(ui_params['SNR'])
 
         return mapped_params
 
@@ -968,295 +1034,212 @@ class BackendService(QObject):
     def _save_transmitter_plots(self, result, output_dir):
         import matplotlib.pyplot as plt
         import numpy as np
-        import matplotlib
 
-        plt.clf()
-        plt.close('all')
-        matplotlib.rcParams.update(matplotlib.rcParamsDefault)
+        plt.clf(); plt.close('all')
 
         tx_signal_dict = result.get('tx_signal', {})
-        tx_signal = tx_signal_dict.get('signal_stream', np.array([]))
-        print(f"发射信号长度: {len(tx_signal)}, 类型: {type(tx_signal)}, 非零元素: {np.count_nonzero(tx_signal)}")
+        tx_signal = np.asarray(tx_signal_dict.get('signal_stream', []))
         if len(tx_signal) == 0:
             print("发射信号为空，跳过图表生成")
             return
 
         params = result.get('params')
-        symbol_period = 8
+        sps = 4
+        preamble_len_sym = 3328
         if params is not None:
-            symbol_period = params.get("oversampling") if hasattr(params, 'get') else 8
-            if symbol_period is None:
-                symbol_period = 8
+            sps = int(params.get("oversampling", 4) or 4)
+            preamble_len_sym = 3328 if params.get("Preamble_type", "short") == "short" else 5120
 
-        n = len(tx_signal)
-        time_window = min(5000, n)
-        time_start = max(0, n - time_window)
-        time_slice = tx_signal[time_start:time_start + time_window]
+        # payload only, normalize
+        pskip = preamble_len_sym * sps
+        payload = tx_signal[pskip:] if len(tx_signal) > pskip else tx_signal
+        if len(payload) == 0:
+            payload = tx_signal
+        payload = payload / (np.sqrt(np.mean(np.abs(payload)**2)) + 1e-15)
+        fs = tx_signal_dict.get("sample_rate_Hz", 1.0)
 
-        fig = plt.figure(figsize=(10, 5))
-        plt.plot(np.arange(len(time_slice)), np.real(time_slice), label='Real', alpha=0.8, linewidth=0.8, color=self._plot_colors[0])
-        plt.plot(np.arange(len(time_slice)), np.imag(time_slice), label='Imag', alpha=0.8, linewidth=0.4, color=self._plot_colors[1])
-        plt.title(f'TX Signal Time Domain (last {len(time_slice)} samples)')
-        plt.xlabel('Sample')
-        plt.ylabel('Amplitude')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
+        color = '#2C68B4'
+        mode = str(params.get("link_mode", "sc-fde")).upper() if params is not None else "SC-FDE"
+
+        # —— publication style ——
+        plt.rcParams.update({
+            "font.family": "serif", "font.serif": ["Times New Roman", "DejaVu Serif", "STIX"],
+            "axes.unicode_minus": False, "axes.linewidth": 0.8,
+            "xtick.direction": "in", "ytick.direction": "in",
+            "xtick.major.size": 4, "ytick.major.size": 4,
+            "axes.labelsize": 11, "legend.fontsize": 9,
+            "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
+        })
+
+        # —— Fig 1: Time envelope ——
+        fig, ax = plt.subplots(figsize=(6, 3))
+        n_show = min(600, len(payload) // sps)
+        env = np.abs(payload[:n_show * sps])
+        t = np.arange(len(env)) / sps
+        ax.plot(t, env, color=color, lw=0.6)
+        ax.axhline(y=1.0, color="gray", ls="--", lw=0.5, alpha=0.5, label="mean")
+        ax.set_xlabel("Symbol index"); ax.set_ylabel("|Amplitude|")
+        ax.set_title(f"{mode} time envelope", fontsize=10, pad=4)
+        ax.legend(fontsize=8); ax.set_xlim([0, n_show])
         fig.tight_layout()
         fig.savefig(output_dir / "transmitter_time.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
 
-        fig = plt.figure(figsize=(10, 5))
-        if len(tx_signal) > 0 and np.any(tx_signal != 0):
-            fft_signal = np.fft.fft(tx_signal)
-            sample_rate = tx_signal_dict.get("sample_rate_Hz", 1e9)
-            if sample_rate > 0:
-                freq = np.fft.fftfreq(len(fft_signal), 1/sample_rate)
-                magnitude = np.abs(fft_signal)
-                magnitude_db = 20 * np.log10(np.maximum(magnitude, 1e-12))
-                plt.plot(freq/1e9, magnitude_db, color=self._plot_colors[0])
-                plt.title('TX Signal Spectrum')
-                plt.xlabel('Frequency (GHz)')
-                plt.ylabel('Magnitude (dB)')
-                plt.grid(True, alpha=0.3)
-        else:
-            plt.text(0.5, 0.5, 'No valid signal data', ha='center', va='center', transform=plt.gca().transAxes)
+        # —— Fig 2: Spectrum ——
+        fig, ax = plt.subplots(figsize=(6, 3.5))
+        nfft = 2048
+        seg = payload[:nfft]
+        spec = np.fft.fftshift(np.fft.fft(seg, nfft))
+        freq = np.fft.fftshift(np.fft.fftfreq(nfft, 1/fs)) if fs > 0 else np.arange(nfft)
+        ax.plot(freq/1e9, 20*np.log10(np.abs(spec) + 1e-15), color=color, lw=0.4)
+        ax.set_xlabel("Frequency (GHz)"); ax.set_ylabel("Magnitude (dB)")
+        ax.set_title(f"{mode} spectrum", fontsize=10, pad=4)
+        bw = 0.5 * fs; ax.set_xlim([-bw/1e9, bw/1e9]); ax.set_ylim([-20, 60])
         fig.tight_layout()
         fig.savefig(output_dir / "transmitter_spectrum.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
 
-        power_window = min(1000, n)
-        power_signal = tx_signal[max(0, n - power_window):]
-        fig = plt.figure(figsize=(10, 5))
-        plt.plot(np.arange(len(power_signal)), np.abs(power_signal)**2, linewidth=0.8, color=self._plot_colors[2])
-        plt.title(f'TX Signal Power ({len(power_signal)} samples)')
-        plt.xlabel('Sample')
-        plt.ylabel('Power (W)')
-        plt.grid(True, alpha=0.3)
+        # —— Fig 3: PAPR CCDF ——
+        fig, ax = plt.subplots(figsize=(6, 4))
+        blk_len = 480 * sps  # per SC-FDE block
+        pv = []
+        for b in range(0, len(payload) - blk_len, blk_len):
+            blk = payload[b:b+blk_len]
+            pv.append(10*np.log10(np.max(np.abs(blk)**2)/(np.mean(np.abs(blk)**2)+1e-15)))
+        if pv:
+            pv = np.sort(pv)
+            ccdf = 1.0 - np.arange(len(pv)) / len(pv)
+            ax.semilogy(pv, ccdf, color=color, lw=1.2)
+            idx1e3 = np.searchsorted(ccdf, 1e-3)
+            if idx1e3 < len(pv):
+                p3 = pv[idx1e3]
+                ax.axvline(x=p3, color=color, ls=":", lw=0.8, alpha=0.6)
+                ax.annotate(f"{p3:.1f} dB @ 1e-3", xy=(p3, 1e-3), xytext=(p3+1.5, 3e-3),
+                            fontsize=9, color=color,
+                            arrowprops=dict(arrowstyle="->", color=color, lw=0.6))
+        ax.set_xlabel("PAPR (dB)"); ax.set_ylabel("CCDF")
+        ax.set_title(f"{mode} PAPR CCDF", fontsize=10, pad=4)
+        ax.set_ylim([1e-3, 1])
         fig.tight_layout()
-        fig.savefig(output_dir / "transmitter_power.png", dpi=300, bbox_inches='tight')
+        fig.savefig(output_dir / "transmitter_papr.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
 
-        constellation_window = min(5000, n)
-        constellation_signal = tx_signal[max(0, n - constellation_window):]
-        fig = plt.figure(figsize=(6, 6))
-        plt.scatter(np.real(constellation_signal), np.imag(constellation_signal), s=5, alpha=0.6, c=self._plot_colors[1])
-        plt.title('TX Constellation')
-        plt.xlabel('Real')
-        plt.ylabel('Imag')
-        plt.grid(True, alpha=0.3)
-        plt.axis('equal')
+        # —— Fig 4: Amplitude histogram ——
+        fig, ax = plt.subplots(figsize=(6, 4))
+        amps = np.abs(payload)
+        ax.hist(amps, bins=80, density=True, histtype="step", color=color, lw=1.2)
+        if "ofdm" in str(mode).lower():
+            sigma = np.sqrt(np.mean(amps**2) / 2)
+            x_r = np.linspace(0, np.max(amps), 200)
+            ax.plot(x_r, x_r/sigma**2*np.exp(-x_r**2/(2*sigma**2)),
+                    "--", color="gray", lw=0.8, alpha=0.7, label="Rayleigh ref.")
+            ax.legend(fontsize=8, loc="upper right")
+        ax.set_xlabel("|Amplitude|"); ax.set_ylabel("Probability density")
+        ax.set_title(f"{mode} amplitude distribution", fontsize=10, pad=4)
         fig.tight_layout()
-        fig.savefig(output_dir / "transmitter_constellation.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
-
-        eye_window = min(2000 * symbol_period, n)
-        eye_signal = np.real(tx_signal[:eye_window])
-        fig = plt.figure(figsize=(10, 5))
-        for i in range(0, len(eye_signal) - symbol_period + 1, symbol_period):
-            plt.plot(np.arange(symbol_period), eye_signal[i:i + symbol_period], color=self._plot_colors[0], alpha=0.1, linewidth=0.8)
-        plt.title('TX Signal Eye Diagram (Real)')
-        plt.xlabel('Sample in symbol period')
-        plt.ylabel('Signal amplitude (Real)')
-        plt.grid(True, alpha=0.3)
-        plt.xlim(0, symbol_period)
-        fig.tight_layout()
-        fig.savefig(output_dir / "transmitter_eye.png", dpi=300, bbox_inches='tight')
+        fig.savefig(output_dir / "transmitter_histogram.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
 
     def _save_channel_plots(self, result, output_dir):
         import matplotlib.pyplot as plt
         import numpy as np
-        import matplotlib
 
-        plt.clf()
-        plt.close('all')
-        matplotlib.rcParams.update(matplotlib.rcParamsDefault)
-
+        plt.clf(); plt.close('all')
+        plt.rcParams.update({
+            "font.family": "serif", "axes.unicode_minus": False,
+            "axes.linewidth": 0.8, "xtick.direction": "in", "ytick.direction": "in",
+            "xtick.major.size": 4, "ytick.major.size": 4,
+            "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
+        })
         rx_signal_dict = result.get('rx_signal', {})
-        rx_signal = rx_signal_dict.get('signal_stream', np.array([]))
-        print(f"接收信号长度: {len(rx_signal)}, 类型: {type(rx_signal)}, 非零元素: {np.count_nonzero(rx_signal)}")
+        rx_signal = np.asarray(rx_signal_dict.get('signal_stream', []))
         if len(rx_signal) == 0:
-            print("接收信号为空，跳过图表生成")
             return
-
         params = result.get('params')
-        symbol_period = 8
-        if params is not None:
-            symbol_period = params.get("oversampling") if hasattr(params, 'get') else 8
-            if symbol_period is None:
-                symbol_period = 8
-
+        sps = params.get("oversampling", 4) if params else 4
+        fs = rx_signal_dict.get("sample_rate_Hz", 1.0)
+        color = '#D95F02'
         n = len(rx_signal)
-        time_plot_len = min(1000, n)
-        time_signal = rx_signal[:time_plot_len]
 
-        fig = plt.figure(figsize=(10, 5))
-        plt.plot(np.arange(len(time_signal)), np.real(time_signal), label='Real', alpha=0.8, linewidth=0.8, color=self._plot_colors[0])
-        plt.plot(np.arange(len(time_signal)), np.imag(time_signal), label='Imag', alpha=0.8, linewidth=0.8, color=self._plot_colors[1])
-        plt.title(f'RX Signal Time Domain (first {len(time_signal)} samples)')
-        plt.xlabel('Sample')
-        plt.ylabel('Amplitude')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        fig.tight_layout()
-        fig.savefig(output_dir / "channel_time.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
+        # time domain
+        fig, ax = plt.subplots(figsize=(6, 3))
+        ax.plot(np.arange(min(200, n)), np.real(rx_signal[:200]), color=color, lw=0.5)
+        ax.set_xlabel("Sample"); ax.set_ylabel("Amplitude (Real)")
+        ax.set_title("RX signal — time domain", fontsize=10, pad=4)
+        fig.tight_layout(); fig.savefig(output_dir / "channel_time.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
-        fig = plt.figure(figsize=(10, 5))
-        if len(rx_signal) > 0 and np.any(rx_signal != 0):
-            fft_signal = np.fft.fft(rx_signal)
-            sample_rate = rx_signal_dict.get("sample_rate_Hz", 1e9)
-            if sample_rate > 0:
-                freq = np.fft.fftfreq(len(fft_signal), 1/sample_rate)
-                magnitude = np.abs(fft_signal)
-                magnitude_db = 20 * np.log10(np.maximum(magnitude, 1e-12))
-                plt.plot(freq/1e9, magnitude_db, color=self._plot_colors[0])
-                plt.title('RX Signal Spectrum')
-                plt.xlabel('Frequency (GHz)')
-                plt.ylabel('Magnitude (dB)')
-                plt.grid(True, alpha=0.3)
-        else:
-            plt.text(0.5, 0.5, 'No valid signal data', ha='center', va='center', transform=plt.gca().transAxes)
-        fig.tight_layout()
-        fig.savefig(output_dir / "channel_spectrum.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
+        # spectrum
+        fig, ax = plt.subplots(figsize=(6, 3.5))
+        nfft = 2048; seg = rx_signal[:nfft]
+        spec = np.fft.fftshift(np.fft.fft(seg, nfft))
+        freq = np.fft.fftshift(np.fft.fftfreq(nfft, 1/fs)) if fs > 0 else np.arange(nfft)
+        ax.plot(freq/1e9, 20*np.log10(np.abs(spec)+1e-15), color=color, lw=0.4)
+        ax.set_xlabel("Frequency (GHz)"); ax.set_ylabel("Magnitude (dB)")
+        ax.set_title("RX signal — spectrum", fontsize=10, pad=4)
+        bw = 0.5*fs; ax.set_xlim([-bw/1e9, bw/1e9]); ax.set_ylim([-20, 60])
+        fig.tight_layout(); fig.savefig(output_dir / "channel_spectrum.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
-        constellation_window = min(1000, n)
-        constellation_signal = rx_signal[:constellation_window]
-        fig = plt.figure(figsize=(6, 6))
-        plt.scatter(np.real(constellation_signal), np.imag(constellation_signal), s=5, alpha=0.6, c=self._plot_colors[1])
-        plt.title('RX Constellation')
-        plt.xlabel('Real')
-        plt.ylabel('Imag')
-        plt.grid(True, alpha=0.3)
-        plt.axis('equal')
-        fig.tight_layout()
-        fig.savefig(output_dir / "channel_constellation.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
+        # constellation (skip preamble)
+        preamble_len_sym = 3328 if params.get("Preamble_type", "short") == "short" else 5120
+        pskip = preamble_len_sym * sps
+        payload = rx_signal[pskip:] if len(rx_signal) > pskip else rx_signal
+        fig, ax = plt.subplots(figsize=(5, 5))
+        n_cst = min(3000, len(payload))
+        ax.scatter(np.real(payload[:n_cst]), np.imag(payload[:n_cst]), s=3, alpha=0.5, c=color)
+        ax.set_xlabel("I"); ax.set_ylabel("Q")
+        ax.set_title("RX constellation (payload)", fontsize=10, pad=4)
+        ax.axis("equal")
+        fig.tight_layout(); fig.savefig(output_dir / "channel_constellation.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
-        power_window = min(1000, n)
-        power_signal = rx_signal[:power_window]
-        fig = plt.figure(figsize=(10, 5))
-        plt.plot(np.arange(len(power_signal)), np.abs(power_signal)**2, linewidth=0.8, color=self._plot_colors[2])
-        plt.title(f'RX Signal Power (first {len(power_signal)} samples)')
-        plt.xlabel('Sample')
-        plt.ylabel('Power (W)')
-        plt.grid(True, alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(output_dir / "channel_power.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
-
-        eye_window = min(2000 * symbol_period, n)
-        eye_signal = np.real(rx_signal[:eye_window])
-        fig = plt.figure(figsize=(10, 5))
-        for i in range(0, len(eye_signal) - symbol_period + 1, symbol_period):
-            plt.plot(np.arange(symbol_period), eye_signal[i:i + symbol_period], color=self._plot_colors[0], alpha=0.1, linewidth=0.8)
-        plt.title('RX Signal Eye Diagram (Real)')
-        plt.xlabel('Sample in symbol period')
-        plt.ylabel('Signal amplitude (Real)')
-        plt.grid(True, alpha=0.3)
-        plt.xlim(0, symbol_period)
-        fig.tight_layout()
-        fig.savefig(output_dir / "channel_eye_real.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
+        # power distribution
+        fig, ax = plt.subplots(figsize=(6, 3.5))
+        pwr_data = payload if len(payload) > 0 else rx_signal
+        ax.plot(np.arange(min(500, len(pwr_data))), np.abs(pwr_data[:500])**2, color=color, lw=0.5)
+        ax.set_xlabel("Sample"); ax.set_ylabel("Power")
+        ax.set_title("RX signal power (payload)", fontsize=10, pad=4)
+        fig.tight_layout(); fig.savefig(output_dir / "channel_power.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
     def _save_matched_filter_plots(self, result, output_dir):
         import matplotlib.pyplot as plt
         import numpy as np
-        import matplotlib
 
-        plt.clf()
-        plt.close('all')
-        matplotlib.rcParams.update(matplotlib.rcParamsDefault)
+        plt.clf(); plt.close('all')
+        plt.rcParams.update({
+            "font.family": "serif", "axes.unicode_minus": False,
+            "axes.linewidth": 0.8, "xtick.direction": "in", "ytick.direction": "in",
+            "xtick.major.size": 4, "ytick.major.size": 4,
+            "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
+        })
+        params = result.get('params')
+        sps = params.get("oversampling", 4) if params else 4
+        preamble_len_sym = 3328 if params.get("Preamble_type", "short") == "short" else 5120
+        pskip = preamble_len_sym * sps
+        color_tx = '#2C68B4'; color_rx = '#D95F02'
 
-        rx_signal_dict = result.get('rx_signal', {})
-        rx_matched_dict = result.get('rx_matched', {})
-        tx_signal_dict = result.get('tx_signal', {})
-        tx_symbols = result.get('tx_with_gi', {}).get('signal_stream', np.array([]))
+        # ---- matched filter spectrum ----
+        mf_dict = result.get('rx_matched') or {}
+        mf_sig = np.asarray(mf_dict.get('signal_stream', []))
+        if len(mf_sig) > 0:
+            fig, ax = plt.subplots(figsize=(6, 3.5))
+            nfft = 2048; seg = mf_sig[pskip:pskip+nfft] if len(mf_sig) > pskip else mf_sig[:nfft]
+            spec = np.fft.fftshift(np.fft.fft(np.resize(seg, nfft), nfft))
+            ax.plot(20*np.log10(np.abs(spec)+1e-15), color=color_rx, lw=0.4)
+            ax.set_xlabel("Frequency bin"); ax.set_ylabel("Magnitude (dB)")
+            ax.set_title("Matched filter output — spectrum", fontsize=10, pad=4)
+            ax.set_ylim([-20, 60])
+            fig.tight_layout(); fig.savefig(output_dir / "rx_mf_spectrum.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
-        rx_signal = rx_signal_dict.get('signal_stream', np.array([]))
-        y_matched = rx_matched_dict.get('signal_stream', np.array([]))
-        rx_filtered = y_matched
-        tx_signal = tx_signal_dict.get('signal_stream', np.array([]))
-
-        print(f"接收信号长度: {len(rx_signal)}, 滤波后长度: {len(rx_filtered)}, 匹配后长度: {len(y_matched)}")
-        print(f"发射信号长度: {len(tx_signal)}, 发射符号长度: {len(tx_symbols)}")
-
-        if len(rx_signal) == 0 or len(rx_filtered) == 0 or len(y_matched) == 0:
-            print("接收端信号数据不完整，跳过图表生成")
-            return
-
-        fig = plt.figure(figsize=(10, 5))
-        plt.plot(np.real(tx_signal[:200]), color=self._plot_colors[0])
-        plt.title("TX Signal Time Domain (Real)")
-        plt.xlabel("Sample")
-        plt.ylabel("Amplitude")
-        plt.grid(True, alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(output_dir / "matched_tx_time.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
-
-        fig = plt.figure(figsize=(10, 5))
-        plt.plot(np.real(rx_signal[:200]), color=self._plot_colors[0])
-        plt.title("RX Signal Time Domain (Real)")
-        plt.xlabel("Sample")
-        plt.ylabel("Amplitude")
-        plt.grid(True, alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(output_dir / "matched_rx_time.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
-
-        fig = plt.figure(figsize=(10, 5))
-        if len(rx_signal) > 0 and np.any(rx_signal != 0):
-            RX = np.fft.fftshift(np.fft.fft(rx_signal))
-            magnitude = np.abs(RX)
-            magnitude_db = 20 * np.log10(np.maximum(magnitude, 1e-12))
-            plt.plot(magnitude_db, color=self._plot_colors[0])
-            plt.title("RX Signal Spectrum")
-            plt.xlabel("Frequency Bin")
-            plt.ylabel("Magnitude (dB)")
-            plt.grid(True, alpha=0.3)
-        else:
-            plt.text(0.5, 0.5, 'No valid signal data', ha='center', va='center', transform=plt.gca().transAxes)
-        fig.tight_layout()
-        fig.savefig(output_dir / "matched_rx_spectrum.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
-
-        fig = plt.figure(figsize=(10, 5))
-        if len(rx_filtered) > 0 and np.any(rx_filtered != 0):
-            MF = np.fft.fftshift(np.fft.fft(rx_filtered))
-            magnitude = np.abs(MF)
-            magnitude_db = 20 * np.log10(np.maximum(magnitude, 1e-12))
-            plt.plot(magnitude_db, color=self._plot_colors[1])
-            plt.title("Matched Filter Output Spectrum")
-            plt.xlabel("Frequency Bin")
-            plt.ylabel("Magnitude (dB)")
-            plt.grid(True, alpha=0.3)
-        else:
-            plt.text(0.5, 0.5, 'No valid signal data', ha='center', va='center', transform=plt.gca().transAxes)
-        fig.tight_layout()
-        fig.savefig(output_dir / "matched_filtered_spectrum.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
-
-        fig = plt.figure(figsize=(10, 5))
-        plt.plot(np.real(tx_symbols[:100]), color=self._plot_colors[2])
-        plt.title("TX Symbols Time Domain (Real)")
-        plt.xlabel("Sample")
-        plt.ylabel("Amplitude")
-        plt.grid(True, alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(output_dir / "matched_tx_symbols.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
-
-        fig = plt.figure(figsize=(10, 5))
-        plt.plot(np.real(y_matched[:100]), color=self._plot_colors[3])
-        plt.title("Recovered Symbols Time Domain (Real)")
-        plt.xlabel("Sample")
-        plt.ylabel("Amplitude")
-        plt.grid(True, alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(output_dir / "matched_recovered_symbols.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
+        # ---- equalized constellation ----
+        eq_dict = result.get('rx_equalized') or {}
+        eq_sig = np.asarray(eq_dict.get('signal_stream', []))
+        if len(eq_sig) > 0:
+            fig, ax = plt.subplots(figsize=(5, 5))
+            n_cst = min(3000, len(eq_sig))
+            ax.scatter(np.real(eq_sig[:n_cst]), np.imag(eq_sig[:n_cst]), s=3, alpha=0.5, c=color_tx)
+            ax.set_xlabel("I"); ax.set_ylabel("Q")
+            ax.set_title("Equalized constellation", fontsize=10, pad=4)
+            ax.axis("equal")
+            fig.tight_layout(); fig.savefig(output_dir / "rx_eq_constellation.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
     def pause_simulation(self) -> None:
         self._state.phase = '已暂停'

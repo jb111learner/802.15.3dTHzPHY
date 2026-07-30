@@ -153,162 +153,162 @@ def plot_eye_diagram(signal, symbol_period, num_symbols=1000, oversampling=1, ax
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, samples_per_symbol-1)
 
-if __name__ == "__main__":    
-    params = PHYParams()
-    tx = THzTransmitter(params)
-    tx.run()
+# if __name__ == "__main__":    
+#     params = PHYParams()
+#     tx = THzTransmitter(params)
+#     tx.run()
 
 # test
-# if __name__ == "__main__":
-#     import os
+if __name__ == "__main__":
+    import os
 
-#     # ---- publication style ----
-#     plt.rcParams.update({
-#         "font.family": "serif",
-#         "font.serif": ["Times New Roman", "DejaVu Serif", "STIX"],
-#         "mathtext.fontset": "stix",
-#         "axes.unicode_minus": False,
-#         "figure.dpi": 150,
-#         "savefig.dpi": 300,
-#         "savefig.bbox": "tight",
-#         "axes.linewidth": 0.8,
-#         "xtick.direction": "in",
-#         "ytick.direction": "in",
-#         "xtick.major.size": 4,
-#         "ytick.major.size": 4,
-#         "xtick.labelsize": 10,
-#         "ytick.labelsize": 10,
-#         "axes.labelsize": 11,
-#         "legend.fontsize": 9,
-#         "legend.framealpha": 0.8,
-#         "grid.alpha": 0.25,
-#         "grid.linestyle": "--",
-#         "grid.linewidth": 0.4,
-#     })
+    # ---- publication style ----
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "DejaVu Serif", "STIX"],
+        "mathtext.fontset": "stix",
+        "axes.unicode_minus": False,
+        "figure.dpi": 150,
+        "savefig.dpi": 300,
+        "savefig.bbox": "tight",
+        "axes.linewidth": 0.8,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.major.size": 4,
+        "ytick.major.size": 4,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "axes.labelsize": 11,
+        "legend.fontsize": 9,
+        "legend.framealpha": 0.8,
+        "grid.alpha": 0.25,
+        "grid.linestyle": "--",
+        "grid.linewidth": 0.4,
+    })
 
-#     out_dir = "simulation_results"
-#     os.makedirs(out_dir, exist_ok=True)
+    out_dir = "simulation_results"
+    os.makedirs(out_dir, exist_ok=True)
 
-#     colors = {"sc-fde": "#2C68B4", "ofdm": "#D95F02"}  # blue / orange
-#     labels = {"sc-fde": "SC", "ofdm": "OFDM"}
+    colors = {"sc-fde": "#2C68B4", "ofdm": "#D95F02"}  # blue / orange
+    labels = {"sc-fde": "SC", "ofdm": "OFDM"}
 
-#     # ---- generate waveforms ----
-#     signals = {}
-#     paprs = {}
-#     for mode in ["sc-fde", "ofdm"]:
-#         params = PHYParams()
-#         params.update(link_mode=mode)
-#         tx = THzTransmitter(params)
-#         tx.run()
-#         sig = tx.tx_signal_dict["signal_stream"]
-#         sps = params.get("oversampling")
-#         # payload only (skip preamble), normalize to unit avg power
-#         pskip = len(tx.preamble) * sps
-#         payload = sig[pskip:]
-#         payload = payload / np.sqrt(np.mean(np.abs(payload)**2))
-#         signals[mode] = {"sig": payload, "sps": sps,
-#                          "fs": tx.tx_signal_dict.get("sample_rate_Hz"),
-#                          "n_sc": params.get("subwave_num")}
-#         # PAPR per OFDM-symbol-equivalent block (N_SC × sps = 2048 samples)
-#         blk_len = params.get("subframe_length") * sps  # 512 × 4 = 2048
-#         pv = []
-#         for b in range(0, len(payload) - blk_len, blk_len):
-#             blk = payload[b:b+blk_len]
-#             pv.append(10*np.log10(np.max(np.abs(blk)**2)/(np.mean(np.abs(blk)**2)+1e-15)))
-#         paprs[mode] = np.array(pv)
+    # ---- generate waveforms ----
+    signals = {}
+    paprs = {}
+    for mode in ["sc-fde", "ofdm"]:
+        params = PHYParams()
+        params.update(link_mode=mode)
+        tx = THzTransmitter(params)
+        tx.run()
+        sig = tx.tx_signal_dict["signal_stream"]
+        sps = params.get("oversampling")
+        # payload only (skip preamble), normalize to unit avg power
+        pskip = len(tx.preamble) * sps
+        payload = sig[pskip:]
+        payload = payload / np.sqrt(np.mean(np.abs(payload)**2))
+        signals[mode] = {"sig": payload, "sps": sps,
+                         "fs": tx.tx_signal_dict.get("sample_rate_Hz"),
+                         "n_sc": params.get("subwave_num")}
+        # PAPR per OFDM-symbol-equivalent block (N_SC × sps = 2048 samples)
+        blk_len = params.get("subframe_length") * sps  # 512 × 4 = 2048
+        pv = []
+        for b in range(0, len(payload) - blk_len, blk_len):
+            blk = payload[b:b+blk_len]
+            pv.append(10*np.log10(np.max(np.abs(blk)**2)/(np.mean(np.abs(blk)**2)+1e-15)))
+        paprs[mode] = np.array(pv)
 
-#     # ===== Fig 1a/1b: Time-domain envelope (separate) =====
-#     for mode in ["sc-fde", "ofdm"]:
-#         fig, ax = plt.subplots(figsize=(6, 3))
-#         s = signals[mode]
-#         n_show = 600
-#         env = np.abs(s["sig"][:n_show * s["sps"]])
-#         t = np.arange(len(env)) / s["sps"]
-#         ax.plot(t, env, color=colors[mode], lw=0.6)
-#         ax.axhline(y=1.0, color="gray", ls="--", lw=0.5, alpha=0.5, label="mean")
-#         ax.set_xlabel("Symbol index"); ax.set_ylabel("|Amplitude|")
-#         ax.set_title(f"{labels[mode]} time envelope", fontsize=10, pad=4)
-#         ax.legend(fontsize=8); ax.set_xlim([0, n_show])
-#         fig.tight_layout()
-#         tag = "sc" if mode == "sc-fde" else "ofdm"
-#         fig.savefig(f"{out_dir}/fig1_time_{tag}.pdf", dpi=600)
-#         fig.savefig(f"{out_dir}/fig1_time_{tag}.png", dpi=300)
-#         plt.close(fig)
-#     print("Fig1a/1b saved")
+    # ===== Fig 1a/1b: Time-domain envelope (separate) =====
+    for mode in ["sc-fde", "ofdm"]:
+        fig, ax = plt.subplots(figsize=(6, 3))
+        s = signals[mode]
+        n_show = 600
+        env = np.abs(s["sig"][:n_show * s["sps"]])
+        t = np.arange(len(env)) / s["sps"]
+        ax.plot(t, env, color=colors[mode], lw=0.6)
+        ax.axhline(y=1.0, color="gray", ls="--", lw=0.5, alpha=0.5, label="mean")
+        ax.set_xlabel("Symbol index"); ax.set_ylabel("|Amplitude|")
+        ax.set_title(f"{labels[mode]} time envelope", fontsize=10, pad=4)
+        ax.legend(fontsize=8); ax.set_xlim([0, n_show])
+        fig.tight_layout()
+        tag = "sc" if mode == "sc-fde" else "ofdm"
+        fig.savefig(f"{out_dir}/fig1_time_{tag}.pdf", dpi=600)
+        fig.savefig(f"{out_dir}/fig1_time_{tag}.png", dpi=300)
+        plt.close(fig)
+    print("Fig1a/1b saved")
 
-#     # ===== Fig 2a/2b: Spectrum (separate) =====
-#     for mode in ["ofdm", "sc-fde"]:
-#         fig, ax = plt.subplots(figsize=(6, 3.5))
-#         s = signals[mode]
-#         nfft = 2048
-#         seg = s["sig"][:nfft]
-#         spec = np.fft.fftshift(np.fft.fft(seg, nfft))
-#         freq = np.fft.fftshift(np.fft.fftfreq(nfft, 1/s["fs"]))
-#         ax.plot(freq / 1e9, 20*np.log10(np.abs(spec) + 1e-15),
-#                 color=colors[mode], lw=0.4)
-#         ax.set_xlabel("Frequency (GHz)"); ax.set_ylabel("Magnitude (dB)")
-#         ax.set_title(f"{labels[mode]} spectrum", fontsize=10, pad=4)
-#         bw = 0.5 * s["fs"]; ax.set_xlim([-bw/1e9, bw/1e9]); ax.set_ylim([-20, 60])
-#         if mode == "ofdm":
-#             inset = ax.inset_axes([0.15, 0.5, 0.35, 0.4])
-#             mask = (freq > -3e9) & (freq < 3e9)
-#             inset.plot(freq[mask]/1e9, 20*np.log10(np.abs(spec[mask])+1e-15),
-#                        color=colors[mode], lw=0.2)
-#             inset.set_xlim([-2, 2])
-#             inset.set_xticklabels([]); inset.set_yticklabels([])
-#             inset.set_title("subcarriers", fontsize=7, pad=2)
-#         fig.tight_layout()
-#         tag = "ofdm" if mode == "ofdm" else "sc"
-#         fig.savefig(f"{out_dir}/fig2_spectrum_{tag}.pdf", dpi=600)
-#         fig.savefig(f"{out_dir}/fig2_spectrum_{tag}.png", dpi=300)
-#         plt.close(fig)
-#     print("Fig2a/2b saved")
+    # ===== Fig 2a/2b: Spectrum (separate) =====
+    for mode in ["ofdm", "sc-fde"]:
+        fig, ax = plt.subplots(figsize=(6, 3.5))
+        s = signals[mode]
+        nfft = 2048
+        seg = s["sig"][:nfft]
+        spec = np.fft.fftshift(np.fft.fft(seg, nfft))
+        freq = np.fft.fftshift(np.fft.fftfreq(nfft, 1/s["fs"]))
+        ax.plot(freq / 1e9, 20*np.log10(np.abs(spec) + 1e-15),
+                color=colors[mode], lw=0.4)
+        ax.set_xlabel("Frequency (GHz)"); ax.set_ylabel("Magnitude (dB)")
+        ax.set_title(f"{labels[mode]} spectrum", fontsize=10, pad=4)
+        bw = 0.5 * s["fs"]; ax.set_xlim([-bw/1e9, bw/1e9]); ax.set_ylim([-20, 60])
+        if mode == "ofdm":
+            inset = ax.inset_axes([0.15, 0.5, 0.35, 0.4])
+            mask = (freq > -3e9) & (freq < 3e9)
+            inset.plot(freq[mask]/1e9, 20*np.log10(np.abs(spec[mask])+1e-15),
+                       color=colors[mode], lw=0.2)
+            inset.set_xlim([-2, 2])
+            inset.set_xticklabels([]); inset.set_yticklabels([])
+            inset.set_title("subcarriers", fontsize=7, pad=2)
+        fig.tight_layout()
+        tag = "ofdm" if mode == "ofdm" else "sc"
+        fig.savefig(f"{out_dir}/fig2_spectrum_{tag}.pdf", dpi=600)
+        fig.savefig(f"{out_dir}/fig2_spectrum_{tag}.png", dpi=300)
+        plt.close(fig)
+    print("Fig2a/2b saved")
 
-#     # ===== Fig 3a/3b: PAPR CCDF (separate) =====
-#     for mode in ["sc-fde", "ofdm"]:
-#         fig, ax = plt.subplots(figsize=(6, 4))
-#         pv = np.sort(paprs[mode])
-#         ccdf = 1.0 - np.arange(len(pv)) / len(pv)
-#         ax.semilogy(pv, ccdf, color=colors[mode], lw=1.2)
-#         idx1e3 = np.searchsorted(ccdf, 1e-3)
-#         if idx1e3 < len(pv):
-#             p3 = pv[idx1e3]
-#             ax.axvline(x=p3, color=colors[mode], ls=":", lw=0.8, alpha=0.6)
-#             ax.annotate(f"{p3:.1f} dB @ 1e-3", xy=(p3, 1e-3), xytext=(p3+1.5, 3e-3),
-#                          fontsize=9, color=colors[mode],
-#                          arrowprops=dict(arrowstyle="->", color=colors[mode], lw=0.6))
-#         ax.set_xlabel("PAPR (dB)"); ax.set_ylabel("CCDF")
-#         ax.set_title(f"{labels[mode]} PAPR CCDF", fontsize=10, pad=4)
-#         ax.set_ylim([1e-3, 1])
-#         fig.tight_layout()
-#         tag = "sc" if mode == "sc-fde" else "ofdm"
-#         fig.savefig(f"{out_dir}/fig3_papr_{tag}.pdf", dpi=600)
-#         fig.savefig(f"{out_dir}/fig3_papr_{tag}.png", dpi=300)
-#         plt.close(fig)
-#     print("Fig3a/3b saved")
+    # ===== Fig 3a/3b: PAPR CCDF (separate) =====
+    for mode in ["sc-fde", "ofdm"]:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        pv = np.sort(paprs[mode])
+        ccdf = 1.0 - np.arange(len(pv)) / len(pv)
+        ax.semilogy(pv, ccdf, color=colors[mode], lw=1.2)
+        idx1e3 = np.searchsorted(ccdf, 1e-3)
+        if idx1e3 < len(pv):
+            p3 = pv[idx1e3]
+            ax.axvline(x=p3, color=colors[mode], ls=":", lw=0.8, alpha=0.6)
+            ax.annotate(f"{p3:.1f} dB @ 1e-3", xy=(p3, 1e-3), xytext=(p3+1.5, 3e-3),
+                         fontsize=9, color=colors[mode],
+                         arrowprops=dict(arrowstyle="->", color=colors[mode], lw=0.6))
+        ax.set_xlabel("PAPR (dB)"); ax.set_ylabel("CCDF")
+        ax.set_title(f"{labels[mode]} PAPR CCDF", fontsize=10, pad=4)
+        ax.set_ylim([1e-3, 1])
+        fig.tight_layout()
+        tag = "sc" if mode == "sc-fde" else "ofdm"
+        fig.savefig(f"{out_dir}/fig3_papr_{tag}.pdf", dpi=600)
+        fig.savefig(f"{out_dir}/fig3_papr_{tag}.png", dpi=300)
+        plt.close(fig)
+    print("Fig3a/3b saved")
 
-#     # ===== Fig 4a/4b: Amplitude histogram (separate) =====
-#     for mode in ["sc-fde", "ofdm"]:
-#         fig, ax = plt.subplots(figsize=(6, 4))
-#         amps = np.abs(signals[mode]["sig"])
-#         ax.hist(amps, bins=80, density=True, histtype="step",
-#                 color=colors[mode], lw=1.2)
-#         if mode == "ofdm":
-#             sigma = np.sqrt(np.mean(amps**2) / 2)
-#             x_r = np.linspace(0, np.max(amps), 200)
-#             ax.plot(x_r, x_r/sigma**2*np.exp(-x_r**2/(2*sigma**2)),
-#                     "--", color="gray", lw=0.8, alpha=0.7, label="Rayleigh ref.")
-#             ax.annotate("block pilots", xy=(1.0, 1.2), xytext=(1.6, 1.5),
-#                         fontsize=8, color=colors[mode],
-#                         arrowprops=dict(arrowstyle="->", color=colors[mode], lw=0.6))
-#         ax.set_xlabel("|Amplitude|"); ax.set_ylabel("Probability density")
-#         ax.set_title(f"{labels[mode]} amplitude distribution", fontsize=10, pad=4)
-#         ax.legend(fontsize=8, loc="upper right")
-#         fig.tight_layout()
-#         tag = "sc" if mode == "sc-fde" else "ofdm"
-#         fig.savefig(f"{out_dir}/fig4_hist_{tag}.pdf", dpi=600)
-#         fig.savefig(f"{out_dir}/fig4_hist_{tag}.png", dpi=300)
-#         plt.close(fig)
-#     print("Fig4a/4b saved")
+    # ===== Fig 4a/4b: Amplitude histogram (separate) =====
+    for mode in ["sc-fde", "ofdm"]:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        amps = np.abs(signals[mode]["sig"])
+        ax.hist(amps, bins=80, density=True, histtype="step",
+                color=colors[mode], lw=1.2)
+        if mode == "ofdm":
+            sigma = np.sqrt(np.mean(amps**2) / 2)
+            x_r = np.linspace(0, np.max(amps), 200)
+            ax.plot(x_r, x_r/sigma**2*np.exp(-x_r**2/(2*sigma**2)),
+                    "--", color="gray", lw=0.8, alpha=0.7, label="Rayleigh ref.")
+            ax.annotate("block pilots", xy=(1.0, 1.2), xytext=(1.6, 1.5),
+                        fontsize=8, color=colors[mode],
+                        arrowprops=dict(arrowstyle="->", color=colors[mode], lw=0.6))
+        ax.set_xlabel("|Amplitude|"); ax.set_ylabel("Probability density")
+        ax.set_title(f"{labels[mode]} amplitude distribution", fontsize=10, pad=4)
+        ax.legend(fontsize=8, loc="upper right")
+        fig.tight_layout()
+        tag = "sc" if mode == "sc-fde" else "ofdm"
+        fig.savefig(f"{out_dir}/fig4_hist_{tag}.pdf", dpi=600)
+        fig.savefig(f"{out_dir}/fig4_hist_{tag}.png", dpi=300)
+        plt.close(fig)
+    print("Fig4a/4b saved")
 
-#     print(f"All 8 figures saved to {out_dir}/")
+    print(f"All 8 figures saved to {out_dir}/")
