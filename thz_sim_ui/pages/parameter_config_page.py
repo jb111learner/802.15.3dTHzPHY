@@ -69,7 +69,7 @@ class ParameterConfigPage(WorkbenchPage):
         self.file_path_edit.setPlaceholderText("选择数据文件...")
         self.file_path_edit.setEnabled(False)
         self.file_path_btn = QPushButton("浏览")
-        self.file_path_btn.setEnabled(False)
+        self.file_path_btn.setToolTip("选择数据文件；选择成功后将自动切换为“文件输入”")
         self.file_path_btn.clicked.connect(self._on_browse_file)
         file_row = QHBoxLayout()
         file_row.addWidget(self.file_path_edit)
@@ -524,11 +524,11 @@ class ParameterConfigPage(WorkbenchPage):
     def _on_bit_source_changed(self, _idx: int = 0) -> None:
         is_file = (self.bit_source.currentText() == "文件输入")
         self.file_path_edit.setEnabled(is_file)
-        self.file_path_btn.setEnabled(is_file)
 
     def _on_browse_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择数据文件", "", "所有文件 (*)")
         if path:
+            self.bit_source.setCurrentText("文件输入")
             self.file_path_edit.setText(path)
 
     def _on_rs_decode_changed(self, _idx: int = 0) -> None:

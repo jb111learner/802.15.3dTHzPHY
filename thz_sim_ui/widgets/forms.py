@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
@@ -85,6 +86,8 @@ def make_radio_group(title: str, items: Sequence[str], checked: int = 0) -> QGro
     layout.setSpacing(8)
     for idx, item in enumerate(items):
         rb = QRadioButton(item)
+        rb.setProperty('optionCard', True)
+        rb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         if idx == checked:
             rb.setChecked(True)
         layout.addWidget(rb)

@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QGroupBox, QHBoxLayout, QLabel,
-    QPushButton, QStackedWidget, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from thz_sim_ui.widgets.forms import combo, dspin, line, make_form_group, spin
@@ -31,12 +31,16 @@ class ChannelIntegrationPage(WorkbenchPage):
         mod_layout = QVBoxLayout(modules_group)
         for name in CH_MODULES:
             row = QHBoxLayout()
+            row.setSpacing(10)
             cb = QCheckBox(name)
+            cb.setProperty("optionCard", True)
+            cb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             cb.setChecked(False)
             row.addWidget(cb)
-            row.addStretch()
             btn = QPushButton("编辑")
-            btn.setFixedWidth(50)
+            btn.setProperty("compact", True)
+            btn.setMinimumWidth(64)
+            btn.setFixedHeight(32)
             btn.clicked.connect(lambda _, n=name: self._on_select_module(n))
             row.addWidget(btn)
             mod_layout.addLayout(row)

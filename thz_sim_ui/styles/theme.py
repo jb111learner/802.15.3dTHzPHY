@@ -1,6 +1,6 @@
 APP_QSS = """
 QWidget {
-    background: #F5F7FB;
+    background: transparent;
     color: #1B2430;
     font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
     font-size: 13px;
@@ -19,8 +19,11 @@ QFrame#ChartCard {
 }
 QFrame#TopBar {
     border-radius: 16px;
+    border-color: #DFE6F2;
 }
 QFrame#NavBar {
+    background: #FFFFFF;
+    border-color: #DFE6F2;
     border-radius: 14px;
 }
 QFrame#SectionHeader {
@@ -67,6 +70,17 @@ QPushButton:hover {
 QPushButton:pressed {
     background: #EEF3FF;
 }
+QPushButton[compact="true"] {
+    min-width: 64px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    color: #43516A;
+}
+QPushButton[compact="true"]:hover {
+    background: #EEF3FF;
+    border-color: #AFC1EA;
+    color: #2F6BFF;
+}
 QPushButton[role="primary"] {
     background: #2F6BFF;
     color: white;
@@ -90,19 +104,103 @@ QPushButton[role="danger"] {
 QPushButton[nav="true"] {
     border: none;
     background: transparent;
-    padding: 10px 16px;
+    min-height: 22px;
+    padding: 9px 16px;
     border-radius: 10px;
     font-weight: 600;
+    color: #4B5870;
+}
+QPushButton[nav="true"]:hover {
+    background: #F3F6FC;
+    color: #2F6BFF;
 }
 QPushButton[nav="true"]:checked {
     background: #EAF0FF;
     color: #2F6BFF;
+    font-weight: 700;
 }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
     background: #FCFDFF;
     border: 1px solid #D8E0EF;
     border-radius: 8px;
     padding: 6px 8px;
+}
+QSpinBox, QDoubleSpinBox {
+    padding-right: 28px;
+}
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 24px;
+    background: #F3F6FB;
+    border-left: 1px solid #D8E0EF;
+    border-bottom: 1px solid #D8E0EF;
+    border-top-right-radius: 7px;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 24px;
+    background: #F3F6FB;
+    border-left: 1px solid #D8E0EF;
+    border-bottom-right-radius: 7px;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background: #EAF0FF;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: url(thz_sim_ui/assets/spin_up.svg);
+    width: 10px;
+    height: 6px;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: url(thz_sim_ui/assets/spin_down.svg);
+    width: 10px;
+    height: 6px;
+}
+QComboBox QAbstractItemView {
+    background: #FFFFFF;
+    color: #1B2430;
+    border: 1px solid #D8E0EF;
+    border-radius: 6px;
+    padding: 4px;
+    outline: none;
+    selection-background-color: #EAF0FF;
+    selection-color: #2F6BFF;
+}
+QComboBoxPrivateContainer {
+    background: #FFFFFF;
+    border: 1px solid #D8E0EF;
+    border-radius: 8px;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 28px;
+    padding: 4px 8px;
+}
+QDialog {
+    background: #F5F7FB;
+}
+QMessageBox {
+    background: #FFFFFF;
+}
+QMessageBox QLabel {
+    background: transparent;
+    color: #1B2430;
+}
+QMessageBox QPushButton {
+    min-width: 64px;
+    background: #FFFFFF;
+    color: #1B2430;
+}
+QMenu {
+    background: #FFFFFF;
+    color: #1B2430;
+    border: 1px solid #D8E0EF;
+}
+QMenu::item:selected {
+    background: #EAF0FF;
+    color: #2F6BFF;
 }
 QTabWidget::pane {
     border: 1px solid #E5EAF3;
@@ -186,6 +284,28 @@ QSplitter::handle {
 }
 QCheckBox, QRadioButton {
     spacing: 8px;
+}
+QCheckBox[optionCard="true"],
+QRadioButton[optionCard="true"] {
+    background: #F8FAFD;
+    border: 1px solid #E1E7F0;
+    border-radius: 9px;
+    padding: 8px 10px;
+    color: #344158;
+    font-weight: 500;
+}
+QCheckBox[optionCard="true"]:hover,
+QRadioButton[optionCard="true"]:hover {
+    background: #F1F5FF;
+    border-color: #B8C8EA;
+    color: #2F6BFF;
+}
+QCheckBox[optionCard="true"]:checked,
+QRadioButton[optionCard="true"]:checked {
+    background: #EAF0FF;
+    border-color: #9CB4ED;
+    color: #245DE0;
+    font-weight: 700;
 }
 QToolTip {
     background: #1F2937;

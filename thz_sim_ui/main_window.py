@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QFileDialog,
+    QFrame,
 )
 
 from thz_sim_ui.constants import APP_NAME, NAV_ITEMS, WINDOW_MIN_SIZE
@@ -262,7 +263,7 @@ class MainWindow(QMainWindow):
         self.backend.run_batch_compare_simulation(params, self.current_batch_project_folder)
 
     def _build_top_bar(self) -> QWidget:
-        bar = QWidget()
+        bar = QFrame()
         bar.setObjectName('TopBar')
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(18, 14, 18, 14)
@@ -330,7 +331,7 @@ class MainWindow(QMainWindow):
         return bar
 
     def _build_nav_bar(self) -> QWidget:
-        nav = QWidget()
+        nav = QFrame()
         nav.setObjectName('NavBar')
         layout = QHBoxLayout(nav)
         layout.setContentsMargins(12, 10, 12, 10)
