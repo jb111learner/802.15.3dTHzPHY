@@ -1,8 +1,4 @@
 import numpy as np
-import numpy as np
-from transmitter.THzTransmitter import THzTransmitter
-from params.PHYParams import PHYParams
-from channel.MultipathChannel import MultipathChannel
 
 class AWGN:
     """
@@ -128,6 +124,9 @@ class AWGN:
 
 # 测试
 if __name__ == "__main__":
+    from params.PHYParams import PHYParams
+    from transmitter.THzTransmitter import THzTransmitter
+
     # 初始化参数和发射机
     params = PHYParams()
     transmitter = THzTransmitter(params)

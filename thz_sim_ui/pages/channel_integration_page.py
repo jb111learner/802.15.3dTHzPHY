@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from thz_sim_ui.widgets.forms import combo, dspin, line, make_form_group, spin
 from thz_sim_ui.widgets.workbench import WorkbenchPage
 
-CH_MODULES = ["AWGN模块", "多径模块", "CFO模块", "IQ异常模块", "非线性放大"]
+CH_MODULES = ["AWGN模块", "多径模块", "CFO模块", "IQ异常模块", "功率放大器模块"]
 
 
 class ChannelIntegrationPage(WorkbenchPage):
@@ -164,17 +164,35 @@ class ChannelIntegrationPage(WorkbenchPage):
                 ("TX Q路FIR系数", self.iq_tx_gQ),
             ])
         else:  # 非线性放大
-            self.pa_model = combo(["无", "modified_rapp", "rapp"])
+            self.pa_model = combo(["modified_rapp"])
+            self.pa_param_source = combo(["开源数据集", "手动参数"])
+            self.pa_fc = dspin(1, 1000, 300, decimals=1, suffix="GHz")
+            self.pa_nearest_fc = combo(["否", "是"])
+            self.pa_auto_scaling = combo(["是", "否"])
             self.pa_power = dspin(-40, 20, -13.2, suffix="dBm")
-            self.pa_G = dspin(0, 30, 11.26, suffix="dB")
-            self.pa_Vsat = dspin(0.001, 1, 0.0628, suffix="V")
-            self.pa_p = dspin(0.1, 5, 1.0013)
+            self.pa_G = dspin(0, 100, 11.2616, decimals=4)
+            self.pa_Vsat = dspin(0.0001, 10, 0.0628, decimals=4, suffix="V")
+            self.pa_p = dspin(0.01, 100, 1.0013, decimals=4)
+            self.pa_A = dspin(-1e9, 1e9, -6.2038e4, decimals=4)
+            self.pa_B = dspin(0.000001, 1000, 0.0160, decimals=6)
+            self.pa_q1 = dspin(0.01, 1000, 1.7344, decimals=4)
+            self.pa_q2 = dspin(0.01, 1000, 1.8972, decimals=4)
+            self.pa_param_source.currentIndexChanged.connect(self._on_pa_source_changed)
+            self._on_pa_source_changed()
             return make_form_group("非线性放大参数", [
                 ("PA模型", self.pa_model),
+                ("参数来源", self.pa_param_source),
+                ("PA载频", self.pa_fc),
+                ("无精确载频时取最近值", self.pa_nearest_fc),
+                ("自动缩放至输入功率", self.pa_auto_scaling),
                 ("输入功率 (dBm)", self.pa_power),
                 ("线性增益 G", self.pa_G),
                 ("饱和电压 Vsat", self.pa_Vsat),
                 ("平滑因子 p", self.pa_p),
+                ("AM-PM 系数 A", self.pa_A),
+                ("AM-PM 系数 B", self.pa_B),
+                ("AM-PM 指数 q1", self.pa_q1),
+                ("AM-PM 指数 q2", self.pa_q2),
             ])
 
     # =================================================================
@@ -190,6 +208,13 @@ class ChannelIntegrationPage(WorkbenchPage):
         self.awgn_snr.setEnabled(is_snr)
         self.awgn_noise_temp.setEnabled(not is_snr)
         self.awgn_noise_fig.setEnabled(not is_snr)
+
+    def _on_pa_source_changed(self, _idx: int = 0) -> None:
+        from_dataset = self.pa_param_source.currentText() == "开源数据集"
+        self.pa_nearest_fc.setEnabled(from_dataset)
+        for widget in (self.pa_G, self.pa_Vsat, self.pa_p, self.pa_A,
+                       self.pa_B, self.pa_q1, self.pa_q2):
+            widget.setEnabled(not from_dataset)
 
     # =================================================================
     # 绘制星座
@@ -350,15 +375,24 @@ class ChannelIntegrationPage(WorkbenchPage):
                 except (ValueError, SyntaxError):
                     p[key] = [1.0]
 
-        pa_on = self.module_checks["非线性放大"].isChecked()
-        pa_name = self.pa_model.currentText()
-        p["enable_pa"] = pa_on and (pa_name != "无")
+        pa_on = self.module_checks["功率放大器模块"].isChecked()
+        p["enable_pa"] = pa_on
         if p["enable_pa"]:
-            p["pa_model"] = pa_name
+            p["pa_model"] = self.pa_model.currentText()
+            p["pa_load_params_from_dataset"] = (
+                self.pa_param_source.currentText() == "开源数据集"
+            )
+            p["pa_fc_Hz"] = self.pa_fc.value() * 1e9
+            p["pa_use_nearest_fc"] = self.pa_nearest_fc.currentText() == "是"
+            p["pa_auto_input_scaling"] = self.pa_auto_scaling.currentText() == "是"
             p["pa_input_power_dbm"] = self.pa_power.value()
             p["pa_G"] = self.pa_G.value()
             p["pa_Vsat"] = self.pa_Vsat.value()
             p["pa_p"] = self.pa_p.value()
+            p["pa_A"] = self.pa_A.value()
+            p["pa_B"] = self.pa_B.value()
+            p["pa_q1"] = self.pa_q1.value()
+            p["pa_q2"] = self.pa_q2.value()
 
         return p
 
@@ -400,13 +434,24 @@ class ChannelIntegrationPage(WorkbenchPage):
         self.iq_tx_gain.setValue(float(ch.get("tx_iq_gain_imbalance_db", 0)))
         self.iq_tx_phase.setValue(float(ch.get("tx_iq_phase_imbalance_deg", 0)))
         pa_on = ch.get("enable_pa", False)
-        self.module_checks["非线性放大"].setChecked(bool(pa_on))
-        pa = str(ch.get("pa_model", "无") or "无")
+        self.module_checks["功率放大器模块"].setChecked(bool(pa_on))
+        pa = str(ch.get("pa_model", "modified_rapp") or "modified_rapp")
         _set_combo(self.pa_model, pa)
+        _set_combo(
+            self.pa_param_source,
+            "开源数据集" if ch.get("pa_load_params_from_dataset", True) else "手动参数",
+        )
+        self.pa_fc.setValue(float(ch.get("pa_fc_Hz", 300e9)) / 1e9)
+        _set_combo(self.pa_nearest_fc, "是" if ch.get("pa_use_nearest_fc", False) else "否")
+        _set_combo(self.pa_auto_scaling, "是" if ch.get("pa_auto_input_scaling", True) else "否")
         self.pa_power.setValue(float(ch.get("pa_input_power_dbm", -13.2)))
-        self.pa_G.setValue(float(ch.get("pa_G", 11.26)))
+        self.pa_G.setValue(float(ch.get("pa_G", 11.2616)))
         self.pa_Vsat.setValue(float(ch.get("pa_Vsat", 0.0628)))
         self.pa_p.setValue(float(ch.get("pa_p", 1.0013)))
+        self.pa_A.setValue(float(ch.get("pa_A", -6.2038e4)))
+        self.pa_B.setValue(float(ch.get("pa_B", 0.0160)))
+        self.pa_q1.setValue(float(ch.get("pa_q1", 1.7344)))
+        self.pa_q2.setValue(float(ch.get("pa_q2", 1.8972)))
 
 
 def _set_combo(widget, text: str) -> None:

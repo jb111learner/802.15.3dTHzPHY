@@ -40,10 +40,6 @@
 #     print(f"原始信号长度：{len(signal)}, 频偏后长度：{len(signal_with_cfo)}")
 import numpy as np
 from scipy.signal import butter, lfilter, welch
-from transmitter.THzTransmitter import THzTransmitter
-from params.PHYParams import PHYParams
-from channel.AWGN import AWGN
-import matplotlib.pyplot as plt
 
 class CFO:
     """
@@ -169,6 +165,9 @@ class CFO:
 
 # 测试
 if __name__ == "__main__":
+    from channel.AWGN import AWGN
+    from params.PHYParams import PHYParams
+    from transmitter.THzTransmitter import THzTransmitter
     import matplotlib.pyplot as plt   # 可选，若无可注释绘图部分
 
     # 初始化参数和发射机

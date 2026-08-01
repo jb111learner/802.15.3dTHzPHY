@@ -1,11 +1,13 @@
 import numpy as np
+from pathlib import Path
 from core.BaseChannel import BaseChannel
 from channel.MultipathChannel import MultipathChannel
 from channel.AWGN import AWGN
 from channel.CFO import CFO
 from channel.IQImbalance import IQImbalance
+from channel.npa.PowerAmplifier import ModifiedRappPA
+from channel.npa.RappParameterLoader import RappParameterLoader
 from params.PHYParams import PHYParams
-from transmitter.THzTransmitter import THzTransmitter
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
@@ -21,7 +23,51 @@ class THzChannel(BaseChannel):
         self.awgn = AWGN(params) if self.params.get("enable_awgn") else None
         self.cfo = CFO(params) if self.params.get("enable_cfo") else None
         self.iq_imbalance = IQImbalance(params) if self.params.get("enable_iq_imbalance") else None
+        self.power_amplifier = self._create_power_amplifier() if self.params.get("enable_pa") else None
+        self.pa_diagnostics = None
         self.chan_true = None  # 多径启用后保存等效信道冲激响应，便于后续信道估计/均衡验证
+
+    def _create_power_amplifier(self):
+        """创建功率放大器，并按配置选择数据集参数或手动参数。"""
+        model = str(self.params.get("pa_model", "modified_rapp")).strip().lower()
+        if model != "modified_rapp":
+            raise ValueError(
+                f"Unsupported PA model '{model}'. Available model: modified_rapp"
+            )
+
+        keys = (
+            "pa_G", "pa_Vsat", "pa_p", "pa_A", "pa_B", "pa_q1", "pa_q2",
+            "pa_phase_unit", "pa_load_ohm", "pa_auto_input_scaling",
+            "pa_input_power_dbm",
+        )
+        pa_params = {key: self.params.get(key) for key in keys}
+
+        if self.params.get("pa_load_params_from_dataset", False):
+            dataset_dir = Path(
+                self.params.get("pa_rapp_dataset_dir", "M260003_Rapp_dataset")
+            ).expanduser()
+            if not dataset_dir.is_absolute():
+                cwd_candidate = Path.cwd() / dataset_dir
+                module_candidate = Path(__file__).resolve().parent / "npa" / dataset_dir
+                dataset_dir = cwd_candidate if cwd_candidate.exists() else module_candidate
+
+            fc_hz = float(self.params.get("pa_fc_Hz", 300e9))
+            loaded_params = RappParameterLoader(str(dataset_dir)).load_params_for_fc(
+                fc_hz / 1e9,
+                nearest=bool(self.params.get("pa_use_nearest_fc", False)),
+            )
+            pa_params.update(loaded_params)
+
+        return ModifiedRappPA(pa_params)
+
+    def apply_power_amplifier(self, signal_dict):
+        """应用发射端功放非线性，并保留信号字典中的元数据。"""
+        if not self.params.get("enable_pa") or self.power_amplifier is None:
+            return signal_dict
+
+        self.signal_pa_dict = self.power_amplifier.process_signal_dict(signal_dict)
+        self.pa_diagnostics = self.signal_pa_dict.get("pa_diagnostics")
+        return self.signal_pa_dict
 
     def apply_multipath(self, signal_dict):
         """应用多径效应，输入输出均为 signal_dict。"""
@@ -77,6 +123,8 @@ class THzChannel(BaseChannel):
         """执行完整信道流程：多径→噪声→频偏（可选添加相位噪声/时延）"""
         # 0. 可选 TX 端 IQ 不平衡
         signal = self.apply_iq_imbalance(signal_dict, stage="tx")
+        # 发射机 IQ 调制器之后、传播信道之前加入功率放大器。
+        signal = self.apply_power_amplifier(signal)
         # 1. 多径效应
         signal = self.apply_multipath(signal)
         # 2. 添加AWGN噪声
@@ -126,6 +174,8 @@ def plot_eye_diagram(signal, symbol_period, num_symbols=100, ax=None):
 
 # 测试
 if __name__ == "__main__":
+    from transmitter.THzTransmitter import THzTransmitter
+
     # 初始化参数和发射机
     params = PHYParams()
     params.apply_dict(
