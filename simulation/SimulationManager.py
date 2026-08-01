@@ -9,6 +9,7 @@ from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
 from channel.THzChannel import THzChannel
 from receiver.THzReceiver import THzReceiver
+from simulation.result_utils import collect_receiver_intermediates
 
 
 class SimulationManager:
@@ -112,9 +113,7 @@ class SimulationManager:
             "tx_signal": tx_signal_dict,
             "rx_signal": rx_signal_dict,
             "rx_data": rx_data,
-            "rx_matched": getattr(receiver, 'rx_matched', None),
-            "rx_downsampled": getattr(receiver, 'rx_downsampled', None),
-            "rx_equalized": getattr(receiver, 'rx_equalized', None),
+            **collect_receiver_intermediates(receiver),
             "noise_var": receiver.noise_var,
             "ber": ber,
             "tx_bit_len": tx_bit_len,

@@ -18,6 +18,10 @@ from PySide6.QtCore import QObject, Signal, QThread
 from thz_sim_ui.data.mock_data import RECENT_TASKS, TaskItem
 from simulation.SimulationManager import SimulationManager
 from params.PHYParams import PHYParams
+from thz_sim_ui.services.result_utils import (
+    build_simulation_result_path,
+    select_rx_constellation_data,
+)
 
 
 class SimulationThread(QThread):
@@ -816,8 +820,17 @@ class BackendService(QObject):
             sm.set_control_params(mapped_params)
             tags = self._format_task_tags(mapped_params)
             start_time = time.time()
+            task_name = f'THz-Sim-{len(RECENT_TASKS) + 1}'
+            result_path = None
+            if project_folder:
+                result_path = build_simulation_result_path(
+                    project_folder,
+                    task_name,
+                    time.time_ns(),
+                )
+                result_path.mkdir(parents=True, exist_ok=True)
             task = TaskItem(
-                name=f'THz-Sim-{len(RECENT_TASKS) + 1}',
+                name=task_name,
                 project=self._state.project_name,
                 mode='蒙特卡洛',
                 tags=tags,
@@ -828,7 +841,7 @@ class BackendService(QObject):
                 status='运行中',
                 is_current=True,
                 start_time=start_time,
-                result_path=self.current_project_folder,
+                result_path=str(result_path) if result_path else None,
             )
             RECENT_TASKS.append(task)
             self.tasks_updated.emit(RECENT_TASKS.copy())
@@ -1230,7 +1243,9 @@ class BackendService(QObject):
             fig.tight_layout(); fig.savefig(output_dir / "rx_mf_spectrum.png", dpi=300, bbox_inches='tight'); plt.close(fig)
 
         # ---- equalized constellation ----
-        eq_dict = result.get('rx_equalized') or {}
+        # 判决导向 IQ 补偿位于均衡之后。开启补偿时应展示补偿后的
+        # 星座；未开启补偿（值为 None）时再回退到原始均衡结果。
+        eq_dict = select_rx_constellation_data(result)
         eq_sig = np.asarray(eq_dict.get('signal_stream', []))
         if len(eq_sig) > 0:
             fig, ax = plt.subplots(figsize=(5, 5))
