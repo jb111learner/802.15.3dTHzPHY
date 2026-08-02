@@ -15,7 +15,8 @@ from receiver.RxOFDMProcesser import RxOFDMProcesser
 from receiver.Decoder import Decoder
 from receiver.DeScrambler import DeScrambler
 from receiver.Downsampler import Downsampler
-from receiver.IQCompensator import DecisionDirectedIQCompensator
+from receiver.IQCompensator import IQCompensator, DecisionDirectedIQCompensator
+from receiver.MIMOReceiverProcessor import MIMOReceiverProcessor
 
 
 class THzReceiver(BaseReceiver):
@@ -33,6 +34,30 @@ class THzReceiver(BaseReceiver):
     def __init__(self, params, transmitter):
         super().__init__(params, transmitter)
         self.link_mode = params.get("link_mode").lower()
+        self.enable_mimo = bool(params.get("enable_mimo", False))
+
+        # 中间结果缓存（SISO/MIMO 共用）
+        self.rx_matched = None
+        self.rx_coarse_synced = None
+        self.rx_cfo_coarse = None
+        self.rx_fine_synced = None
+        self.rx_downsampled = None
+        self.rx_cfo_fine = None
+        self.rx_iq_compensated = None
+        self.rx_equalized = None
+        self.noise_var = None
+        self.llr_dict = None
+        self.decoded_bits = None
+        self.data_bits = None
+
+        if self.enable_mimo:
+            self.mimo_processor = MIMOReceiverProcessor(params, transmitter)
+            self.demodulator = THzDemodulator(params)
+            self.decoder = Decoder(params)
+            self.descrambler = DeScrambler(params)
+            self.enable_channel_est = True
+            self.enable_cfo = bool(params.get("enable_cfo_compensation", False))
+            return
 
         self.rx_matched_filter = RxMatchedFilter(transmitter)
         self.coarse_sync = CoarseSync(transmitter)
@@ -40,6 +65,17 @@ class THzReceiver(BaseReceiver):
         self.cfo_estimator = CFOEstimator(transmitter)
         self.downsampler = Downsampler(transmitter)
         self.iq_dd_compensator = None
+        self.iq_compensator = None
+        if (
+            self.params.get("enable_iq_compensation")
+            and self.params.get("iq_compensation_method") == "ces"
+        ):
+            self.iq_compensator = IQCompensator(
+                transmitter,
+                filter_len=self.params.get("iq_comp_filter_len"),
+                ridge_lambda=self.params.get("iq_comp_ridge_lambda"),
+                compensation_mode=self.params.get("iq_compensation_mode"),
+            )
         if self.params.get("enable_iq_compensation"):
             self.iq_dd_compensator = DecisionDirectedIQCompensator(
                 params,
@@ -61,20 +97,6 @@ class THzReceiver(BaseReceiver):
         self.descrambler = DeScrambler(params)
         if self.link_mode == "ofdm":
             self.rx_ofdm = RxOFDMProcesser(transmitter)
-
-        # 中间结果缓存
-        self.rx_matched = None
-        self.rx_coarse_synced = None
-        self.rx_cfo_coarse = None
-        self.rx_fine_synced = None
-        self.rx_downsampled = None
-        self.rx_cfo_fine = None
-        self.rx_iq_compensated = None
-        self.rx_equalized = None
-        self.noise_var = None
-        self.llr_dict = None
-        self.decoded_bits = None
-        self.data_bits = None
 
     # ==================== 子模块调用 ====================
 
@@ -123,6 +145,15 @@ class THzReceiver(BaseReceiver):
         if self.iq_dd_compensator is None:
             return signal_dict
         self.rx_iq_compensated = self.iq_dd_compensator.compensate(signal_dict)
+        return self.rx_iq_compensated
+
+    def compensate_iq_imbalance(self, signal_dict):
+        """在噪声/信道估计前执行基于 CES 的 IQ 补偿。"""
+        if getattr(self, "iq_compensator", None) is None:
+            return signal_dict
+        self.rx_iq_compensated = self.iq_compensator.compensate(
+            signal_dict, tail_mode="error"
+        )
         return self.rx_iq_compensated
 
     def estimate_channel(self, signal_dict):
@@ -190,6 +221,19 @@ class THzReceiver(BaseReceiver):
         """
         完整接收流程 — 分支 SC-FDE / OFDM
         """
+        if getattr(self, "enable_mimo", False):
+            sig = self.mimo_processor.process(rx_signal_dict)
+            self.rx_matched = self.mimo_processor.compensated_signal
+            self.rx_coarse_synced = self.mimo_processor.compensated_signal
+            self.rx_cfo_coarse = self.mimo_processor.compensated_signal
+            self.rx_fine_synced = self.mimo_processor.compensated_signal
+            self.rx_downsampled = self.mimo_processor.compensated_signal
+            self.rx_cfo_fine = self.mimo_processor.compensated_signal
+            self.rx_equalized = sig
+            self.noise_var = max(float(sig.get("noise_var", 0.0)), 1e-12)
+            sig = self.demodulate(sig)
+            return self.decode(sig)
+
         # ① 匹配滤波
         sig = self.matched_filter(rx_signal_dict)
 
@@ -197,7 +241,7 @@ class THzReceiver(BaseReceiver):
         sig = self.coarse_sync_detect(sig)
 
         # ③ 粗 CFO（逐帧估计+补偿）
-        if self.enable_cfo:
+        if getattr(self, "enable_cfo", True):
             sig = self.compensate_cfo_coarse(sig)
 
         # ④ 细同步（SFD 帧定界）
@@ -207,8 +251,11 @@ class THzReceiver(BaseReceiver):
         sig = self.downsample(sig)
 
         # ⑥ 细 CFO（逐帧估计+补偿，符号率）
-        if self.enable_cfo:
+        if getattr(self, "enable_cfo", True):
             sig = self.compensate_cfo_fine(sig)
+
+        # ⑥b 基于 CES 的宽线性 IQ 补偿（如启用）
+        sig = self.compensate_iq_imbalance(sig)
 
         # ⑦ 噪声方差估计（基于 SYNC，需在 OFDM 解调前）
         self.estimate_noise(sig)
@@ -231,7 +278,8 @@ class THzReceiver(BaseReceiver):
                 sig = self.equalize(sig)
 
         # ⑩ 判决导向IQ补偿（均衡后，对齐Equalizer.py测试流程）
-        sig = self.compensate_iq_decision_directed(sig)
+        if self.enable_channel_est:
+            sig = self.compensate_iq_decision_directed(sig)
 
         # ⑪ 解调（LLR，使用噪声方差）
         sig = self.demodulate(sig)

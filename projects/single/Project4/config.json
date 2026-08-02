@@ -1,17 +1,21 @@
 {
+    "链路模式分区": "多载波模式",
+    "实现精度分区": "浮点仿真",
+    "空间模式分区": "2×2 MIMO",
+    "波形方案分区": "经典波形",
     "工程名称": "Project4",
-    "参数测试模版": "P03 — SC + 16QAM + RS + AWGN",
+    "参数测试模版": "P09 — OFDM + 16QAM + RS + AWGN",
     "链路名称": "THz_Link_Main",
-    "波形类型": "单载波SC",
+    "波形类型": "多载波OFDM",
     "带宽": 30.0,
     "载频": 1000.0,
     "数据源配置": "PRBS",
     "文件地址": "",
-    "数据子帧长度": 480,
+    "数据子帧长度": 479,
     "单帧数据子帧数量": 51,
-    "CP长度": 32,
+    "CP长度": 29,
     "调制方式": "16QAM",
-    "信道编码类型": "RS（192,255）",
+    "信道编码类型": "RS（11,15）",
     "RS译码方式": "硬译码",
     "Chase译码试探数": 3,
     "扰码配置": "启用",
@@ -25,8 +29,8 @@
     "过采样率": "4x",
     "采样率": 30000.0,
     "时长": 0.01,
-    "频偏补偿": "否",
-    "IQ补偿": "是",
+    "频偏补偿": "是",
+    "IQ补偿": "否",
     "信道估计与均衡": "是",
     "随机种子策略": "固定种子",
     "_channel_params": {
@@ -35,30 +39,10 @@
         "noise_temperature": null,
         "noise_figure_db": null,
         "enable_multipath": false,
-        "enable_cfo": false,
+        "enable_cfo": true,
         "ppm": 1.0,
         "enable_phase_noise": false,
-        "enable_iq_imbalance": true,
-        "iq_imbalance_position": "rx",
-        "iq_imbalance_model": "fid",
-        "rx_iq_gain_imbalance_db": 2.0,
-        "rx_iq_phase_imbalance_deg": 5.0,
-        "rx_iq_gI_taps": [
-            1.0,
-            0.08,
-            -0.03
-        ],
-        "rx_iq_gQ_taps": [
-            1.0,
-            -0.12,
-            0.04
-        ],
-        "tx_iq_gI_taps": [
-            1.0
-        ],
-        "tx_iq_gQ_taps": [
-            1.0
-        ],
+        "enable_iq_imbalance": false,
         "enable_pa": false
     }
 }

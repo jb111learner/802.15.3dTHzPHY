@@ -87,3 +87,20 @@ class LinkDesignPage(WorkbenchPage):
             '空间模式分区': self._get_selected_radio_text(self.spatial_mode_group),
             '波形方案分区': self._get_selected_radio_text(self.waveform_group),
         }
+
+    def set_all_parameters(self, params: dict[str, object]) -> None:
+        """从工程配置恢复链路与 MIMO 空间模式。"""
+        mappings = (
+            (self.link_mode_group, '链路模式分区'),
+            (self.precision_group, '实现精度分区'),
+            (self.spatial_mode_group, '空间模式分区'),
+            (self.waveform_group, '波形方案分区'),
+        )
+        for group, key in mappings:
+            target = str(params.get(key, ''))
+            if not target:
+                continue
+            for button in group.findChildren(QRadioButton):
+                if button.text() == target:
+                    button.setChecked(True)
+                    break

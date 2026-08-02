@@ -92,6 +92,10 @@ class MainWindow(QMainWindow):
     def _collect_all_params(self) -> dict:
         """合并参数配置 + 信道集成 + 任务运行参数"""
         params = {}
+        # 链路/空间模式（包含 MIMO 开关）
+        link_page = self.pages.get('link_design')
+        if link_page and hasattr(link_page, 'get_all_parameters'):
+            params.update(link_page.get_all_parameters())
         # 链路参数
         param_page = self.pages.get('parameter_config')
         if param_page and hasattr(param_page, 'get_all_parameters'):
@@ -104,6 +108,9 @@ class MainWindow(QMainWindow):
 
     def _apply_all_params(self, params: dict) -> None:
         """将参数字典分发到各配置页面"""
+        link_page = self.pages.get('link_design')
+        if link_page and hasattr(link_page, 'set_all_parameters'):
+            link_page.set_all_parameters(params)
         param_page = self.pages.get('parameter_config')
         if param_page and hasattr(param_page, 'set_all_parameters'):
             param_page.set_all_parameters(params)

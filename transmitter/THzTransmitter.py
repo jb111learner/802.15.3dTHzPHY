@@ -12,6 +12,7 @@ from transmitter.Pulseshaper import TxPulseShaper
 from params.PHYParams import PHYParams
 from transmitter.Scrambler import Scrambler 
 from transmitter.TxOFDMProcesser import TxOFDMProcesser
+from transmitter.MIMOOFDMProcessor import MIMOOFDMProcessor
 
 class THzTransmitter(BaseTransmitter):
     """
@@ -31,6 +32,8 @@ class THzTransmitter(BaseTransmitter):
         self.is_scramble = self.params.get("scramble")  # 是否使用扰码
         self.oversampling = self.params.get("oversampling")  # 上采样率\
         self.link_mode = self.params.get("link_mode") 
+        self.enable_mimo = bool(self.params.get("enable_mimo", False))
+        self.mimo_ofdm_processor = MIMOOFDMProcessor(params) if self.enable_mimo else None
         # self.rotator = Rotator()  
     
     def assemble_frame(self):
@@ -82,7 +85,26 @@ class THzTransmitter(BaseTransmitter):
 
     def run(self):
         """执行完整发射流程"""
-        if self.link_mode == "sc-fde":
+        if self.enable_mimo:
+            data_bits_dict = self.assemble_frame()
+            if self.is_scramble:
+                data_bits_dict = self.scramble_data(data_bits_dict)
+            data_bits_dict = self.channel_encode(data_bits_dict)
+            data_bits_dict = self.modulate(data_bits_dict)
+            self.tx_signal_dict = self.mimo_ofdm_processor.process(data_bits_dict)
+            self.data_ofdm_dict = self.tx_signal_dict
+            self.data_with_gi_dict = self.tx_signal_dict
+            self.data_with_preamble_dict = self.tx_signal_dict
+            frame = self.tx_signal_dict["mimo_frame"]
+            self.sync = np.fft.ifft(frame["sync_frequency"])
+            self.sfd = np.array([], dtype=np.complex128)
+            self.ces = np.fft.ifft(frame["pilot_frequency"])
+            self.preamble = np.concatenate((self.sync, self.sync, self.ces))
+            self.sync_upsampled = self.sync
+            self.sfd_upsampled = self.sfd
+            self.ces_upsampled = self.ces
+            tx_signal_dict = self.tx_signal_dict
+        elif self.link_mode == "sc-fde":
             data_bits_dict = self.assemble_frame()
             if self.is_scramble:
                 data_bits_dict = self.scramble_data(data_bits_dict)

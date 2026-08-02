@@ -68,6 +68,24 @@ class PHYParams(BaseParams):
             # "enable_window_filter":False,                                                          # 是否启用加窗与频谱成型
             # "rolling_width":64,                                                                    # 过渡带宽度
 
+            # MIMO-OFDM（默认关闭，保证现有 SISO 行为不变）
+            "enable_mimo": False,
+            "num_tx": 1,
+            "num_rx": 1,
+            "num_spatial_streams": 1,
+            "mimo_scheme": "spatial_multiplexing",
+            "mimo_detector": "mmse",                    # zf / mmse
+            "mimo_channel_model": "iid_rayleigh",       # identity / iid_rayleigh / rician
+            "mimo_csi_mode": "estimated",               # estimated / ideal
+            "mimo_num_taps": 4,
+            "mimo_path_powers_db": None,
+            "mimo_channel_seed": None,
+            "mimo_tx_correlation": 0.0,
+            "mimo_rx_correlation": 0.0,
+            "mimo_rician_k_db": 0.0,
+            "mimo_guard_samples": 32,
+            "mimo_sync_search_samples": 64,
+
 
             # 调制相关
             "NCBPS": 6,                                                                             # 每符号比特数（1=BPSK,2=QPSK,3=8PSK,4=16QAM,6=64QAM）
@@ -230,7 +248,32 @@ class PHYParams(BaseParams):
         # assert self.get("gi_length") >= 0, "循环前缀长度不能为负"
         # assert self.get("gi_length") < self.get("subframe_length"), "循环前缀长度必须小于数据块长度N"
         # print("PHY参数校验通过")
-        pass
+        link_mode = str(self.get("link_mode", "")).lower()
+        if link_mode not in {"sc-fde", "ofdm"}:
+            raise ValueError("link_mode 仅支持 'sc-fde' 或 'ofdm'")
+        if int(self.get("subwave_num")) <= 1:
+            raise ValueError("subwave_num 必须大于 1")
+        if not 0 <= int(self.get("gi_length")) < int(self.get("subwave_num")):
+            raise ValueError("gi_length 必须满足 0 <= gi_length < subwave_num")
+
+        num_tx = int(self.get("num_tx"))
+        num_rx = int(self.get("num_rx"))
+        num_streams = int(self.get("num_spatial_streams"))
+        if min(num_tx, num_rx, num_streams) < 1:
+            raise ValueError("MIMO 天线数和空间流数必须为正整数")
+        if num_streams > min(num_tx, num_rx):
+            raise ValueError("num_spatial_streams 不能超过 min(num_tx, num_rx)")
+        if self.get("enable_mimo"):
+            if link_mode != "ofdm":
+                raise ValueError("当前 MIMO 实现仅支持 OFDM 链路")
+            if num_streams != num_tx:
+                raise ValueError("当前空间复用实现要求 num_spatial_streams == num_tx")
+            if str(self.get("mimo_detector")).lower() not in {"zf", "mmse"}:
+                raise ValueError("mimo_detector 仅支持 'zf' 或 'mmse'")
+            if str(self.get("mimo_csi_mode")).lower() not in {"estimated", "ideal"}:
+                raise ValueError("mimo_csi_mode 仅支持 'estimated' 或 'ideal'")
+            if int(self.get("mimo_num_taps")) - 1 > int(self.get("gi_length")):
+                raise ValueError("mimo_num_taps - 1 不能超过 gi_length")
 
 if __name__ == "__main__":
     params = PHYParams()

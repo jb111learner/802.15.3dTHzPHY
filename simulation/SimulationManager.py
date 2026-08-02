@@ -36,13 +36,18 @@ class SimulationManager:
         self.control_params = control_params.copy() if control_params else {}
 
     def apply_dict_to_params(self, params: PHYParams, param_dict: Dict[str, Any]):
-        """安全更新 PHYParams，忽略 BaseParams 不支持字段。"""
-        unknown_keys = []
-        for k, v in param_dict.items():
-            if k in params._params:
-                params.update(**{k: v})
-            else:
-                unknown_keys.append(k)
+        """原子更新 PHYParams，避免关联参数逐键校验产生临时非法状态。"""
+        valid_updates = {
+            key: value for key, value in param_dict.items() if key in params._params
+        }
+        unknown_keys = [key for key in param_dict if key not in params._params]
+        previous = params._params.copy()
+        try:
+            params._params.update(valid_updates)
+            params.validate()
+        except Exception:
+            params._params = previous
+            raise
         return unknown_keys
 
     def _get_effective_seed(self, params: PHYParams) -> int:
@@ -107,6 +112,19 @@ class SimulationManager:
         ber = self.compute_ber(tx_bits, rx_bits)
 
         tx_bit_len = len(tx_bits) if tx_bits is not None else 0
+        waveform_duration = float(tx_signal_dict.get("duration_seconds", 0.0))
+        raw_throughput_bps = tx_bit_len / waveform_duration if waveform_duration > 0 else np.nan
+        effective_throughput_bps = (
+            raw_throughput_bps * (1.0 - ber)
+            if np.isfinite(raw_throughput_bps) and np.isfinite(ber)
+            else np.nan
+        )
+        mimo_nmse = None
+        mimo_condition_number = None
+        if getattr(receiver, "rx_equalized", None):
+            mimo_nmse = receiver.rx_equalized.get("mimo_channel_nmse")
+            diagnostics = receiver.rx_equalized.get("detector_diagnostics", {})
+            mimo_condition_number = diagnostics.get("mean_condition_number")
         return {
             "params": params,
             "seed": params.get("random_seed"),
@@ -117,6 +135,10 @@ class SimulationManager:
             "noise_var": receiver.noise_var,
             "ber": ber,
             "tx_bit_len": tx_bit_len,
+            "raw_throughput_bps": raw_throughput_bps,
+            "effective_throughput_bps": effective_throughput_bps,
+            "mimo_channel_nmse": mimo_nmse,
+            "mimo_mean_condition_number": mimo_condition_number,
             "tx_modulated": transmitter.modulated_data_dict if hasattr(transmitter, 'modulated_data_dict') else None,
         }
 
@@ -141,7 +163,13 @@ class SimulationManager:
             "run_index": self.run_index,
             "params": params,
             "result": result,
-            "metrics": {"ber": result.get("ber")},
+            "metrics": {
+                "ber": result.get("ber"),
+                "raw_throughput_bps": result.get("raw_throughput_bps"),
+                "effective_throughput_bps": result.get("effective_throughput_bps"),
+                "mimo_channel_nmse": result.get("mimo_channel_nmse"),
+                "mimo_mean_condition_number": result.get("mimo_mean_condition_number"),
+            },
         }
 
     def run_monte_carlo(self, override_params: Dict[str, Any] = None, progress_callback: Callable[[int], None] = None) -> List[Dict[str, Any]]:

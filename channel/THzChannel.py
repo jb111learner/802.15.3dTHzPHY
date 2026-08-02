@@ -7,6 +7,7 @@ from channel.CFO import CFO
 from channel.IQImbalance import IQImbalance
 from channel.npa.PowerAmplifier import ModifiedRappPA
 from channel.npa.RappParameterLoader import RappParameterLoader
+from channel.MIMOChannel import MIMOChannel
 from params.PHYParams import PHYParams
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']
@@ -18,12 +19,14 @@ class THzChannel(BaseChannel):
     """
     def __init__(self, params):
         super().__init__(params)
+        self.enable_mimo = bool(self.params.get("enable_mimo", False))
         # 初始化子模块
-        self.multipath_chan = MultipathChannel(params) if self.params.get("enable_multipath") else None
-        self.awgn = AWGN(params) if self.params.get("enable_awgn") else None
-        self.cfo = CFO(params) if self.params.get("enable_cfo") else None
-        self.iq_imbalance = IQImbalance(params) if self.params.get("enable_iq_imbalance") else None
-        self.power_amplifier = self._create_power_amplifier() if self.params.get("enable_pa") else None
+        self.mimo_channel = MIMOChannel(params) if self.enable_mimo else None
+        self.multipath_chan = MultipathChannel(params) if self.params.get("enable_multipath") and not self.enable_mimo else None
+        self.awgn = AWGN(params) if self.params.get("enable_awgn") and not self.enable_mimo else None
+        self.cfo = CFO(params) if self.params.get("enable_cfo") and not self.enable_mimo else None
+        self.iq_imbalance = IQImbalance(params) if self.params.get("enable_iq_imbalance") and not self.enable_mimo else None
+        self.power_amplifier = self._create_power_amplifier() if self.params.get("enable_pa") and not self.enable_mimo else None
         self.pa_diagnostics = None
         self.chan_true = None  # 多径启用后保存等效信道冲激响应，便于后续信道估计/均衡验证
 
@@ -121,6 +124,12 @@ class THzChannel(BaseChannel):
 
     def run(self, signal_dict):
         """执行完整信道流程：多径→噪声→频偏（可选添加相位噪声/时延）"""
+        if self.enable_mimo:
+            if self.params.get("enable_pa", False):
+                raise ValueError("MIMO 分支暂不支持功率放大器非线性，请先关闭 enable_pa")
+            self.rx_signal_dict = self.mimo_channel.apply(signal_dict)
+            self.chan_true = self.mimo_channel.channel_impulse_response
+            return self.rx_signal_dict
         # 0. 可选 TX 端 IQ 不平衡
         signal = self.apply_iq_imbalance(signal_dict, stage="tx")
         # 发射机 IQ 调制器之后、传播信道之前加入功率放大器。

@@ -7,6 +7,7 @@ import time
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -22,6 +23,14 @@ from thz_sim_ui.services.result_utils import (
     build_simulation_result_path,
     select_rx_constellation_data,
 )
+
+
+def _plot_stream(signal):
+    """绘图统一选取第一根天线，避免二维 MIMO 波形破坏旧图表接口。"""
+    array = np.asarray(signal)
+    if array.ndim == 2:
+        return array[0]
+    return array.reshape(-1) if array.ndim > 1 else array
 
 
 class SimulationThread(QThread):
@@ -270,7 +279,7 @@ class BatchCompareThread(QThread):
             plt.clf(); plt.close('all')
 
             tx_signal_dict = result.get('tx_signal', {})
-            tx_signal = np.asarray(tx_signal_dict.get('signal_stream', []))
+            tx_signal = _plot_stream(tx_signal_dict.get('signal_stream', []))
             if len(tx_signal) == 0:
                 return
 
@@ -352,7 +361,7 @@ class BatchCompareThread(QThread):
             matplotlib.rcParams.update(matplotlib.rcParamsDefault)
 
             rx_signal_dict = result.get('rx_signal', {})
-            rx_signal = rx_signal_dict.get('signal_stream', np.array([]))
+            rx_signal = _plot_stream(rx_signal_dict.get('signal_stream', np.array([])))
 
             if len(rx_signal) == 0:
                 print("接收信号为空，跳过图表生成")
@@ -452,12 +461,12 @@ class BatchCompareThread(QThread):
             rx_signal_dict = result.get('rx_signal', {})
             rx_matched_dict = result.get('rx_matched', {})
             tx_signal_dict = result.get('tx_signal', {})
-            tx_symbols = result.get('tx_with_gi', {}).get('signal_stream', np.array([]))
+            tx_symbols = _plot_stream(result.get('tx_with_gi', {}).get('signal_stream', np.array([])))
 
-            rx_signal = rx_signal_dict.get('signal_stream', np.array([]))
-            y_matched = rx_matched_dict.get('signal_stream', np.array([]))
+            rx_signal = _plot_stream(rx_signal_dict.get('signal_stream', np.array([])))
+            y_matched = _plot_stream(rx_matched_dict.get('signal_stream', np.array([])))
             rx_filtered = y_matched
-            tx_signal = tx_signal_dict.get('signal_stream', np.array([]))
+            tx_signal = _plot_stream(tx_signal_dict.get('signal_stream', np.array([])))
 
             if len(rx_signal) == 0 or len(rx_filtered) == 0 or len(y_matched) == 0:
                 print("接收端信号数据不完整，跳过图表生成")
@@ -667,6 +676,30 @@ class BackendService(QObject):
     def map_ui_params_to_phy_params(ui_params: dict[str, object]) -> dict[str, object]:
         mapped_params = {}
 
+        # 空间模式。UI 当前提供固定的 2×2 空间复用入口。
+        spatial_mode = str(
+            ui_params.get('空间模式分区', ui_params.get('spatial_mode', '非 MIMO'))
+        )
+        if 'MIMO' in spatial_mode and '非' not in spatial_mode:
+            mapped_params.update({
+                'enable_mimo': True,
+                'num_tx': 2,
+                'num_rx': 2,
+                'num_spatial_streams': 2,
+                'mimo_scheme': 'spatial_multiplexing',
+                'mimo_detector': str(ui_params.get('MIMO检测算法', 'mmse')).lower(),
+                'mimo_csi_mode': str(ui_params.get('MIMO CSI模式', 'estimated')).lower(),
+                'mimo_channel_model': str(ui_params.get('MIMO信道模型', 'iid_rayleigh')).lower(),
+                'link_mode': 'ofdm',
+            })
+        else:
+            mapped_params.update({
+                'enable_mimo': False,
+                'num_tx': 1,
+                'num_rx': 1,
+                'num_spatial_streams': 1,
+            })
+
         # ── 链路参数 ──
         if '载频' in ui_params:
             mapped_params['fc'] = float(ui_params['载频']) * 1e9
@@ -680,7 +713,8 @@ class BackendService(QObject):
         # 波形类型
         if '波形类型' in ui_params:
             wf = str(ui_params['波形类型'])
-            mapped_params['link_mode'] = 'ofdm' if 'OFDM' in wf else 'sc-fde'
+            if not mapped_params.get('enable_mimo'):
+                mapped_params['link_mode'] = 'ofdm' if 'OFDM' in wf else 'sc-fde'
 
         # 数据源
         if '数据源配置' in ui_params:
@@ -1051,7 +1085,7 @@ class BackendService(QObject):
         plt.clf(); plt.close('all')
 
         tx_signal_dict = result.get('tx_signal', {})
-        tx_signal = np.asarray(tx_signal_dict.get('signal_stream', []))
+        tx_signal = _plot_stream(tx_signal_dict.get('signal_stream', []))
         if len(tx_signal) == 0:
             print("发射信号为空，跳过图表生成")
             return
@@ -1165,7 +1199,7 @@ class BackendService(QObject):
             "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
         })
         rx_signal_dict = result.get('rx_signal', {})
-        rx_signal = np.asarray(rx_signal_dict.get('signal_stream', []))
+        rx_signal = _plot_stream(rx_signal_dict.get('signal_stream', []))
         if len(rx_signal) == 0:
             return
         params = result.get('params')
@@ -1231,7 +1265,7 @@ class BackendService(QObject):
 
         # ---- matched filter spectrum ----
         mf_dict = result.get('rx_matched') or {}
-        mf_sig = np.asarray(mf_dict.get('signal_stream', []))
+        mf_sig = _plot_stream(mf_dict.get('signal_stream', []))
         if len(mf_sig) > 0:
             fig, ax = plt.subplots(figsize=(6, 3.5))
             nfft = 2048; seg = mf_sig[pskip:pskip+nfft] if len(mf_sig) > pskip else mf_sig[:nfft]
@@ -1246,7 +1280,7 @@ class BackendService(QObject):
         # 判决导向 IQ 补偿位于均衡之后。开启补偿时应展示补偿后的
         # 星座；未开启补偿（值为 None）时再回退到原始均衡结果。
         eq_dict = select_rx_constellation_data(result)
-        eq_sig = np.asarray(eq_dict.get('signal_stream', []))
+        eq_sig = _plot_stream(eq_dict.get('signal_stream', []))
         if len(eq_sig) > 0:
             fig, ax = plt.subplots(figsize=(5, 5))
             n_cst = min(3000, len(eq_sig))
