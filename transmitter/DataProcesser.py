@@ -144,10 +144,17 @@ class BitStreamProcessor:
         """比特流分帧处理"""
         if self.bit_stream is None:
             raise RuntimeError("请先生成随机比特流或读取文件比特流，再执行分帧操作")
-        if not self.frame_bit_num.is_integer():
-            print(self.frame_bit_num.is_integer())
+        # frame_bit_num 可能是 Python/NumPy 的整数或浮点数。整数本身没有
+        # float.is_integer()，因此应先统一转换再检查，不能依赖具体数值类型。
+        try:
+            frame_bit_num_value = float(self.frame_bit_num)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("单帧比特数必须是有限数值") from exc
+        if not np.isfinite(frame_bit_num_value) or not frame_bit_num_value.is_integer():
             raise ValueError("请检查调制方式、帧结构和编码效率的配置，确保单帧比特数为整数")
-        frame_bit_num = int(self.frame_bit_num)
+        frame_bit_num = int(frame_bit_num_value)
+        if frame_bit_num <= 0:
+            raise ValueError("单帧比特数必须为正整数")
         self.frame_bit_num = frame_bit_num
 
         bit_stream_data = self.bit_stream

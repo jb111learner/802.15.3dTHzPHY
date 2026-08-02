@@ -5,7 +5,16 @@ from typing import Any, Dict, List
 import threading
 import time
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
+import tempfile
+import traceback
+
+# 子进程会重新导入 galois/numba。显式使用可写缓存目录，避免其反复探测
+# Python 安装目录，也兼容只读安装和打包后的应用。
+os.environ.setdefault(
+    'NUMBA_CACHE_DIR',
+    os.path.join(tempfile.gettempdir(), 'thz_sim_numba_cache'),
+)
 
 import numpy as np
 import matplotlib
@@ -14,7 +23,7 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
 
-from PySide6.QtCore import QObject, Signal, QThread
+from PySide6.QtCore import QObject, Signal, QThread, QTimer
 
 from thz_sim_ui.data.mock_data import RECENT_TASKS, TaskItem
 from simulation.SimulationManager import SimulationManager
@@ -45,6 +54,191 @@ class SimulationThread(QThread):
         self.result = self.sm.run_monte_carlo(progress_callback=lambda p: self.progress.emit(p))
 
 
+def _load_batch_project_config(project_name: str) -> dict:
+    """按关联工程名加载配置，结果标签只用于输出目录和图例。"""
+    config_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), '..', '..', 'projects', 'single',
+        project_name, 'config.json'))
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f'关联工程配置不存在: {config_path}')
+
+    import json
+    with open(config_path, 'r', encoding='utf-8') as file:
+        return json.load(file)
+
+
+def _execute_batch_point(
+    ui_params: dict,
+    snr: float,
+    max_frames: int,
+    min_errors: int,
+    progress_callback=None,
+) -> dict:
+    """在独立进程内执行一个 SNR 点，避免计算线程长期占用 GUI 进程的 GIL。"""
+    mapped = BackendService.map_ui_params_to_phy_params(ui_params)
+    mapped['SNRdB'] = snr
+    mapped['data_source'] = 'PRBS'
+    mapped['duration'] = 5e-6
+    mapped['sample_length'] = None
+
+    from transmitter.THzTransmitter import THzTransmitter
+    from channel.THzChannel import THzChannel
+    from receiver.THzReceiver import THzReceiver
+
+    params = PHYParams()
+    valid_keys = set(params._params) | PHYParams._LEGACY_MULTIPATH_KEYS
+    for key, value in mapped.items():
+        if value is not None and key in valid_keys:
+            params._params[key] = value
+
+    total_bits, total_errors, total_frames = 0, 0, 0
+    tx = THzTransmitter(params)
+    tx.run()
+    channel = THzChannel(params)
+    receiver = THzReceiver(params, tx)
+    while total_errors < min_errors and total_frames < max_frames:
+        tx.assembler.duration = params.get('duration')
+        tx.assembler.sample_length = None
+        tx.run()
+        rx = channel.run(tx.tx_signal_dict)
+        rx_data = receiver.run(rx)
+        tx_bits = tx.data_bits_dict['signal_stream']
+        rx_bits = rx_data['signal_stream']
+        compare_length = min(len(tx_bits), len(rx_bits))
+        total_errors += int(np.sum(tx_bits[:compare_length] != rx_bits[:compare_length]))
+        total_bits += compare_length
+        total_frames += 1
+        if progress_callback is not None:
+            progress_callback(total_frames, total_errors)
+
+    final_ber = total_errors / total_bits if total_bits > 0 else float('nan')
+    return {
+        'SNRdB': snr,
+        'BER': final_ber,
+        'total_bits': total_bits,
+        'total_errors': total_errors,
+        'total_frames': total_frames,
+    }
+
+
+def _save_batch_compare_chart(results: list, chart_path: str) -> None:
+    """在任务进程内保存对比图，避免 Matplotlib 绘图阻塞 GUI。"""
+    plt.rcParams.update({
+        'font.family': 'serif', 'axes.unicode_minus': False,
+        'axes.linewidth': 0.8, 'xtick.direction': 'in', 'ytick.direction': 'in',
+        'xtick.major.size': 4, 'ytick.major.size': 4,
+        'grid.alpha': 0.25, 'grid.linestyle': '--', 'grid.linewidth': 0.4,
+    })
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    ax.set_facecolor('white')
+    fig.patch.set_facecolor('white')
+    colors = ['#2C68B4', '#D95F02', '#3A9D3A', '#9467BD', '#E54B4F', '#8C6B4F']
+    has_data = False
+    for index, scheme_data in enumerate(results):
+        scheme_name = scheme_data['scheme'].get('结果标签', f'方案{index + 1}')
+        snrs, bers = [], []
+        for item in scheme_data.get('results', []):
+            result = item.get('result')
+            if isinstance(result, dict) and result.get('BER') is not None and result['BER'] > 0:
+                snrs.append(item.get('snr'))
+                bers.append(result['BER'])
+        if snrs:
+            ax.semilogy(snrs, bers, marker='o', ms=6, lw=1.3,
+                        color=colors[index % len(colors)], label=scheme_name)
+            has_data = True
+    ax.set_xlabel('SNR (dB)')
+    ax.set_ylabel('BER')
+    ax.set_title('BER Comparison', fontsize=11, pad=6)
+    if has_data:
+        ax.legend(loc='lower left', fontsize=9)
+    ax.grid(True, which='major', alpha=0.25, ls='--', lw=0.4)
+    ax.grid(True, which='minor', alpha=0.10, ls='--', lw=0.3)
+    fig.tight_layout()
+    fig.savefig(chart_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _batch_compare_process_entry(connection, params: dict, project_folder: str) -> None:
+    """在一个常驻子进程中执行整批任务，避免重复支付重模块/JIT 初始化成本。"""
+    try:
+        import json
+
+        configs = params.get('配置方案', [])
+        snr_min = params.get('SNR最小值', 0)
+        snr_max = params.get('SNR最大值', 30)
+        snr_step = params.get('SNR步长', 2)
+        max_frames = int(params.get('每点最大帧数', 300))
+        min_errors = int(params.get('每点最少错误比特', 5000))
+        snr_points = []
+        current_snr = snr_min
+        while current_snr <= snr_max:
+            snr_points.append(current_snr)
+            current_snr += snr_step
+        total_points = len(configs) * len(snr_points)
+        completed_points = 0
+        all_results = []
+
+        for scheme_index, config in enumerate(configs):
+            scheme_name = config.get('结果标签', f'方案{scheme_index + 1}')
+            project_name = config.get('工程', '')
+            ui_params = _load_batch_project_config(project_name)
+            scheme_folder = os.path.join(project_folder, scheme_name)
+            os.makedirs(scheme_folder, exist_ok=True)
+            scheme_results = []
+            for snr in snr_points:
+                try:
+                    last_live_update = 0.0
+
+                    def report_point_progress(frame_count, error_count):
+                        nonlocal last_live_update
+                        now = time.monotonic()
+                        if now - last_live_update < 0.5:
+                            return
+                        frame_ratio = frame_count / max_frames if max_frames else 1.0
+                        error_ratio = error_count / min_errors if min_errors else 1.0
+                        point_ratio = min(0.99, max(frame_ratio, error_ratio))
+                        completed_in_scheme = len(scheme_results) + point_ratio
+                        scheme_progress = int(completed_in_scheme / len(snr_points) * 100)
+                        overall_progress = int(
+                            (completed_points + point_ratio) / total_points * 100
+                        ) if total_points else 100
+                        connection.send((
+                            'progress', scheme_index, scheme_progress, overall_progress,
+                        ))
+                        last_live_update = now
+
+                    result = _execute_batch_point(
+                        ui_params,
+                        snr,
+                        max_frames,
+                        min_errors,
+                        progress_callback=report_point_progress,
+                    )
+                except Exception:
+                    result = None
+                    connection.send(('point_error', scheme_name, snr, traceback.format_exc()))
+                scheme_results.append({'snr': snr, 'result': result})
+                completed_points += 1
+                scheme_progress = int(len(scheme_results) / len(snr_points) * 100)
+                overall_progress = int(completed_points / total_points * 100) if total_points else 100
+                connection.send(('progress', scheme_index, scheme_progress, overall_progress))
+
+            all_results.append({'scheme': config, 'results': scheme_results})
+            result_path = os.path.join(scheme_folder, 'scheme_results.json')
+            with open(result_path, 'w', encoding='utf-8') as file:
+                json.dump(scheme_results, file, ensure_ascii=False, indent=2)
+
+        compare_folder = os.path.join(project_folder, 'compare_results')
+        os.makedirs(compare_folder, exist_ok=True)
+        chart_path = os.path.join(compare_folder, 'ber_compare.png')
+        _save_batch_compare_chart(all_results, chart_path)
+        connection.send(('finished', all_results, chart_path))
+    except BaseException:
+        connection.send(('fatal_error', traceback.format_exc()))
+    finally:
+        connection.close()
+
+
 class BatchCompareThread(QThread):
     progress = Signal(int)
     scheme_progress = Signal(int, int)
@@ -68,187 +262,72 @@ class BatchCompareThread(QThread):
         self._last_progress_update = 0
         self._progress_update_interval = 0.2
         self._plot_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+        self._process_lock = threading.Lock()
+        self._active_process = None
+        self.error_message = None
 
     def run(self):
-        configs = self.params.get('配置方案', [])
-        snr_min = self.params.get('SNR最小值', 0)
-        snr_max = self.params.get('SNR最大值', 30)
-        snr_step = self.params.get('SNR步长', 2)
-        # 串行运行（每配置逐 SNR 顺序执行）
-        snr_points = []
-        current_snr = snr_min
-        while current_snr <= snr_max:
-            snr_points.append(current_snr)
-            current_snr += snr_step
-
-        self._snr_points_count = len(snr_points)
-        self._total_tasks = len(configs) * len(snr_points)
-        self._current_task = None
-
         self.progress.emit(0)
-
-        for scheme_idx, config in enumerate(configs):
-            self._scheme_progress[scheme_idx] = 0
-
-        self._run_serial(configs, snr_points)
-
-        if self._is_running:
-            self.progress.emit(100)
-            self._save_compare_results()
-
-    def _run_serial(self, configs, snr_points):
-        for scheme_idx, config in enumerate(configs):
-            if not self._is_running:
-                break
-
-            scheme_name = config.get('结果标签', f'scheme{scheme_idx + 1}')
-            scheme_folder = os.path.join(self.project_folder, scheme_name)
-            os.makedirs(scheme_folder, exist_ok=True)
-
-            scheme_results = []
-
-            for snr_idx, snr in enumerate(snr_points):
-                if not self._is_running:
-                    break
-
-                result = self._run_single_simulation(scheme_name, snr, scheme_folder, snr_idx, scheme_idx, len(snr_points))
-                scheme_results.append({
-                    'snr': snr,
-                    'result': result
-                })
-
-            with self._lock:
-                self.results.append({
-                    'scheme': config,
-                    'results': scheme_results
-                })
-
-            self._save_scheme_results(scheme_name, scheme_results, scheme_folder)
-
-    def _run_parallel(self, configs, snr_points, max_concurrency):
-        max_workers = min(max_concurrency, len(configs))
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {}
-            for scheme_idx, config in enumerate(configs):
-                scheme_name = config.get('结果标签', f'scheme{scheme_idx + 1}')
-                scheme_folder = os.path.join(self.project_folder, scheme_name)
-                os.makedirs(scheme_folder, exist_ok=True)
-
-                future = executor.submit(
-                    self._run_scheme,
-                    scheme_idx, config, snr_points, scheme_folder
-                )
-                futures[future] = (scheme_idx, scheme_name, scheme_folder)
-
-            for future in as_completed(futures):
-                if not self._is_running:
-                    break
-                scheme_idx, scheme_name, scheme_folder = futures[future]
-                try:
-                    scheme_results = future.result()
-                    with self._lock:
-                        self.results.append({
-                            'scheme': configs[scheme_idx],
-                            'results': scheme_results
-                        })
-                    self._save_scheme_results(scheme_name, scheme_results, scheme_folder)
-                except Exception as e:
-                    print(f"方案 {scheme_name} 运行失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-    def _run_scheme(self, scheme_idx, config, snr_points, scheme_folder):
-        scheme_results = []
-        snr_count = len(snr_points)
-
-        for snr_idx, snr in enumerate(snr_points):
-            if not self._is_running:
-                break
-
-            result = self._run_single_simulation(
-                config.get('结果标签', f'方案{scheme_idx + 1}'),
-                snr, scheme_folder, snr_idx, scheme_idx, snr_count
-            )
-            scheme_results.append({
-                'snr': snr,
-                'result': result
-            })
-
-        return scheme_results
-
-    def _run_single_simulation(self, scheme_name, snr, scheme_folder, snr_idx, scheme_idx, snr_count):
-        # 对齐 ofdm_sc_rs_ldpc_snr.py 的 run_one_snr 模式
-        config_path = os.path.join(
-            os.path.dirname(__file__), '..', '..', 'projects', 'single',
-            scheme_name, 'config.json')
-        ui_params = {}
-        if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                import json
-                ui_params = json.load(f)
-
-        mapped = BackendService.map_ui_params_to_phy_params(ui_params)
-        mapped['SNRdB'] = snr
-        mapped['data_source'] = 'PRBS'
-        mapped['duration'] = 5e-6
-        mapped['sample_length'] = None
-
-        from params.PHYParams import PHYParams
-        from transmitter.THzTransmitter import THzTransmitter
-        from channel.THzChannel import THzChannel
-        from receiver.THzReceiver import THzReceiver
-        import numpy as np
-
-        params = PHYParams()
-        valid_keys = set(params._params) | PHYParams._LEGACY_MULTIPATH_KEYS
-        for k, v in mapped.items():
-            if v is not None and k in valid_keys:
-                params._params[k] = v
-
+        context = multiprocessing.get_context('spawn')
+        receive_connection, send_connection = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_batch_compare_process_entry,
+            args=(send_connection, self.params, self.project_folder),
+            name='BatchCompareWorker',
+        )
+        with self._process_lock:
+            self._active_process = process
         try:
-            total_bits, total_errors, total_frames = 0, 0, 0
-            # 首次创建 TX/Ch/RX，后续复用（TX 仅 re-run 生成新比特）
-            tx = THzTransmitter(params); tx.run()  # 初始化 sync_upsampled 等
-            ch = THzChannel(params)
-            recv = THzReceiver(params, tx)
-            while total_errors < self._min_errors and total_frames < self._max_frames:
-                tx.assembler.duration = params.get('duration')  # 重置（run 会改 sample_length）
-                tx.assembler.sample_length = None
-                tx.run()
-                rx = ch.run(tx.tx_signal_dict)
-                rx_data = recv.run(rx)
-                tx_bits = tx.data_bits_dict["signal_stream"]
-                rx_bits = rx_data["signal_stream"]
-                cmp = min(len(tx_bits), len(rx_bits))
-                errors = int(np.sum(tx_bits[:cmp] != rx_bits[:cmp]))
-                total_bits += cmp
-                total_errors += errors
-                total_frames += 1
+            process.start()
+            send_connection.close()
+            finished_payload = None
 
-            final_ber = total_errors / total_bits if total_bits > 0 else float('nan')
-            result = {'SNRdB': snr, 'BER': final_ber,
-                       'total_bits': total_bits, 'total_errors': total_errors,
-                       'total_frames': total_frames}
+            def handle_message(message):
+                nonlocal finished_payload
+                kind = message[0]
+                if kind == 'progress':
+                    _, scheme_index, scheme_progress, overall_progress = message
+                    self.scheme_progress.emit(scheme_index, scheme_progress)
+                    self.batch_progress.emit(overall_progress)
+                elif kind == 'point_error':
+                    _, scheme_name, snr, details = message
+                    print(f'仿真失败 {scheme_name} @ {snr}dB:\n{details}')
+                elif kind in ('finished', 'fatal_error'):
+                    finished_payload = message
 
-            with self._progress_lock:
-                self._completed_tasks += 1
-                self._scheme_progress[scheme_idx] = self._scheme_progress.get(scheme_idx, 0) + 1
-                scheme_prog = int((self._scheme_progress[scheme_idx] / snr_count) * 100)
-                current_time = time.time()
-                if current_time - self._last_progress_update >= self._progress_update_interval:
-                    self.scheme_progress.emit(scheme_idx, scheme_prog)
-                    if self._total_tasks > 0:
-                        overall_progress = int((self._completed_tasks / self._total_tasks) * 100)
-                        self.batch_progress.emit(overall_progress)
-                    self._last_progress_update = current_time
-
-            return result
-        except Exception as e:
-            print(f"仿真失败 {scheme_name} @ {snr}dB: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+            while process.is_alive() and self._is_running:
+                if receive_connection.poll(0.05):
+                    try:
+                        message = receive_connection.recv()
+                    except EOFError:
+                        break
+                    handle_message(message)
+            if not self._is_running and process.is_alive():
+                process.terminate()
+            process.join()
+            while receive_connection.poll():
+                try:
+                    handle_message(receive_connection.recv())
+                except EOFError:
+                    break
+            if self._is_running:
+                if finished_payload is None:
+                    raise RuntimeError(f'批量任务子进程异常退出，退出码: {process.exitcode}')
+                if finished_payload[0] == 'fatal_error':
+                    raise RuntimeError(finished_payload[1])
+                _, self.results, chart_path = finished_payload
+                self.progress.emit(100)
+                self.compare_chart_saved.emit(chart_path)
+        except Exception as exc:
+            if self._is_running:
+                self.error_message = str(exc)
+                print(f'批量对比任务失败: {exc}')
+                traceback.print_exc()
+        finally:
+            receive_connection.close()
+            send_connection.close()
+            with self._process_lock:
+                self._active_process = None
 
     def _save_single_simulation_plots(self, result, output_folder):
         import numpy as np
@@ -611,6 +690,10 @@ class BatchCompareThread(QThread):
 
     def stop(self):
         self._is_running = False
+        with self._process_lock:
+            process = self._active_process
+        if process is not None and process.is_alive():
+            process.terminate()
 
 
 @dataclass
@@ -640,6 +723,9 @@ class BackendService(QObject):
         self._plot_lock = threading.Lock()
         self._plot_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
         self.current_project_folder = None
+        self._task_clock = QTimer(self)
+        self._task_clock.setInterval(1000)
+        self._task_clock.timeout.connect(self._refresh_running_task_elapsed)
 
     def snapshot(self) -> Dict[str, Any]:
         return self._state.__dict__.copy()
@@ -672,6 +758,35 @@ class BackendService(QObject):
         m = int((seconds % 3600) // 60)
         s = int(seconds % 60)
         return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _start_task_clock(self) -> None:
+        if not self._task_clock.isActive():
+            self._task_clock.start()
+
+    def _refresh_running_task_elapsed(self) -> None:
+        """时间显示独立于仿真进度，每秒刷新一次且不触发全表重建。"""
+        now = time.time()
+        has_running_task = False
+        changed = False
+        for task in RECENT_TASKS:
+            if task.status != '运行中' or not task.start_time:
+                continue
+            has_running_task = True
+            elapsed_seconds = max(0.0, now - task.start_time)
+            elapsed = self._format_elapsed_str(elapsed_seconds)
+            if task.elapsed != elapsed:
+                task.elapsed = elapsed
+                changed = True
+            if 0 < task.progress < 100:
+                remaining = (100 - task.progress) / task.progress * elapsed_seconds
+                eta = self._format_elapsed_str(remaining)
+                if task.eta != eta:
+                    task.eta = eta
+                    changed = True
+        if changed:
+            self.tasks_updated.emit(RECENT_TASKS.copy())
+        if not has_running_task:
+            self._task_clock.stop()
 
     def map_ui_params_to_phy_params(ui_params: dict[str, object]) -> dict[str, object]:
         mapped_params = {}
@@ -878,6 +993,7 @@ class BackendService(QObject):
                 result_path=str(result_path) if result_path else None,
             )
             RECENT_TASKS.append(task)
+            self._start_task_clock()
             self.tasks_updated.emit(RECENT_TASKS.copy())
             thread = SimulationThread(sm)
             self._simulation_threads.append(thread)
@@ -927,6 +1043,7 @@ class BackendService(QObject):
             result_path=self.current_project_folder,
         )
         RECENT_TASKS.append(task)
+        self._start_task_clock()
         self.tasks_updated.emit(RECENT_TASKS.copy())
 
         self._batch_thread = BatchCompareThread(params, project_folder)
@@ -935,7 +1052,10 @@ class BackendService(QObject):
         self._batch_thread.scheme_progress.connect(lambda idx, prog: self.scheme_progress_updated.emit(idx, prog))
         self._batch_thread.batch_progress.connect(lambda p, t=task: self.update_progress(t, p))
         self._batch_thread.compare_chart_saved.connect(self.compare_chart_saved.emit)  # 连接新信号
-        self._batch_thread.finished.connect(lambda t=task, thr=self._batch_thread: self.handle_batch_compare_finished(t, thr.results))
+        self._batch_thread.finished.connect(
+            lambda t=task, thr=self._batch_thread:
+            self.handle_batch_compare_finished(t, thr.results, thr.error_message)
+        )
         self._batch_thread.finished.connect(lambda: setattr(self, '_batch_thread', None))
         self._batch_thread.finished.connect(self._batch_thread.deleteLater)
         self._batch_thread.start()
@@ -1009,8 +1129,19 @@ class BackendService(QObject):
         except Exception:
             pass
 
-    def handle_batch_compare_finished(self, task: TaskItem, results):
+    def handle_batch_compare_finished(self, task: TaskItem, results, error_message: str | None = None):
         now = time.time()
+        if error_message:
+            task.status = '失败'
+            task.is_current = False
+            task.elapsed = self._format_elapsed_str(now - task.start_time) if task.start_time else '00:00:00'
+            task.eta = '-'
+            task.stage = '批量对比失败'
+            self._state.phase = '失败'
+            self.state_changed.emit(self.snapshot())
+            self.tasks_updated.emit(RECENT_TASKS.copy())
+            self.message_emitted.emit(f'批量对比失败：{error_message}')
+            return
         task.status = '已完成'
         task.progress = 100
         task.is_current = False

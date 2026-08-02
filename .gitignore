@@ -51,6 +51,9 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Runtime simulation artifacts
+projects/single/*/runs/
+
 # Translations
 *.mo
 *.pot

@@ -91,19 +91,31 @@ class SimulationManager:
 
         return params
 
-    def _run_stage_pipeline(self, params: PHYParams) -> Dict[str, Any]:
+    def _run_stage_pipeline(
+        self,
+        params: PHYParams,
+        progress_callback: Callable[[int], None] = None,
+    ) -> Dict[str, Any]:
         """完整链路：TX → Channel → RX。"""
         # TX
+        if progress_callback:
+            progress_callback(5)
         transmitter = THzTransmitter(params)
         tx_signal_dict = transmitter.run()
+        if progress_callback:
+            progress_callback(35)
 
         # Channel
         channel = THzChannel(params)
         rx_signal_dict = channel.run(tx_signal_dict)
+        if progress_callback:
+            progress_callback(55)
 
         # RX
         receiver = THzReceiver(params, transmitter)
         rx_data = receiver.run(rx_signal_dict)
+        if progress_callback:
+            progress_callback(90)
 
         # BER: data bits vs decoded bits
         tx_bits = (transmitter.data_bits_dict.get("signal_stream")
@@ -125,6 +137,8 @@ class SimulationManager:
             mimo_nmse = receiver.rx_equalized.get("mimo_channel_nmse")
             diagnostics = receiver.rx_equalized.get("detector_diagnostics", {})
             mimo_condition_number = diagnostics.get("mean_condition_number")
+        if progress_callback:
+            progress_callback(98)
         return {
             "params": params,
             "seed": params.get("random_seed"),
@@ -153,11 +167,15 @@ class SimulationManager:
             return np.nan
         return float(np.sum(tx_bits[:n] != rx_bits[:n]) / n)
 
-    def run_once(self, override_params: Dict[str, Any] = None) -> Dict[str, Any]:
+    def run_once(
+        self,
+        override_params: Dict[str, Any] = None,
+        progress_callback: Callable[[int], None] = None,
+    ) -> Dict[str, Any]:
         """执行一次仿真。"""
         self.run_index += 1
         params = self._prepare_params_for_run(override_params)
-        result = self._run_stage_pipeline(params)
+        result = self._run_stage_pipeline(params, progress_callback=progress_callback)
 
         return {
             "run_index": self.run_index,
@@ -183,7 +201,12 @@ class SimulationManager:
         if progress_callback:
             progress_callback(0)
         for i in range(run_times):
-            res = self.run_once(override_params)
+            def report_run_stage(stage_progress, run_index=i):
+                if progress_callback:
+                    overall = int((run_index + stage_progress / 100) / run_times * 100)
+                    progress_callback(min(overall, 99))
+
+            res = self.run_once(override_params, progress_callback=report_run_stage)
             results.append(res)
             if progress_callback and ((i + 1) % progress_step == 0 or i == run_times - 1):
                 progress = int((i + 1) / run_times * 100)
