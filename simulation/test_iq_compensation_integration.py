@@ -151,6 +151,7 @@ def test_receiver_places_iq_compensation_before_noise_and_mode_branch(link_mode,
     calls = []
 
     stages = [
+        "compensate_iq_configured",
         "matched_filter",
         "coarse_sync_detect",
         "compensate_cfo_coarse",
@@ -172,10 +173,12 @@ def test_receiver_places_iq_compensation_before_noise_and_mode_branch(link_mode,
             lambda signal, stage=stage: calls.append(stage) or signal,
         )
     receiver.estimate_noise = lambda signal: calls.append("estimate_noise")
+    receiver.iq_dd_compensator = object() if link_mode == "sc-fde" else None
 
     receiver.run({"signal_stream": np.array([0j])})
 
     expected = [
+        "compensate_iq_configured",
         "matched_filter",
         "coarse_sync_detect",
         "compensate_cfo_coarse",
@@ -185,7 +188,7 @@ def test_receiver_places_iq_compensation_before_noise_and_mode_branch(link_mode,
         "compensate_iq_imbalance",
         "estimate_noise",
         *branch,
-        "compensate_iq_decision_directed",
+        *(["compensate_iq_decision_directed"] if link_mode == "sc-fde" else []),
         "demodulate",
         "decode",
     ]
@@ -199,9 +202,9 @@ def test_receiver_skips_decision_directed_iq_without_channel_equalization():
     receiver.enable_channel_est = False
     calls = []
     passthrough_stages = [
-        "matched_filter", "coarse_sync_detect", "compensate_cfo_coarse",
+        "compensate_iq_configured", "matched_filter", "coarse_sync_detect", "compensate_cfo_coarse",
         "fine_sync_frame", "downsample", "compensate_cfo_fine",
-        "compensate_iq_imbalance", "demodulate", "decode",
+        "compensate_iq_imbalance", "equalize", "demodulate", "decode",
     ]
     for stage in passthrough_stages:
         setattr(

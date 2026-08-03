@@ -26,6 +26,26 @@ class TxOFDMProcesser:
         # 导频序列生成（512点BPSK，填充整个块状导频OFDM符号）
         self.seq_gen = Generator(params)
         self.pilot_seq, _ = self.seq_gen.generate_512_sequences()      # a512作为导频序列
+        pilot_phases_deg = params.get(
+            "ofdm_iq_pilot_phase_codes_deg", [0.0, 90.0, 0.0]
+        )
+        if len(pilot_phases_deg) != len(self.pilot_block_indexes):
+            if (
+                params.get("enable_mimo", False)
+                or str(params.get("link_mode", "ofdm")).lower() != "ofdm"
+            ):
+                # 非 SISO-OFDM 分支只需保持这个未使用的处理器可构造。
+                pilot_phases_deg = [0.0] * len(self.pilot_block_indexes)
+            else:
+                raise ValueError(
+                    "ofdm_iq_pilot_phase_codes_deg 长度必须与 pilot_block_indexes 一致"
+                )
+        self.pilot_phase_codes = np.exp(
+            1j * np.deg2rad(np.asarray(pilot_phases_deg, dtype=float))
+        )
+        self.pilot_sequences = (
+            self.pilot_phase_codes[:, None] * self.pilot_seq[None, :]
+        )
 
         # 输出参数
         self.sample_rate = None
@@ -103,19 +123,18 @@ class TxOFDMProcesser:
         # 创建完整OFDM网格 (num_subframes, 48, 512)
         ofdm_grid = np.zeros((N_SUB, N_SYM, N_SC), dtype=np.complex128)
 
-        # 导频列索引 [0, 16, 32] — 填入 pilot_seq（广播到所有子帧）
-        for pilot_idx in self.pilot_block_indexes:
-            ofdm_grid[:, pilot_idx, :] = self.pilot_seq  # broadcast: (512,) -> (N_SUB, 512)
+        # 相位正交的块导频使直通与镜像分量可辨识，导频数量与位置不变。
+        for pilot_order, pilot_idx in enumerate(self.pilot_block_indexes):
+            ofdm_grid[:, pilot_idx, :] = self.pilot_sequences[pilot_order]
 
         # 数据列索引 [1..15, 17..31, 33..47] — 共45列
         data_col_indices = np.setdiff1d(np.arange(N_SYM), self.pilot_block_indexes)
         ofdm_grid[:, data_col_indices, :] = data_3d
 
         # ==================== 3. 串并转换 + IFFT ====================
-        # (N_SUB, 48, 512) → (512, N_SYM, N_SUB) → (512, N_SUB * 48)
-        # transpose(2,1,0): 轴2(子载波)→第0维，轴1(符号)→第1维，轴0(子帧)→第2维
-        # reshape后每列 = 一个OFDM符号的全部512子载波
-        ofdm_2d = ofdm_grid.transpose(2, 1, 0).reshape(N_SC, -1)
+        # 按 frame → symbol 的顺序排列，和后续 GI/前导码逐帧处理保持一致。
+        # 每列仍是一个 OFDM 符号的全部 N_SC 个子载波。
+        ofdm_2d = ofdm_grid.reshape(N_SUB * N_SYM, N_SC).T
         # 每列是一个OFDM符号（频域），512点IFFT（正交归一化，功率守恒）
         ifft_out = np.fft.ifft(ofdm_2d, axis=0, norm='ortho')  # (512, total_ofdm_symbols)
 
@@ -190,11 +209,14 @@ if __name__ == "__main__":
         rx_block_freq = np.fft.fft(block, norm='ortho')
 
         if block_idx_in_subframe in pilot_block_set:
-            # 导频符号：验证 pilot_seq
-            pilot_error = rx_block_freq - ofdm_processer.pilot_seq
+            pilot_order = ofdm_processer.pilot_block_indexes.index(
+                block_idx_in_subframe
+            )
+            pilot_reference = ofdm_processer.pilot_sequences[pilot_order]
+            pilot_error = rx_block_freq - pilot_reference
             pilot_mse = np.mean(np.abs(pilot_error) ** 2)
             if b < 3:  # 只打印前3个导频符号
-                print(f"  导频符号 #{b} (子帧内索引{block_idx_in_subframe}): MSE vs pilot_seq = {pilot_mse:.2e}")
+                print(f"  导频符号 #{b} (子帧内索引{block_idx_in_subframe}): MSE vs pilot reference = {pilot_mse:.2e}")
         else:
             # 数据符号：收集用于MSE比较
             rx_data_symbols.append(rx_block_freq)

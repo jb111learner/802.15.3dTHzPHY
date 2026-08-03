@@ -65,6 +65,7 @@ class PHYParams(BaseParams):
             "subwave_num":512,                                                                       # 子载波数
             "subframe_ofdm_num": 48,                                                                 # 单数据帧OFDM子帧数量
             "pilot_block_indexes":[0, 16, 32],                                                       # 块状导频索引
+            "ofdm_iq_pilot_phase_codes_deg": [0.0, 90.0, 0.0],                                     # 宽线性估计相位正交导频
             # "enable_window_filter":False,                                                          # 是否启用加窗与频谱成型
             # "rolling_width":64,                                                                    # 过渡带宽度
 
@@ -169,7 +170,7 @@ class PHYParams(BaseParams):
             "enable_iq_imbalance": False,           # 是否启用 I/Q 不平衡
             "iq_imbalance_position": "rx",         # tx / rx / both，默认模拟接收机 IQ 不平衡
             "iq_imbalance_model": "fid",           # 当前仅实现 frequency-independent IQ imbalance
-            "iq_power_normalize": True,           # 默认不对 IQ 不平衡输出做功率归一化
+            "iq_power_normalize": True,           # 是否对 IQ 不平衡输出做功率归一化
             "tx_iq_gain_imbalance_db": 0.0,        # TX: 20log10(Q branch amplitude / I branch amplitude)
             "tx_iq_phase_imbalance_deg": 0.0,      # TX: theta in degrees
             "rx_iq_gain_imbalance_db": 0.0,        # RX: 20log10(Q branch amplitude / I branch amplitude)
@@ -184,12 +185,17 @@ class PHYParams(BaseParams):
             "iq_phase_imbalance_deg": 0.0,         # Legacy I/Q 相位不平衡，单位 degree
 
             # RX IQ 不平衡补偿参数（独立于信道损伤注入开关）
-            "enable_iq_compensation": True,        # 是否在接收机细 CFO 后启用 IQ 补偿
-            "iq_compensation_method": "decision_directed",       # IQ补偿方法: ces / decision_directed
+            "enable_iq_compensation": True,        # 是否启用 IQ 补偿
+            "iq_compensation_method": "auto",     # auto/configured_inverse/ofdm_widely_linear/decision_directed/ces
             "iq_comp_filter_len": 5,               # IQ 损伤/补偿 FIR 长度
             "iq_comp_ridge_lambda": 0.0,           # LS 岭回归系数，0 表示使用伪逆
             "iq_compensation_mode": "per_frame",  # per_frame / first_frame
             "iq_comp_dd_iterations": 3,            # 判决导向IQ补偿迭代次数
+            "iq_ofdm_estimation_ridge": 1e-8,      # OFDM A/B 导频估计正则系数
+            "iq_ofdm_equalizer_ridge": 1e-8,       # OFDM 2x2 宽线性均衡正则系数
+            "iq_ofdm_condition_limit": 1e8,        # 超过该条件数时回退为标量均衡
+            "iq_ofdm_response_taps": None,         # A/B 时域截断长度，None 表示使用 GI 长度
+            "iq_blind_covariance_trim_fraction": 0.2,  # CFO 前盲校正估计时跳过起始瞬态比例
             
             # 3GPP TR 38.901 TDL 多径模式。TDL 模式启用时，仅需选择模型和 DS。
             # 10/30/100/300/1000 ns 均可作为 tdl_delay_spread_ns。
@@ -255,6 +261,35 @@ class PHYParams(BaseParams):
             raise ValueError("subwave_num 必须大于 1")
         if not 0 <= int(self.get("gi_length")) < int(self.get("subwave_num")):
             raise ValueError("gi_length 必须满足 0 <= gi_length < subwave_num")
+
+        pilot_indexes = list(self.get("pilot_block_indexes"))
+        pilot_codes = list(self.get("ofdm_iq_pilot_phase_codes_deg"))
+        if link_mode == "ofdm" and not self.get("enable_mimo"):
+            if len(pilot_indexes) != len(pilot_codes):
+                raise ValueError(
+                    "ofdm_iq_pilot_phase_codes_deg 长度必须与 pilot_block_indexes 一致"
+                )
+            if len(pilot_indexes) < 2:
+                raise ValueError("OFDM 宽线性估计至少需要两个块导频")
+            phase_codes = np.exp(
+                1j * np.deg2rad(np.asarray(pilot_codes, dtype=float))
+            )
+            pilot_design = np.column_stack((phase_codes, np.conj(phase_codes)))
+            if np.linalg.matrix_rank(pilot_design) < 2:
+                raise ValueError("OFDM IQ 导频相位编码必须形成满秩宽线性设计矩阵")
+
+        iq_method = str(self.get("iq_compensation_method", "auto")).lower()
+        valid_iq_methods = {
+            "auto", "configured_inverse", "configured", "known",
+            "ofdm_widely_linear", "ofdm", "widely_linear",
+            "decision_directed", "dd", "ces",
+        }
+        if iq_method not in valid_iq_methods:
+            raise ValueError(f"不支持的 iq_compensation_method：{iq_method}")
+        if str(self.get("iq_compensation_mode")).lower() not in {
+            "per_frame", "first_frame"
+        }:
+            raise ValueError("iq_compensation_mode 仅支持 per_frame / first_frame")
 
         num_tx = int(self.get("num_tx"))
         num_rx = int(self.get("num_rx"))

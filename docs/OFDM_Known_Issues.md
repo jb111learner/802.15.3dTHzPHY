@@ -72,9 +72,9 @@ SC-FDE 的 `FFT → ZF → IFFT` 闭环天然容忍此偏差（IFFT 平滑作用
 
 ---
 
-## 2. IQ 不平衡补偿
+## 2. IQ 不平衡补偿（已修复）
 
-### 2.1 判决导向（DD）补偿在 OFDM 下无效
+### 2.1 历史问题：判决导向（DD）补偿在 OFDM 下无效
 
 **测试条件：** AWGN 24dB, 64QAM, RX IQ 不平衡（增益 2dB, 相位 5°), 判决导向补偿。
 
@@ -93,11 +93,33 @@ SC-FDE 的 `FFT → ZF → IFFT` 闭环天然容忍此偏差（IFFT 平滑作用
 
 **OFDM：** DD 补偿完全无效——EVM/IRR/BER 均无改善。
 
-**根因：** 判决导向算法依赖 SC-FDE 的块结构（逐块硬判 → 重建发射符号 → LS 估计 IQ 参数）。OFDM 的符号分布在频域子载波上，星座格式和符号间关系与 SC-FDE 完全不同，算法无法直接迁移。
+**根因：** 原算法使用串行同索引模型 `r[n] = a*x[n] + b*conj(x[n])`，但 OFDM 的 IQ 镜像项来自 `(-k) mod N` 子载波。数据提取后已经丢失镜像子载波配对关系，因此 LS 模型错误。
 
 ### 2.2 CES 基 IQ 补偿已移除
 
 原 CES 基方法（利用前导码 CES 序列估计 I/Q 不平衡滤波器）在 short preamble 下矩阵不满秩（rank=6/11），无法使用。已从 THzReceiver 中移除，统一使用判决导向方法。
+
+### 2.3 当前解决方案
+
+SISO-OFDM 现使用 `receiver/IQCompensatorOFDM.py`：
+
+- 导频位置仍为 `[0, 16, 32]`，相位编码改为 `[0°, 90°, 0°]`，不增加导频开销；
+- 在 FFT 后、数据提取前估计 `Y[k] = A[k]X[k] + B[k]conj(X[-k])`；
+- 对镜像子载波对执行正则化 `2x2` 宽线性均衡；
+- `A/B` 是信道与 TX/RX IQ 的联合有效响应，支持 FID、FD、TX、RX 和 both；
+- 已知 RX FID 参数可用 `configured_inverse` 在接收链最前端精确反演；
+- CFO 与未知 RX IQ 同时存在时，在 CFO 补偿前先执行不使用增益/相位配置值的二阶统计盲白化，再由频域宽线性均衡消除残差；
+- 原 `decision_directed + OFDM` 配置自动路由到 `ofdm_widely_linear`，SC-FDE 的 DD 路径保持不变。
+
+验证结果（64QAM、单帧 LDPC）：
+
+| 场景 | 结果 |
+|------|------|
+| 无噪声 RX FID，未知参数 | EVM 1.45%，BER 0 |
+| 30 dB AWGN，RX/TX/both，FID/FD | EVM 约 2.23%～2.25%，BER 0 |
+| 30 dB AWGN + CFO，未知 RX FID | EVM 2.37%，BER 0 |
+| 30 dB AWGN + CFO，未知 RX FD | EVM 3.05%，BER 0 |
+| 两帧独立未知参数估计 | EVM 1.41%，BER 0 |
 
 ---
 
@@ -157,6 +179,6 @@ params.update(
 | P0 | OFDM 低 SNR 差距 | 固有限制，仿真时 QPSK SNR 建议从 0dB 起；64QAM 差距在 18dB 消失 |
 | P1 | TDL 参数缩放 | 设置 `tdl_delay_spread_ns=0.1~0.5`，同步增加 `gi_length` |
 | P1 | 同步算法增强 | CoarseSync 需抗大多径时延的峰值检测策略 |
-| P2 | OFDM IQ 补偿 | 判决导向方法对 OFDM 无效，需针对 OFDM 频域结构设计新算法 |
+| 已完成 | OFDM IQ 补偿 | 已实现镜像子载波宽线性联合估计、已知参数前端逆补偿和 CFO 前盲校正 |
 | P2 | 元数据传递 | 修改 AWGN.add_awgn() 保留输入 dict 的多径元数据字段 |
 | P3 | OFDM 导频密度 | 切换码率或调整帧结构以容纳更多导频（约 18 个导频与 14/15 LDPC兼容） |

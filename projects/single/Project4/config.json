@@ -1,7 +1,7 @@
 {
     "链路模式分区": "多载波模式",
     "实现精度分区": "浮点仿真",
-    "空间模式分区": "2×2 MIMO",
+    "空间模式分区": "非 MIMO",
     "波形方案分区": "经典波形",
     "工程名称": "Project4",
     "参数测试模版": "P09 — OFDM + 16QAM + RS + AWGN",
@@ -42,7 +42,27 @@
         "enable_cfo": true,
         "ppm": 1.0,
         "enable_phase_noise": false,
-        "enable_iq_imbalance": false,
+        "enable_iq_imbalance": true,
+        "iq_imbalance_position": "rx",
+        "iq_imbalance_model": "fid",
+        "rx_iq_gain_imbalance_db": 2.0,
+        "rx_iq_phase_imbalance_deg": 5.0,
+        "rx_iq_gI_taps": [
+            1.0,
+            0.08,
+            -0.03
+        ],
+        "rx_iq_gQ_taps": [
+            1.0,
+            -0.12,
+            0.04
+        ],
+        "tx_iq_gI_taps": [
+            1.0
+        ],
+        "tx_iq_gQ_taps": [
+            1.0
+        ],
         "enable_pa": false
     }
 }

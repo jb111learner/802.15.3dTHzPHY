@@ -16,6 +16,11 @@ from receiver.Decoder import Decoder
 from receiver.DeScrambler import DeScrambler
 from receiver.Downsampler import Downsampler
 from receiver.IQCompensator import IQCompensator, DecisionDirectedIQCompensator
+from receiver.IQCompensatorOFDM import (
+    BlindRXIQWhiteningCompensator,
+    ConfiguredRXIQCompensator,
+    resolve_iq_compensation_method,
+)
 from receiver.MIMOReceiverProcessor import MIMOReceiverProcessor
 
 
@@ -44,6 +49,7 @@ class THzReceiver(BaseReceiver):
         self.rx_downsampled = None
         self.rx_cfo_fine = None
         self.rx_iq_compensated = None
+        self.rx_iq_frontend_compensated = None
         self.rx_equalized = None
         self.noise_var = None
         self.llr_dict = None
@@ -66,22 +72,34 @@ class THzReceiver(BaseReceiver):
         self.downsampler = Downsampler(transmitter)
         self.iq_dd_compensator = None
         self.iq_compensator = None
-        if (
-            self.params.get("enable_iq_compensation")
-            and self.params.get("iq_compensation_method") == "ces"
-        ):
+        self.iq_configured_compensator = None
+        self.iq_blind_frontend_compensator = None
+        self.iq_compensation_method = resolve_iq_compensation_method(
+            self.params, self.link_mode
+        )
+        if self.iq_compensation_method == "ces":
             self.iq_compensator = IQCompensator(
                 transmitter,
                 filter_len=self.params.get("iq_comp_filter_len"),
                 ridge_lambda=self.params.get("iq_comp_ridge_lambda"),
                 compensation_mode=self.params.get("iq_compensation_mode"),
             )
-        if self.params.get("enable_iq_compensation"):
+        elif self.iq_compensation_method == "decision_directed":
             self.iq_dd_compensator = DecisionDirectedIQCompensator(
                 params,
                 filter_len=self.params.get("iq_comp_filter_len"),
                 ridge_lambda=self.params.get("iq_comp_ridge_lambda"),
                 iterations=self.params.get("iq_comp_dd_iterations"),
+            )
+        elif self.iq_compensation_method == "configured_inverse":
+            self.iq_configured_compensator = ConfiguredRXIQCompensator(params)
+        elif (
+            self.iq_compensation_method == "ofdm_widely_linear"
+            and self.params.get("enable_cfo", False)
+            and self.params.get("enable_cfo_compensation", False)
+        ):
+            self.iq_blind_frontend_compensator = BlindRXIQWhiteningCompensator(
+                params
             )
         self.channel_estimator = ChannelEstimator(transmitter)
         self.equalizer = FreqDomainEqualizer(transmitter)
@@ -147,6 +165,18 @@ class THzReceiver(BaseReceiver):
         self.rx_iq_compensated = self.iq_dd_compensator.compensate(signal_dict)
         return self.rx_iq_compensated
 
+    def compensate_iq_configured(self, signal_dict):
+        """在同步与 CFO 处理前执行已知或盲 RX IQ 前端校正。"""
+        compensator = getattr(self, "iq_configured_compensator", None)
+        if compensator is not None and compensator.is_applicable():
+            self.rx_iq_frontend_compensated = compensator.compensate(signal_dict)
+            return self.rx_iq_frontend_compensated
+        compensator = getattr(self, "iq_blind_frontend_compensator", None)
+        if compensator is None or not compensator.is_applicable():
+            return signal_dict
+        self.rx_iq_frontend_compensated = compensator.compensate(signal_dict)
+        return self.rx_iq_frontend_compensated
+
     def compensate_iq_imbalance(self, signal_dict):
         """在噪声/信道估计前执行基于 CES 的 IQ 补偿。"""
         if getattr(self, "iq_compensator", None) is None:
@@ -167,6 +197,34 @@ class THzReceiver(BaseReceiver):
     def ofdm_demodulate(self, signal_dict):
         self.rx_equalized = self.rx_ofdm.ofdm_demodulate(
             signal_dict, H_init_list=None)
+        frontend = self.rx_iq_frontend_compensated
+        if frontend is not None:
+            stages = [
+                frontend.get(
+                    "iq_frontend_compensation_method",
+                    frontend.get("iq_compensation_method"),
+                )
+            ]
+            if (
+                self.rx_equalized.get("iq_compensation_method")
+                == "ofdm_widely_linear"
+            ):
+                stages.append("ofdm_widely_linear")
+            self.rx_equalized["iq_compensation_stages"] = [
+                stage for stage in stages if stage
+            ]
+            self.rx_equalized["iq_frontend_diagnostics"] = (
+                frontend.get("iq_blind_diagnostics")
+                or frontend.get("iq_configured_diagnostics")
+            )
+            if self.rx_equalized.get("iq_compensation_method") == "none":
+                self.rx_equalized["iq_compensation_method"] = stages[0]
+        if (
+            self.rx_equalized.get("iq_compensation_method")
+            == "ofdm_widely_linear"
+            or frontend is not None
+        ):
+            self.rx_iq_compensated = self.rx_equalized
         return self.rx_equalized
 
     def estimate_noise(self, signal_dict):
@@ -234,8 +292,11 @@ class THzReceiver(BaseReceiver):
             sig = self.demodulate(sig)
             return self.decode(sig)
 
+        # ⓪ 已知 RX FID IQ 参数：损伤注入的逆序处理，先于 CFO/滤波/抽取。
+        sig = self.compensate_iq_configured(rx_signal_dict)
+
         # ① 匹配滤波
-        sig = self.matched_filter(rx_signal_dict)
+        sig = self.matched_filter(sig)
 
         # ② 粗同步（SYNC 互相关定位）
         sig = self.coarse_sync_detect(sig)
@@ -273,12 +334,16 @@ class THzReceiver(BaseReceiver):
             if self.link_mode == "ofdm":
                 sig = self.ofdm_demodulate(sig)
             else:
-                n_sc = self.params.get("subframe_length")
+                params = getattr(self, "params", None)
+                n_sc = params.get("subframe_length") if params is not None else 1
                 sig["channel_freq_response"] = np.ones(n_sc, dtype=np.complex128)
                 sig = self.equalize(sig)
 
-        # ⑩ 判决导向IQ补偿（均衡后，对齐Equalizer.py测试流程）
-        if self.enable_channel_est:
+        # ⑩ SC-FDE 专用判决导向IQ补偿；OFDM 在频域网格内完成补偿。
+        if (
+            self.enable_channel_est
+            and getattr(self, "iq_dd_compensator", None) is not None
+        ):
             sig = self.compensate_iq_decision_directed(sig)
 
         # ⑪ 解调（LLR，使用噪声方差）

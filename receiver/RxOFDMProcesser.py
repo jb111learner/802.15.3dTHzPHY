@@ -3,6 +3,10 @@ import matplotlib.pyplot as plt
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
 from channel.THzChannel import THzChannel
+from receiver.IQCompensatorOFDM import (
+    OFDMWidelyLinearIQCompensator,
+    resolve_iq_compensation_method,
+)
 
 plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False
@@ -38,7 +42,44 @@ class RxOFDMProcesser:
         self.N_DATA = self.N_SYM - len(self.pilot_indexes)     # 45 数据符号/子帧
 
         # —————— 导频参考 ——————
-        self.pilot_seq = transmitter.ofdm_processer.pilot_seq  # a512 (BPSK, |·|=1)
+        self.pilot_seq = transmitter.ofdm_processer.pilot_seq  # 兼容旧调用
+        self.pilot_sequences = np.asarray(
+            getattr(
+                transmitter.ofdm_processer,
+                "pilot_sequences",
+                np.repeat(
+                    self.pilot_seq[None, :], len(self.pilot_indexes), axis=0
+                ),
+            ),
+            dtype=np.complex128,
+        )
+        self.pilot_reference_by_index = {
+            pilot_index: self.pilot_sequences[order]
+            for order, pilot_index in enumerate(self.pilot_indexes)
+        }
+
+        self.iq_compensation_method = resolve_iq_compensation_method(
+            self.params, "ofdm"
+        )
+        position = str(self.params.get("iq_imbalance_position", "rx")).lower()
+        iq_model = str(self.params.get("iq_imbalance_model", "fid")).lower()
+        configured_needs_wl = (
+            self.iq_compensation_method == "configured_inverse"
+            and self.params.get("enable_iq_imbalance", False)
+            and (iq_model != "fid" or position in {"tx", "both"})
+        )
+        self.enable_widely_linear_iq = (
+            self.iq_compensation_method == "ofdm_widely_linear"
+            or configured_needs_wl
+        )
+        self.iq_ofdm_compensator = None
+        if self.enable_widely_linear_iq:
+            self.iq_ofdm_compensator = OFDMWidelyLinearIQCompensator(
+                self.params,
+                self.pilot_indexes,
+                self.pilot_sequences,
+                self.N_SC,
+            )
 
         # —————— LMS 参数 ——————
         self.lms_mu = 0.1          # LMS 步长
@@ -55,6 +96,7 @@ class RxOFDMProcesser:
         self.ofdm_freq_grid = None       # 频域OFDM网格
         self.H_est_per_subframe = None   # 每子帧的信道估计
         self.data_symbols = None         # 解调后的数据符号
+        self.iq_compensation_diagnostics = None
 
     def _verification_data(self, data_dict):
         """校验输入数据字典，处理多帧信号"""
@@ -163,9 +205,10 @@ class RxOFDMProcesser:
             else:
                 H_raw = np.zeros(self.N_SC, dtype=np.complex128)
                 for p_idx in pilot_syms:
-                    col = p_idx * self.frame_num + s
+                    col = s * self.N_SYM + p_idx
                     Y = freq_grid[:, col]
-                    H_raw += Y / (self.pilot_seq + eps)
+                    reference = self.pilot_reference_by_index[p_idx]
+                    H_raw += Y / (reference + eps)
                 H_raw /= len(pilot_syms)
                 H = H_raw
 
@@ -179,13 +222,14 @@ class RxOFDMProcesser:
 
             pilot_phases = {}
             for sym in range(n_sym):
-                col = sym * self.frame_num + s
+                col = s * self.N_SYM + sym
                 Y = freq_grid[:, col]
                 X_eq = Y / (H + eps)
                 eq_grid[:, col] = X_eq
 
                 if sym in pilot_set:
-                    corr = X_eq * np.conj(self.pilot_seq)
+                    reference = self.pilot_reference_by_index[sym]
+                    corr = X_eq * np.conj(reference)
                     pilot_phases[sym] = np.angle(np.sum(w * corr) / w_sum)
 
             # ---- Global linear trend: φ(sym) = φ₀ + sym × Δφ ----
@@ -210,7 +254,7 @@ class RxOFDMProcesser:
             for sym in range(n_sym):
                 if sym in pilot_set:
                     continue
-                col = sym * self.frame_num + s
+                col = s * self.N_SYM + sym
                 phase = phi_0 + sym * dphi_per_sym
                 eq_grid[:, col] *= np.exp(-1j * phase)
 
@@ -218,12 +262,35 @@ class RxOFDMProcesser:
             h_est_list.append(np.fft.ifft(H)[:self.gi_len])
 
         return eq_grid, H_est_list, h_est_list
+
+    def _track_equalized_common_phase(self, eq_grid):
+        """利用补偿后的块导频跟踪每帧残余公共相位。"""
+        pilot_syms = np.asarray(sorted(self.pilot_indexes), dtype=float)
+        tracked = np.array(eq_grid, copy=True)
+        for frame_index in range(self.frame_num):
+            measured = []
+            for pilot_index in pilot_syms.astype(int):
+                col = frame_index * self.N_SYM + pilot_index
+                reference = self.pilot_reference_by_index[pilot_index]
+                correlation = np.sum(tracked[:, col] * np.conj(reference))
+                measured.append(np.angle(correlation))
+            measured = np.unwrap(np.asarray(measured))
+            if len(pilot_syms) >= 2:
+                slope, intercept = np.polyfit(pilot_syms, measured, 1)
+            else:
+                slope, intercept = 0.0, float(measured[0])
+            for symbol_index in range(self.N_SYM):
+                col = frame_index * self.N_SYM + symbol_index
+                tracked[:, col] *= np.exp(
+                    -1j * (intercept + slope * symbol_index)
+                )
+        return tracked
+
     def _extract_data_symbols(self, eq_grid):
         """
         从均衡后的OFDM网格中提取数据符号（跳过导频位置）
 
-        列布局（transpose(2,1,0)决定的）: col = sym * N_SUB + s
-        即 OFDM符号索引变化慢，子帧索引变化快
+        列布局：col = frame * N_SYM + sym，即逐帧存放 OFDM 符号。
 
         :param eq_grid: (N_SC, total_blocks) 均衡后的频域OFDM网格
         :return: 1D QAM符号流（与发射端调制输出顺序一致）
@@ -231,21 +298,17 @@ class RxOFDMProcesser:
         pilot_set = set(self.pilot_indexes)
         data_cols = []
 
-        # 按 sym→s 顺序收集数据列（与TX端data_3d[s, d, :]对齐）
-        for sym in range(self.N_SYM):
-            if sym not in pilot_set:
-                for s in range(self.frame_num):
-                    data_cols.append(sym * self.frame_num + s)
+        for frame_index in range(self.frame_num):
+            for symbol_index in range(self.N_SYM):
+                if symbol_index not in pilot_set:
+                    data_cols.append(
+                        frame_index * self.N_SYM + symbol_index
+                    )
 
         # 提取数据列 → (N_SC, N_DATA * frame_num)
         data_grid = eq_grid[:, data_cols]  # (N_SC, N_DATA * N_SUB)
 
-        # 列 k = d*N_SUB + s → data_3d[s, d, :]
-        # 重塑为 (frame_num, N_DATA, N_SC) 与TX的data_3d对齐
-        data_3d = data_grid.T.reshape(self.N_DATA, self.frame_num, self.N_SC) \
-                            .transpose(1, 0, 2)  # (frame_num, N_DATA, N_SC)
-
-        return data_3d.ravel()  # 与 tx_symbols 顺序一致
+        return data_grid.T.ravel()
 
     # ==================== 主处理流程 ====================
     def ofdm_demodulate(self, signal_dict, H_init_list=None):
@@ -268,8 +331,19 @@ class RxOFDMProcesser:
         freq_grid = self._fft_demodulate(time_grid)
         self.ofdm_freq_grid = freq_grid
 
-        # ———— 3. LS跟踪+均衡（可开关） ————
-        if self.enable_ch_est:
+        # ———— 3. 宽线性联合均衡，或传统 Pilot-LS 均衡 ————
+        if self.iq_ofdm_compensator is not None:
+            eq_grid, H_est_list, _, diagnostics = (
+                self.iq_ofdm_compensator.compensate(freq_grid, self.frame_num)
+            )
+            eq_grid = self._track_equalized_common_phase(eq_grid)
+            h_est_list = [
+                np.fft.ifft(response)[:self.gi_len]
+                for response in H_est_list
+            ]
+            self.H_est_per_subframe = H_est_list
+            self.iq_compensation_diagnostics = diagnostics
+        elif self.enable_ch_est:
             eq_grid, H_est_list, h_est_list = self._ls_track_and_equalize(
                 freq_grid, H_init_list)
             self.H_est_per_subframe = H_est_list
@@ -282,11 +356,12 @@ class RxOFDMProcesser:
             for s in range(self.frame_num):
                 H_raw = np.zeros(self.N_SC, dtype=np.complex128)
                 for p_idx in self.pilot_indexes:
-                    col = p_idx * self.frame_num + s
-                    H_raw += freq_grid[:, col] / (self.pilot_seq + eps)
+                    col = s * self.N_SYM + p_idx
+                    reference = self.pilot_reference_by_index[p_idx]
+                    H_raw += freq_grid[:, col] / (reference + eps)
                 H_raw /= len(self.pilot_indexes)
                 for sym in range(self.N_SYM):
-                    col = sym * self.frame_num + s
+                    col = s * self.N_SYM + sym
                     eq_grid[:, col] = freq_grid[:, col] / (H_raw + eps)
                 H_est_list.append(H_raw.copy())
                 h_est_list.append(np.fft.ifft(H_raw)[:self.gi_len])
@@ -307,6 +382,12 @@ class RxOFDMProcesser:
             "channel_freq_response": H_est_list,
             "channel_time_response": h_est_list,
             "ofdm_freq_grid": freq_grid,
+            "ofdm_equalized_grid": eq_grid,
+            "iq_compensation_method": (
+                "ofdm_widely_linear"
+                if self.iq_ofdm_compensator is not None else "none"
+            ),
+            "iq_ofdm_diagnostics": self.iq_compensation_diagnostics,
         }
         return result_dict
 
