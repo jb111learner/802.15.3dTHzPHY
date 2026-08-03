@@ -8,6 +8,7 @@ from channel.IQImbalance import IQImbalance
 from channel.npa.PowerAmplifier import ModifiedRappPA
 from channel.npa.RappParameterLoader import RappParameterLoader
 from channel.MIMOChannel import MIMOChannel
+from channel.MeasuredChannel import MeasuredChannel
 from params.PHYParams import PHYParams
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']
@@ -20,9 +21,24 @@ class THzChannel(BaseChannel):
     def __init__(self, params):
         super().__init__(params)
         self.enable_mimo = bool(self.params.get("enable_mimo", False))
+        self.use_measured_channel = (
+            str(self.params.get("multipath_source", "simulated")).lower()
+            == "measured"
+        )
         # 初始化子模块
         self.mimo_channel = MIMOChannel(params) if self.enable_mimo else None
-        self.multipath_chan = MultipathChannel(params) if self.params.get("enable_multipath") and not self.enable_mimo else None
+        self.measured_channel = (
+            MeasuredChannel(params)
+            if self.use_measured_channel and not self.enable_mimo
+            else None
+        )
+        self.multipath_chan = (
+            MultipathChannel(params)
+            if self.params.get("enable_multipath")
+            and not self.enable_mimo
+            and not self.use_measured_channel
+            else None
+        )
         self.awgn = AWGN(params) if self.params.get("enable_awgn") and not self.enable_mimo else None
         self.cfo = CFO(params) if self.params.get("enable_cfo") and not self.enable_mimo else None
         self.iq_imbalance = IQImbalance(params) if self.params.get("enable_iq_imbalance") and not self.enable_mimo else None
@@ -74,6 +90,11 @@ class THzChannel(BaseChannel):
 
     def apply_multipath(self, signal_dict):
         """应用多径效应，输入输出均为 signal_dict。"""
+        if self.measured_channel is not None:
+            self.signal_multipath_dict = self.measured_channel.apply(signal_dict)
+            self.chan_true = self.measured_channel.channel_impulse_response[0, 0]
+            return self.signal_multipath_dict
+
         if not self.params.get("enable_multipath") or self.multipath_chan is None:
             return signal_dict
 
@@ -143,6 +164,13 @@ class THzChannel(BaseChannel):
         # 4. 可选 RX 端 IQ 不平衡
         signal = self.apply_iq_imbalance(signal, stage="rx")
         # 保存接收信号
+        if self.measured_channel is not None:
+            signal["measured_channel_diagnostics"] = dict(
+                self.measured_channel.diagnostics
+            )
+            signal["measured_channel_impulse_response"] = (
+                self.measured_channel.channel_impulse_response[0, 0].copy()
+            )
         self.rx_signal_dict = signal
         return self.rx_signal_dict
 

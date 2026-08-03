@@ -209,3 +209,119 @@ def test_ui_mimo_controls_run_from_default_simulation_manager():
 
     assert result["params"].get("enable_mimo") is True
     assert result["metrics"]["ber"] == 0.0
+
+
+def test_measured_mimo_deterministic_and_rayleigh_modes_close_noiseless_link():
+    for scenario, gi_length, num_taps in (
+        ("8cm", 64, 49), ("12cm", 64, 37), ("50cm", 32, 16)
+    ):
+        for mode in ("deterministic", "pdp_rayleigh"):
+            params = _integration_params(
+                enable_multipath=True,
+                multipath_source="measured",
+                measured_channel_mode=mode,
+                measured_channel_scenario=scenario,
+                subwave_num=120,
+                gi_length=gi_length,
+                sample_rate=30e9,
+                oversampling=1,
+                mimo_csi_mode="ideal",
+                random_seed=7,
+                mimo_channel_seed=11,
+            )
+            transmitter, channel, _, decoded = _run_link(params)
+            tx_bits = transmitter.data_bits_dict["signal_stream"]
+            rx_bits = decoded["signal_stream"]
+            assert np.mean(tx_bits != rx_bits) == 0.0
+            assert channel.chan_true.shape == (2, 2, num_taps)
+            assert (
+                channel.rx_signal_dict["measured_channel_diagnostics"]["scenario"]
+                == scenario
+            )
+
+
+def test_measured_siso_impulse_replay_uses_selected_subchannel():
+    params = PHYParams()
+    params.update(
+        link_mode="ofdm",
+        enable_mimo=False,
+        num_tx=1,
+        num_rx=1,
+        num_spatial_streams=1,
+        enable_multipath=True,
+        multipath_source="measured",
+        measured_channel_mode="deterministic",
+        measured_channel_scenario="12cm",
+        measured_channel_tx_index=1,
+        measured_channel_rx_index=0,
+        gi_length=64,
+        oversampling=1,
+        enable_awgn=False,
+        enable_cfo=False,
+        enable_iq_imbalance=False,
+    )
+    impulse = np.zeros(128, dtype=np.complex128)
+    impulse[0] = 1.0
+    channel = THzChannel(params)
+    result = channel.run(
+        {
+            "signal_stream": impulse,
+            "sample_rate_Hz": 30e9,
+            "duration_seconds": len(impulse) / 30e9,
+            "signal_length": len(impulse),
+            "padding_bit_num": 0,
+        }
+    )
+    assert channel.chan_true.shape == (37,)
+    np.testing.assert_allclose(result["signal_stream"][:37], channel.chan_true)
+    assert np.isclose(np.sum(np.abs(channel.chan_true) ** 2), 1.0)
+
+
+def test_ui_measured_channel_mapping_applies_scene_rate_gi_and_mode():
+    from thz_sim_ui.services.backend import BackendService
+
+    mapped = BackendService.map_ui_params_to_phy_params(
+        {
+            "空间模式分区": "2×2 MIMO",
+            "波形类型": "多载波OFDM",
+            "CP长度": 8,
+            "过采样率": "4x",
+            "_channel_params": {
+                "enable_multipath": True,
+                "multipath_source": "measured",
+                "measured_channel_mode": "pdp_rayleigh",
+                "measured_channel_scenario": "50cm",
+                "measured_channel_retained_power": 0.95,
+            },
+        }
+    )
+    assert mapped["multipath_source"] == "measured"
+    assert mapped["measured_channel_mode"] == "pdp_rayleigh"
+    assert mapped["sample_rate"] == 30e9
+    assert mapped["oversampling"] == 1
+    assert mapped["gi_length"] == 32
+    assert mapped["enable_mimo"] is True
+
+    mapped_siso = BackendService.map_ui_params_to_phy_params(
+        {
+            "空间模式分区": "非 MIMO",
+            "波形类型": "单载波SC-FDE",
+            "过采样率": "4x",
+            "_channel_params": {
+                "enable_multipath": True,
+                "multipath_source": "measured",
+                "measured_channel_mode": "deterministic",
+                "measured_channel_scenario": "12cm",
+                "measured_channel_tx_index": 1,
+                "measured_channel_rx_index": 0,
+            },
+        }
+    )
+    assert mapped_siso["enable_mimo"] is False
+    assert mapped_siso["link_mode"] == "ofdm"
+    assert mapped_siso["sample_rate"] == 30e9
+    assert mapped_siso["oversampling"] == 1
+    assert mapped_siso["gi_length"] == 64
+    params = PHYParams()
+    manager = SimulationManager(base_params=params, save_plots=False)
+    assert manager.apply_dict_to_params(params, mapped_siso) == []

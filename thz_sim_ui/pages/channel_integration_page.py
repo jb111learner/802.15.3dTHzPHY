@@ -16,6 +16,29 @@ from PySide6.QtWidgets import (
 from thz_sim_ui.widgets.forms import combo, dspin, line, make_form_group, spin
 from thz_sim_ui.widgets.workbench import WorkbenchPage
 
+PLOT_FONT_FAMILY = [
+    "Times New Roman",
+    "DejaVu Serif",
+    "STIXGeneral",
+    # 上述西文字体没有中文字形；后两项仅作为 CJK glyph fallback。
+    "Noto Serif SC",
+    "Microsoft YaHei",
+]
+PLOT_STYLE = {
+    "font.family": PLOT_FONT_FAMILY,
+    "mathtext.fontset": "stix",
+    "axes.unicode_minus": False,
+    "axes.linewidth": 0.8,
+    "xtick.direction": "in",
+    "ytick.direction": "in",
+    "xtick.major.size": 4,
+    "ytick.major.size": 4,
+    "grid.alpha": 0.25,
+    "grid.linestyle": "--",
+    "grid.linewidth": 0.4,
+}
+plt.rcParams.update(PLOT_STYLE)
+
 CH_MODULES = ["AWGN模块", "多径模块", "CFO模块", "IQ异常模块", "功率放大器模块"]
 
 
@@ -88,6 +111,7 @@ class ChannelIntegrationPage(WorkbenchPage):
         r_layout.addWidget(self.constellation_label)
         r_layout.addLayout(btn_row)
         self.add_right_widget(right)
+        self._on_mp_source_changed()
 
     # =================================================================
     # 参数面板
@@ -108,6 +132,7 @@ class ChannelIntegrationPage(WorkbenchPage):
                 ("噪声系数 (dB)", self.awgn_noise_fig),
             ])
         elif name == "多径模块":
+            self.mp_source = combo(["仿真模型", "实测确定性回放", "实测PDP-Rayleigh"])
             self.mp_tdl_model = combo(["无", "TDL-A", "TDL-B", "TDL-C", "TDL-D", "TDL-E"])
             self.mp_tdl_ds = dspin(0.01, 1000, 30, suffix="ns")
             self.mp_tdl_vel = dspin(0, 120, 0, suffix="m/s")
@@ -118,7 +143,23 @@ class ChannelIntegrationPage(WorkbenchPage):
                 '[{"delay_samples": 0, "gain_type": "static", "gain": "1+0j"},'
                 ' {"delay_samples": 4, "gain_type": "static", "gain": "0.45+0j"},'
                 ' {"delay_samples": 12, "gain_type": "static", "gain": "0.25+0j"}]')
+            self.mp_measured_scenario = combo(["8 cm", "12 cm", "50 cm"])
+            self.mp_measured_retained = dspin(50, 100, 95, decimals=1, suffix="%")
+            self.mp_measured_siso_link = combo([
+                "TX0 → RX0 (h00)", "TX1 → RX0 (h01)",
+                "TX0 → RX1 (h10)", "TX1 → RX1 (h11)",
+            ])
+            self.mp_measured_info = QLabel()
+            self.mp_measured_info.setWordWrap(True)
+            self.mp_measured_info.setStyleSheet(
+                "color: #475569; background: #F8FAFC; padding: 6px;"
+            )
+            self.mp_source.currentIndexChanged.connect(self._on_mp_source_changed)
+            self.mp_measured_scenario.currentIndexChanged.connect(
+                self._on_measured_scenario_changed
+            )
             return make_form_group("多径参数", [
+                ("信道来源", self.mp_source),
                 ("TDL模型 (tdl_model)", self.mp_tdl_model),
                 ("RMS时延扩展 (ns)", self.mp_tdl_ds),
                 ("移动速度 (m/s)", self.mp_tdl_vel),
@@ -126,6 +167,10 @@ class ChannelIntegrationPage(WorkbenchPage):
                 ("功率归一化", self.mp_normalize),
                 ("Jakes正弦波数", self.mp_jakes),
                 ("自定义路径 (multipath_paths)", self.mp_paths_cfg),
+                ("实测场景", self.mp_measured_scenario),
+                ("累计功率保留率", self.mp_measured_retained),
+                ("SISO子链路", self.mp_measured_siso_link),
+                ("实测信道信息", self.mp_measured_info),
             ])
         elif name == "CFO模块":
             self.cfo_ppm = dspin(0, 100, 1, suffix="ppm")
@@ -216,11 +261,57 @@ class ChannelIntegrationPage(WorkbenchPage):
                        self.pa_B, self.pa_q1, self.pa_q2):
             widget.setEnabled(not from_dataset)
 
+    def _on_mp_source_changed(self, _idx: int = 0) -> None:
+        if not hasattr(self, "mp_source"):
+            return
+        measured = self.mp_source.currentText() != "仿真模型"
+        for widget in (
+            self.mp_tdl_model, self.mp_tdl_ds, self.mp_tdl_vel,
+            self.mp_fading, self.mp_normalize, self.mp_jakes, self.mp_paths_cfg,
+        ):
+            widget.setEnabled(not measured)
+        for widget in (
+            self.mp_measured_scenario, self.mp_measured_siso_link,
+            self.mp_measured_info,
+        ):
+            widget.setEnabled(measured)
+        self.mp_measured_retained.setEnabled(
+            self.mp_source.currentText() == "实测PDP-Rayleigh"
+        )
+        if measured:
+            self.module_checks["多径模块"].setChecked(True)
+            self.awgn_mode.setCurrentIndex(0)
+        self.awgn_mode.setEnabled(not measured)
+        self._on_awgn_mode_changed()
+        self._on_measured_scenario_changed()
+        if hasattr(self, "plot_btn"):
+            self.plot_btn.setText("预览实测PDP" if measured else "绘制星座")
+
+    def _on_measured_scenario_changed(self, _idx: int = 0) -> None:
+        if not hasattr(self, "mp_measured_info"):
+            return
+        scene = self.mp_measured_scenario.currentText()
+        info = {
+            "8 cm": ("THz_MIMO_08cm_2.npz", 1.6, 49, 64),
+            "12 cm": ("THz_MIMO_12cm_2.npz", 1.2, 37, 64),
+            "50 cm": ("THz_MIMO_50cm_2.npz", 0.5, 16, 32),
+        }[scene]
+        self.mp_measured_info.setText(
+            f"{info[0]}\n有效时延 {info[1]:g} ns，{info[2]} 抽头，"
+            f"运行时自动采用 GI={info[3]}。信道功率统一归一化。"
+        )
+
     # =================================================================
     # 绘制星座
     # =================================================================
     def _on_plot_constellation(self) -> None:
         """用少量测试样本生成信道影响后的星座图"""
+        if (
+            hasattr(self, "mp_source")
+            and self.mp_source.currentText() != "仿真模型"
+        ):
+            self._plot_measured_channel()
+            return
         from params.PHYParams import PHYParams
         from transmitter.THzTransmitter import THzTransmitter
         from channel.THzChannel import THzChannel
@@ -273,12 +364,7 @@ class ChannelIntegrationPage(WorkbenchPage):
             payload = y[start::sps]
 
             # 绘图
-            plt.rcParams.update({
-                "font.family": "serif", "axes.unicode_minus": False,
-                "axes.linewidth": 0.8, "xtick.direction": "in", "ytick.direction": "in",
-                "xtick.major.size": 4, "ytick.major.size": 4,
-                "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
-            })
+            plt.rcParams.update(PLOT_STYLE)
             fig, ax = plt.subplots(figsize=(5.5, 5.5))
             n = min(3000, len(payload))
             ax.scatter(np.real(payload[:n]), np.imag(payload[:n]), s=3, alpha=0.5, c="#D95F02")
@@ -302,6 +388,90 @@ class ChannelIntegrationPage(WorkbenchPage):
         finally:
             self.plot_btn.setEnabled(True)
             self.plot_btn.setText("绘制星座")
+
+    def _plot_measured_channel(self) -> None:
+        """预览原始PDP、物理时延窗和最终选中的随机TDL抽头。"""
+        from channel.MeasuredChannel import MeasuredChannel
+
+        self.plot_btn.setEnabled(False)
+        self.plot_btn.setText("生成中...")
+        try:
+            params = self.get_channel_params()
+            measured = MeasuredChannel(params)
+            preview = measured.preview_data()
+            raw = preview["raw_pdp"]
+            cropped = preview["cropped_pdp"]
+            selected = preview["selected_pdp"]
+            delays = preview["delays_ns"]
+            raw_delays = np.arange(len(raw)) / measured.SOURCE_SAMPLE_RATE_HZ * 1e9
+            eps = np.finfo(float).tiny
+
+            # 其他图表可能修改过全局 rcParams；每次绘制前恢复统一字体和样式。
+            plt.rcParams.update(PLOT_STYLE)
+            fig, ax = plt.subplots(figsize=(6.8, 4.8))
+            ax.plot(
+                raw_delays,
+                10 * np.log10(np.maximum(raw / np.max(raw), eps)),
+                color="#94A3B8", linewidth=0.8, label="原始聚合PDP",
+            )
+            ax.plot(
+                delays,
+                10 * np.log10(np.maximum(cropped / np.max(cropped), eps)),
+                color="#2563EB", linewidth=1.4, label="去噪/截断PDP",
+            )
+            indexes = preview["selected_indexes"]
+            ax.scatter(
+                delays[indexes],
+                10 * np.log10(np.maximum(selected[indexes] / np.max(selected), eps)),
+                color="#DC2626", s=24, zorder=3, label="选中主抽头",
+            )
+            noise_floor = float(np.mean(measured.noise_floor_per_link))
+            noise_floor_db = 10 * np.log10(max(noise_floor / np.max(raw), eps))
+            ax.axhline(
+                noise_floor_db, color="#64748B", linestyle=":", linewidth=0.9,
+                label=f"估计噪声底 {noise_floor_db:.1f} dB",
+            )
+            max_delay = measured.scenario_info["max_delay_ns"]
+            ax.axvline(max_delay, color="#111827", linestyle="--", linewidth=0.9,
+                       label=f"最大时延 {max_delay:g} ns")
+            ax.set_xlim(0, max(2.0, max_delay * 1.35))
+            ax.set_ylim(-50, 3)
+            ax.set_xlabel("时延 (ns)")
+            ax.set_ylabel("相对功率 (dB)")
+            ax.set_title(f"{measured.scenario} 实测信道 PDP")
+            ax.grid(True, alpha=0.25, linestyle="--")
+            ax.legend(fontsize=8)
+            outside = measured.diagnostics["outside_window_peak_relative_db"]
+            above_noise = measured.diagnostics["outside_window_peak_above_noise_db"]
+            judgment = (
+                "存在显著窗外强径"
+                if measured.diagnostics["significant_power_outside_window"]
+                else "无显著窗外强径"
+            )
+            ax.text(
+                0.98, 0.03,
+                f"窗外最强径：{outside:.1f} dB（高于噪声底 {above_noise:.1f} dB）\n"
+                f"判定：{judgment}",
+                transform=ax.transAxes, ha="right", va="bottom", fontsize=8,
+                bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85,
+                      "edgecolor": "#CBD5E1"},
+            )
+            fig.tight_layout()
+
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
+            plt.close(fig)
+            buf.seek(0)
+            pixmap = QPixmap()
+            pixmap.loadFromData(buf.read(), "PNG")
+            self._original_pixmap = pixmap
+            self._update_pixmap()
+            self.constellation_label.setText("")
+        except Exception as exc:
+            self.constellation_label.setText(f"预览失败: {exc}")
+        finally:
+            self.plot_btn.setEnabled(True)
+            self.plot_btn.setText("预览实测PDP")
 
     def _update_pixmap(self) -> None:
         if self._original_pixmap is None:
@@ -334,20 +504,42 @@ class ChannelIntegrationPage(WorkbenchPage):
 
         mp_on = self.module_checks["多径模块"].isChecked()
         p["enable_multipath"] = mp_on
+        p["multipath_source"] = "simulated"
         if mp_on:
-            tdl = self.mp_tdl_model.currentText()
-            if tdl != "无":
-                p["tdl_model"] = tdl
-            p["tdl_delay_spread_ns"] = self.mp_tdl_ds.value()
-            p["tdl_velocity_mps"] = self.mp_tdl_vel.value()
-            p["fading_model"] = self.mp_fading.currentText()
-            p["normalize_channel_power"] = (self.mp_normalize.currentText() == "是")
-            p["tdl_jakes_num_sinusoids"] = self.mp_jakes.value()
-            import ast
-            try:
-                p["multipath_paths"] = ast.literal_eval(self.mp_paths_cfg.text())
-            except (ValueError, SyntaxError):
-                pass
+            measured = self.mp_source.currentText() != "仿真模型"
+            if measured:
+                p["multipath_source"] = "measured"
+                p["measured_channel_mode"] = (
+                    "pdp_rayleigh"
+                    if self.mp_source.currentText() == "实测PDP-Rayleigh"
+                    else "deterministic"
+                )
+                p["measured_channel_scenario"] = {
+                    "8 cm": "8cm", "12 cm": "12cm", "50 cm": "50cm",
+                }[self.mp_measured_scenario.currentText()]
+                p["measured_channel_retained_power"] = (
+                    self.mp_measured_retained.value() / 100.0
+                )
+                p["measured_channel_tx_index"], p["measured_channel_rx_index"] = {
+                    "TX0 → RX0 (h00)": (0, 0),
+                    "TX1 → RX0 (h01)": (1, 0),
+                    "TX0 → RX1 (h10)": (0, 1),
+                    "TX1 → RX1 (h11)": (1, 1),
+                }[self.mp_measured_siso_link.currentText()]
+            else:
+                tdl = self.mp_tdl_model.currentText()
+                if tdl != "无":
+                    p["tdl_model"] = tdl
+                p["tdl_delay_spread_ns"] = self.mp_tdl_ds.value()
+                p["tdl_velocity_mps"] = self.mp_tdl_vel.value()
+                p["fading_model"] = self.mp_fading.currentText()
+                p["normalize_channel_power"] = (self.mp_normalize.currentText() == "是")
+                p["tdl_jakes_num_sinusoids"] = self.mp_jakes.value()
+                import ast
+                try:
+                    p["multipath_paths"] = ast.literal_eval(self.mp_paths_cfg.text())
+                except (ValueError, SyntaxError):
+                    pass
 
         cfo_on = self.module_checks["CFO模块"].isChecked()
         p["enable_cfo"] = cfo_on
@@ -411,6 +603,13 @@ class ChannelIntegrationPage(WorkbenchPage):
         self.awgn_noise_fig.setValue(float(ch.get("noise_figure_db", 0) or 0))
         mp_on = ch.get("enable_multipath", False)
         self.module_checks["多径模块"].setChecked(bool(mp_on))
+        measured_source = str(ch.get("multipath_source", "simulated")) == "measured"
+        measured_mode = str(ch.get("measured_channel_mode", "deterministic"))
+        _set_combo(
+            self.mp_source,
+            ("实测PDP-Rayleigh" if measured_mode == "pdp_rayleigh"
+             else "实测确定性回放") if measured_source else "仿真模型",
+        )
         tdl = str(ch.get("tdl_model", "无") or "无")
         _set_combo(self.mp_tdl_model, tdl)
         self.mp_tdl_ds.setValue(float(ch.get("tdl_delay_spread_ns", 30)))
@@ -418,6 +617,24 @@ class ChannelIntegrationPage(WorkbenchPage):
         _set_combo(self.mp_fading, str(ch.get("fading_model", "static")))
         _set_combo(self.mp_normalize, "是" if ch.get("normalize_channel_power") else "否")
         self.mp_jakes.setValue(int(ch.get("tdl_jakes_num_sinusoids", 48)))
+        _set_combo(
+            self.mp_measured_scenario,
+            {"8cm": "8 cm", "12cm": "12 cm", "50cm": "50 cm"}.get(
+                str(ch.get("measured_channel_scenario", "8cm")), "8 cm"
+            ),
+        )
+        self.mp_measured_retained.setValue(
+            float(ch.get("measured_channel_retained_power", 0.95)) * 100.0
+        )
+        tx_index = int(ch.get("measured_channel_tx_index", 0))
+        rx_index = int(ch.get("measured_channel_rx_index", 0))
+        _set_combo(self.mp_measured_siso_link, {
+            (0, 0): "TX0 → RX0 (h00)",
+            (1, 0): "TX1 → RX0 (h01)",
+            (0, 1): "TX0 → RX1 (h10)",
+            (1, 1): "TX1 → RX1 (h11)",
+        }.get((tx_index, rx_index), "TX0 → RX0 (h00)"))
+        self._on_mp_source_changed()
         cfo_on = ch.get("enable_cfo", False)
         self.module_checks["CFO模块"].setChecked(bool(cfo_on))
         self.cfo_ppm.setValue(float(ch.get("ppm", 1)))

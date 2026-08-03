@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from channel.MIMOChannel import MIMOChannel
+from channel.MeasuredChannel import MeasuredChannel
 from params.PHYParams import PHYParams
 from receiver.MIMOChannelEstimator import MIMOChannelEstimator
 from receiver.MIMODetector import MIMODetector
@@ -88,3 +89,60 @@ def test_invalid_stream_count_is_rejected():
             num_spatial_streams=3,
         )
 
+
+@pytest.mark.parametrize(
+    "scenario, expected_length, expected_paths",
+    [("8cm", 49, 6), ("12cm", 37, 4), ("50cm", 16, 5)],
+)
+def test_measured_channel_builds_expected_window_and_dominant_paths(
+    scenario, expected_length, expected_paths
+):
+    channel = MeasuredChannel(
+        {
+            "measured_channel_scenario": scenario,
+            "measured_channel_mode": "deterministic",
+            "measured_channel_retained_power": 0.95,
+            "random_seed": 7,
+        }
+    )
+    taps = channel.load_taps(full_mimo=True)
+    assert taps.shape == (2, 2, expected_length)
+    assert len(channel.selected_path_indexes) == expected_paths
+    assert np.isclose(np.sum(np.abs(taps) ** 2), 2.0)
+    assert channel.diagnostics["retained_pdp_power_ratio"] >= 0.95
+    assert channel.diagnostics["raw_in_window_power_ratio"] > 0.80
+
+
+def test_measured_rayleigh_ensemble_converges_to_selected_pdp():
+    channel = MeasuredChannel(
+        {
+            "measured_channel_scenario": "8cm",
+            "measured_channel_mode": "pdp_rayleigh",
+            "measured_channel_retained_power": 0.95,
+            "random_seed": 19,
+        }
+    )
+    ensemble_pdp = np.zeros(channel.num_effective_taps)
+    realizations = 2000
+    for _ in range(realizations):
+        taps = channel.random_rayleigh_taps(full_mimo=True)
+        ensemble_pdp += np.sum(np.abs(taps) ** 2, axis=(0, 1)) / 2.0
+    ensemble_pdp /= realizations
+    np.testing.assert_allclose(
+        ensemble_pdp, channel.selected_pdp, atol=8e-3, rtol=5e-2
+    )
+
+
+def test_measured_siso_selection_is_unit_power_and_reproducible():
+    config = {
+        "measured_channel_scenario": "12cm",
+        "measured_channel_mode": "deterministic",
+        "measured_channel_tx_index": 1,
+        "measured_channel_rx_index": 0,
+        "random_seed": 5,
+    }
+    first = MeasuredChannel(config).load_taps(full_mimo=False)
+    second = MeasuredChannel(config).load_taps(full_mimo=False)
+    assert first.shape == (1, 1, 37)
+    assert np.isclose(np.sum(np.abs(first) ** 2), 1.0)
+    np.testing.assert_array_equal(first, second)

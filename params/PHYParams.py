@@ -87,6 +87,14 @@ class PHYParams(BaseParams):
             "mimo_guard_samples": 32,
             "mimo_sync_search_samples": 64,
 
+            # THz-MIMO 实测信道：确定性回放或由实测 PDP 驱动的 Rayleigh TDL。
+            "multipath_source": "simulated",          # simulated / measured
+            "measured_channel_mode": "deterministic", # deterministic / pdp_rayleigh
+            "measured_channel_scenario": "8cm",       # 8cm / 12cm / 50cm
+            "measured_channel_retained_power": 0.95,   # 随机模式累计功率保留率
+            "measured_channel_tx_index": 0,             # SISO: 选取的 TX
+            "measured_channel_rx_index": 0,             # SISO: 选取的 RX
+
 
             # 调制相关
             "NCBPS": 6,                                                                             # 每符号比特数（1=BPSK,2=QPSK,3=8PSK,4=16QAM,6=64QAM）
@@ -309,6 +317,37 @@ class PHYParams(BaseParams):
                 raise ValueError("mimo_csi_mode 仅支持 'estimated' 或 'ideal'")
             if int(self.get("mimo_num_taps")) - 1 > int(self.get("gi_length")):
                 raise ValueError("mimo_num_taps - 1 不能超过 gi_length")
+
+        multipath_source = str(self.get("multipath_source", "simulated")).lower()
+        if multipath_source not in {"simulated", "measured"}:
+            raise ValueError("multipath_source 仅支持 simulated / measured")
+        measured_mode = str(
+            self.get("measured_channel_mode", "deterministic")
+        ).lower()
+        if measured_mode not in {"deterministic", "pdp_rayleigh"}:
+            raise ValueError(
+                "measured_channel_mode 仅支持 deterministic / pdp_rayleigh"
+            )
+        scenario = str(self.get("measured_channel_scenario", "8cm")).lower()
+        if scenario not in {"8cm", "12cm", "50cm"}:
+            raise ValueError("measured_channel_scenario 仅支持 8cm / 12cm / 50cm")
+        retained_power = float(self.get("measured_channel_retained_power", 0.95))
+        if not 0.0 < retained_power <= 1.0:
+            raise ValueError("measured_channel_retained_power 必须位于 (0, 1]")
+        for key in ("measured_channel_tx_index", "measured_channel_rx_index"):
+            if int(self.get(key, 0)) not in {0, 1}:
+                raise ValueError(f"{key} 必须为 0 或 1")
+
+        if multipath_source == "measured":
+            required_gi = {"8cm": 64, "12cm": 64, "50cm": 32}[scenario]
+            if link_mode != "ofdm":
+                raise ValueError("实测信道当前仅支持 OFDM 链路")
+            if int(self.get("gi_length")) < required_gi:
+                raise ValueError(
+                    f"{scenario} 实测信道要求 gi_length >= {required_gi}"
+                )
+            if not self.get("enable_mimo") and int(self.get("oversampling")) != 1:
+                raise ValueError("SISO 实测信道要求 oversampling=1")
 
 if __name__ == "__main__":
     params = PHYParams()

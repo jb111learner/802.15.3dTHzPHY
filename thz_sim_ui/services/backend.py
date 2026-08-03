@@ -931,6 +931,24 @@ class BackendService(QObject):
             if mapped_params.get("enable_cfo"):
                 mapped_params.setdefault("enable_cfo_compensation", True)
 
+        # 实测抽头以 30 GHz 为基准，且只用于归一化的 OFDM 小尺度信道。
+        # 场景选择同时确定物理时延窗对应的安全 GI，避免把尾部测量噪声
+        # 当成需要覆盖的 512 抽头信道。
+        if str(mapped_params.get("multipath_source", "simulated")) == "measured":
+            scenario = str(mapped_params.get("measured_channel_scenario", "8cm"))
+            gi_by_scenario = {"8cm": 64, "12cm": 64, "50cm": 32}
+            if scenario not in gi_by_scenario:
+                raise ValueError(f"未知实测信道场景：{scenario}")
+            mapped_params.update({
+                "enable_multipath": True,
+                "link_mode": "ofdm",
+                "sample_rate": 30e9,
+                "oversampling": 1,
+                "gi_length": gi_by_scenario[scenario],
+                "noise_temperature": None,
+                "noise_figure_db": None,
+            })
+
         # 兼容旧参数名 (向后兼容旧的 config.json)
         if '数据帧长度' in ui_params and 'subframe_length' not in mapped_params:
             mapped_params['subframe_length'] = int(ui_params['数据帧长度'])

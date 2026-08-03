@@ -110,15 +110,31 @@ class MIMOReceiverProcessor:
         )
 
         true_channel = signal_dict.get("mimo_channel_frequency_response")
-        channel_nmse = None
+        timing_shift = sync_offset - int(self.frame.get("guard_length", 0))
+        aligned_true_channel = None
         if true_channel is not None:
-            channel_nmse = MIMOChannelEstimator.nmse(estimated_channel, true_channel)
+            aligned_true_channel = np.asarray(true_channel)
+            if timing_shift:
+                phase = np.exp(
+                    1j
+                    * 2.0
+                    * np.pi
+                    * np.arange(self.nfft, dtype=float)
+                    * timing_shift
+                    / self.nfft
+                )
+                aligned_true_channel = aligned_true_channel * phase[None, None, :]
+        channel_nmse = None
+        if aligned_true_channel is not None:
+            channel_nmse = MIMOChannelEstimator.nmse(
+                estimated_channel, aligned_true_channel
+            )
 
         csi_mode = str(self.params.get("mimo_csi_mode", "estimated")).lower()
         if csi_mode == "ideal":
             if true_channel is None:
                 raise ValueError("mimo_csi_mode='ideal' 需要信道提供真实频率响应")
-            detection_channel = np.asarray(true_channel)
+            detection_channel = aligned_true_channel
         elif csi_mode == "estimated":
             detection_channel = estimated_channel
         else:
@@ -165,6 +181,7 @@ class MIMOReceiverProcessor:
             "mimo_channel_estimate": estimated_channel,
             "mimo_channel_nmse": channel_nmse,
             "mimo_sync_offset": sync_offset,
+            "mimo_timing_shift_samples": timing_shift,
             "mimo_sync_metric": sync_metric,
             "estimated_cfo_Hz": estimated_cfo,
             "noise_var": mean_post_variance,

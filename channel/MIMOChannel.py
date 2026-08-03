@@ -18,6 +18,7 @@ class MIMOChannel:
         if self.random_seed is None:
             self.random_seed = params.get("random_seed")
         self.rng = np.random.default_rng(self.random_seed)
+        self.measurement_diagnostics = None
         self.channel_impulse_response = (
             self._generate_channel()
             if channel_impulse_response is None
@@ -41,6 +42,18 @@ class MIMOChannel:
         return taps.copy()
 
     def _generate_channel(self):
+        if str(self.params.get("multipath_source", "simulated")).lower() == "measured":
+            if (self.num_rx, self.num_tx) != (2, 2):
+                raise ValueError("完整 THz-MIMO 实测信道仅支持 num_rx=num_tx=2")
+            from channel.MeasuredChannel import MeasuredChannel
+
+            measured = MeasuredChannel(self.params)
+            taps = measured.load_taps(full_mimo=True)
+            if taps.shape[-1] - 1 > int(self.params.get("gi_length")):
+                raise ValueError("实测 MIMO 信道有效长度超过 gi_length")
+            self.measurement_diagnostics = dict(measured.diagnostics)
+            return taps
+
         model = str(self.params.get("mimo_channel_model", "iid_rayleigh")).lower()
         num_taps = int(self.params.get("mimo_num_taps", 4))
         if not self.params.get("enable_multipath", False):
@@ -181,5 +194,8 @@ class MIMOChannel:
             mimo_channel_impulse_response=self.channel_impulse_response.copy(),
             mimo_channel_frequency_response=self.channel_frequency_response.copy(),
         )
+        if self.measurement_diagnostics is not None:
+            result["measured_channel_diagnostics"] = dict(
+                self.measurement_diagnostics
+            )
         return result
-
