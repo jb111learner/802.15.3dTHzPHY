@@ -146,3 +146,50 @@ def test_measured_siso_selection_is_unit_power_and_reproducible():
     assert first.shape == (1, 1, 37)
     assert np.isclose(np.sum(np.abs(first) ** 2), 1.0)
     np.testing.assert_array_equal(first, second)
+
+
+def test_deterministic_preview_uses_selected_siso_subchannel():
+    previews = {}
+    for rx_index in (0, 1):
+        for tx_index in (0, 1):
+            channel = MeasuredChannel(
+                {
+                    "measured_channel_scenario": "12cm",
+                    "measured_channel_mode": "deterministic",
+                    "measured_channel_tx_index": tx_index,
+                    "measured_channel_rx_index": rx_index,
+                }
+            )
+            preview = channel.preview_data()
+            key = (rx_index, tx_index)
+            previews[key] = preview["cropped_pdp"]
+            np.testing.assert_array_equal(
+                preview["cropped_pdp"],
+                np.abs(channel.cropped_taps[rx_index, tx_index]) ** 2,
+            )
+            assert preview["scope"] == "selected_siso_link"
+            assert preview["link_label"] == f"h{rx_index}{tx_index}"
+            assert len(preview["selected_indexes"]) == 0
+
+    # 防止预览接口再次退化为对四条链路求平均后返回同一条曲线。
+    for first_key, first_pdp in previews.items():
+        for second_key, second_pdp in previews.items():
+            if first_key < second_key:
+                assert not np.array_equal(first_pdp, second_pdp)
+
+
+def test_rayleigh_preview_keeps_aggregate_pdp_and_dominant_paths():
+    channel = MeasuredChannel(
+        {
+            "measured_channel_scenario": "12cm",
+            "measured_channel_mode": "pdp_rayleigh",
+            "measured_channel_retained_power": 0.95,
+        }
+    )
+    preview = channel.preview_data()
+
+    assert preview["scope"] == "aggregate_mimo"
+    np.testing.assert_array_equal(preview["cropped_pdp"], channel.aggregate_pdp)
+    np.testing.assert_array_equal(
+        preview["selected_indexes"], channel.selected_path_indexes
+    )

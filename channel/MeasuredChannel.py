@@ -348,16 +348,40 @@ class MeasuredChannel:
         )
         return result
 
-    def preview_data(self) -> dict[str, np.ndarray]:
-        """返回前端绘图所需的纯数值数据。"""
+    def preview_data(self) -> dict[str, Any]:
+        """返回与当前回放模式一致的前端 PDP 数据。"""
+        if self.mode == self.MODE_DETERMINISTIC:
+            # 确定性 SISO 回放实际使用用户选择的复数子链路，预览也必须展示
+            # 同一条链路，不能继续用四条 MIMO 链路的聚合 PDP。
+            raw_pdp = np.abs(self.raw_taps[self.rx_index, self.tx_index]) ** 2
+            cropped_pdp = (
+                np.abs(self.cropped_taps[self.rx_index, self.tx_index]) ** 2
+            )
+            selected_pdp = np.zeros_like(cropped_pdp, dtype=float)
+            selected_indexes = np.zeros(0, dtype=int)
+            noise_floor_power = float(
+                self.noise_floor_per_link[self.rx_index, self.tx_index]
+            )
+            scope = "selected_siso_link"
+        else:
+            raw_pdp = np.mean(np.abs(self.raw_taps) ** 2, axis=(0, 1))
+            cropped_pdp = self.aggregate_pdp.copy()
+            selected_pdp = self.selected_pdp.copy()
+            selected_indexes = self.selected_path_indexes.copy()
+            noise_floor_power = float(np.mean(self.noise_floor_per_link))
+            scope = "aggregate_mimo"
+
         return {
-            "raw_pdp": np.mean(np.abs(self.raw_taps) ** 2, axis=(0, 1)),
-            "cropped_pdp": self.aggregate_pdp.copy(),
-            "selected_pdp": self.selected_pdp.copy(),
-            "selected_indexes": self.selected_path_indexes.copy(),
+            "raw_pdp": raw_pdp,
+            "cropped_pdp": cropped_pdp,
+            "selected_pdp": selected_pdp,
+            "selected_indexes": selected_indexes,
             "delays_ns": (
                 np.arange(len(self.aggregate_pdp))
                 / self.SOURCE_SAMPLE_RATE_HZ
                 * 1e9
             ),
+            "noise_floor_power": noise_floor_power,
+            "scope": scope,
+            "link_label": f"h{self.rx_index}{self.tx_index}",
         }

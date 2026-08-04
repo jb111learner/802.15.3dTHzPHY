@@ -155,10 +155,11 @@ class ChannelIntegrationPage(WorkbenchPage):
                 "color: #475569; background: #F8FAFC; padding: 6px;"
             )
             self.mp_source.currentIndexChanged.connect(self._on_mp_source_changed)
+            self.mp_tdl_model.currentIndexChanged.connect(self._on_mp_source_changed)
             self.mp_measured_scenario.currentIndexChanged.connect(
                 self._on_measured_scenario_changed
             )
-            return make_form_group("多径参数", [
+            self.mp_group = make_form_group("多径参数", [
                 ("信道来源", self.mp_source),
                 ("TDL模型 (tdl_model)", self.mp_tdl_model),
                 ("RMS时延扩展 (ns)", self.mp_tdl_ds),
@@ -172,6 +173,7 @@ class ChannelIntegrationPage(WorkbenchPage):
                 ("SISO子链路", self.mp_measured_siso_link),
                 ("实测信道信息", self.mp_measured_info),
             ])
+            return self.mp_group
         elif name == "CFO模块":
             self.cfo_ppm = dspin(0, 100, 1, suffix="ppm")
             self.cfo_enable_phase_noise = combo(["否", "是"])
@@ -264,20 +266,31 @@ class ChannelIntegrationPage(WorkbenchPage):
     def _on_mp_source_changed(self, _idx: int = 0) -> None:
         if not hasattr(self, "mp_source"):
             return
-        measured = self.mp_source.currentText() != "仿真模型"
-        for widget in (
-            self.mp_tdl_model, self.mp_tdl_ds, self.mp_tdl_vel,
-            self.mp_fading, self.mp_normalize, self.mp_jakes, self.mp_paths_cfg,
-        ):
-            widget.setEnabled(not measured)
-        for widget in (
-            self.mp_measured_scenario, self.mp_measured_siso_link,
-            self.mp_measured_info,
-        ):
-            widget.setEnabled(measured)
-        self.mp_measured_retained.setEnabled(
-            self.mp_source.currentText() == "实测PDP-Rayleigh"
-        )
+        source = self.mp_source.currentText()
+        measured = source != "仿真模型"
+        measured_rayleigh = source == "实测PDP-Rayleigh"
+        standard_tdl = not measured and self.mp_tdl_model.currentText() != "无"
+
+        # 只展示当前模式真正参与计算的参数。TDL 模式会在后端强制静态协议
+        # 实现并忽略自定义路径/归一化；实测模式则完全绕过仿真多径参数。
+        visibility = {
+            self.mp_tdl_model: not measured,
+            self.mp_tdl_ds: standard_tdl,
+            self.mp_tdl_vel: standard_tdl,
+            self.mp_fading: not measured and not standard_tdl,
+            self.mp_normalize: not measured and not standard_tdl,
+            self.mp_jakes: standard_tdl,
+            self.mp_paths_cfg: not measured and not standard_tdl,
+            self.mp_measured_scenario: measured,
+            self.mp_measured_retained: measured_rayleigh,
+            # 当前 Rayleigh-SISO 使用聚合 PDP，TX/RX 子链路索引不参与生成。
+            self.mp_measured_siso_link: measured and not measured_rayleigh,
+            self.mp_measured_info: measured,
+        }
+        for widget, visible in visibility.items():
+            self._set_mp_row_visible(widget, visible)
+            widget.setEnabled(visible)
+
         if measured:
             self.module_checks["多径模块"].setChecked(True)
             self.awgn_mode.setCurrentIndex(0)
@@ -286,6 +299,20 @@ class ChannelIntegrationPage(WorkbenchPage):
         self._on_measured_scenario_changed()
         if hasattr(self, "plot_btn"):
             self.plot_btn.setText("预览实测PDP" if measured else "绘制星座")
+
+    def _set_mp_row_visible(self, widget: QWidget, visible: bool) -> None:
+        """同步隐藏 QFormLayout 的字段和标签，避免留下空白参数名。"""
+        if not hasattr(self, "mp_group"):
+            return
+        layout = self.mp_group.layout()
+        if hasattr(layout, "setRowVisible"):
+            layout.setRowVisible(widget, visible)
+            return
+        # 兼容缺少 QFormLayout.setRowVisible() 的旧版 Qt。
+        label = layout.labelForField(widget)
+        if label is not None:
+            label.setVisible(visible)
+        widget.setVisible(visible)
 
     def _on_measured_scenario_changed(self, _idx: int = 0) -> None:
         if not hasattr(self, "mp_measured_info"):
@@ -404,6 +431,7 @@ class ChannelIntegrationPage(WorkbenchPage):
             selected = preview["selected_pdp"]
             delays = preview["delays_ns"]
             raw_delays = np.arange(len(raw)) / measured.SOURCE_SAMPLE_RATE_HZ * 1e9
+            selected_link = preview["scope"] == "selected_siso_link"
             eps = np.finfo(float).tiny
 
             # 其他图表可能修改过全局 rcParams；每次绘制前恢复统一字体和样式。
@@ -412,20 +440,23 @@ class ChannelIntegrationPage(WorkbenchPage):
             ax.plot(
                 raw_delays,
                 10 * np.log10(np.maximum(raw / np.max(raw), eps)),
-                color="#94A3B8", linewidth=0.8, label="原始聚合PDP",
+                color="#94A3B8", linewidth=0.8,
+                label="原始子链路PDP" if selected_link else "原始聚合PDP",
             )
             ax.plot(
                 delays,
                 10 * np.log10(np.maximum(cropped / np.max(cropped), eps)),
-                color="#2563EB", linewidth=1.4, label="去噪/截断PDP",
+                color="#2563EB", linewidth=1.4,
+                label="截断子链路PDP" if selected_link else "去噪/截断PDP",
             )
             indexes = preview["selected_indexes"]
-            ax.scatter(
-                delays[indexes],
-                10 * np.log10(np.maximum(selected[indexes] / np.max(selected), eps)),
-                color="#DC2626", s=24, zorder=3, label="选中主抽头",
-            )
-            noise_floor = float(np.mean(measured.noise_floor_per_link))
+            if len(indexes):
+                ax.scatter(
+                    delays[indexes],
+                    10 * np.log10(np.maximum(selected[indexes] / np.max(selected), eps)),
+                    color="#DC2626", s=24, zorder=3, label="选中主抽头",
+                )
+            noise_floor = float(preview["noise_floor_power"])
             noise_floor_db = 10 * np.log10(max(noise_floor / np.max(raw), eps))
             ax.axhline(
                 noise_floor_db, color="#64748B", linestyle=":", linewidth=0.9,
@@ -438,24 +469,32 @@ class ChannelIntegrationPage(WorkbenchPage):
             ax.set_ylim(-50, 3)
             ax.set_xlabel("时延 (ns)")
             ax.set_ylabel("相对功率 (dB)")
-            ax.set_title(f"{measured.scenario} 实测信道 PDP")
+            if selected_link:
+                ax.set_title(
+                    f"{measured.scenario} 确定性回放 {preview['link_label']} PDP"
+                )
+            else:
+                ax.set_title(f"{measured.scenario} 实测聚合 PDP-Rayleigh")
             ax.grid(True, alpha=0.25, linestyle="--")
             ax.legend(fontsize=8)
-            outside = measured.diagnostics["outside_window_peak_relative_db"]
-            above_noise = measured.diagnostics["outside_window_peak_above_noise_db"]
-            judgment = (
-                "存在显著窗外强径"
-                if measured.diagnostics["significant_power_outside_window"]
-                else "无显著窗外强径"
-            )
-            ax.text(
-                0.98, 0.03,
-                f"窗外最强径：{outside:.1f} dB（高于噪声底 {above_noise:.1f} dB）\n"
-                f"判定：{judgment}",
-                transform=ax.transAxes, ha="right", va="bottom", fontsize=8,
-                bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85,
-                      "edgecolor": "#CBD5E1"},
-            )
+            # 现有窗外强径诊断是四链路聚合统计，只放在聚合 PDP 图上，避免
+            # 在确定性单链路图中展示与当前 h_rt 不一致的诊断结论。
+            if not selected_link:
+                outside = measured.diagnostics["outside_window_peak_relative_db"]
+                above_noise = measured.diagnostics["outside_window_peak_above_noise_db"]
+                judgment = (
+                    "存在显著窗外强径"
+                    if measured.diagnostics["significant_power_outside_window"]
+                    else "无显著窗外强径"
+                )
+                ax.text(
+                    0.98, 0.03,
+                    f"窗外最强径：{outside:.1f} dB（高于噪声底 {above_noise:.1f} dB）\n"
+                    f"判定：{judgment}",
+                    transform=ax.transAxes, ha="right", va="bottom", fontsize=8,
+                    bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85,
+                          "edgecolor": "#CBD5E1"},
+                )
             fig.tight_layout()
 
             buf = io.BytesIO()
@@ -533,6 +572,9 @@ class ChannelIntegrationPage(WorkbenchPage):
                 p["tdl_delay_spread_ns"] = self.mp_tdl_ds.value()
                 p["tdl_velocity_mps"] = self.mp_tdl_vel.value()
                 p["fading_model"] = self.mp_fading.currentText()
+                # 旧版自定义路径只有关闭 static_channel 后，frame/block
+                # 衰落选择才会真正生成随机路径增益。
+                p["static_channel"] = self.mp_fading.currentText() == "static"
                 p["normalize_channel_power"] = (self.mp_normalize.currentText() == "是")
                 p["tdl_jakes_num_sinusoids"] = self.mp_jakes.value()
                 import ast
