@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy.signal import resample_poly
 
 
 class MeasuredChannel:
@@ -310,16 +311,76 @@ class MeasuredChannel:
         ) / np.sqrt(2.0)
         return np.sqrt(profile)[None, None, :] * gaussian
 
-    def load_taps(self, full_mimo: bool | None = None) -> np.ndarray:
+    def _resample_complex_taps(
+        self, taps: np.ndarray, target_sample_rate_hz: float
+    ) -> np.ndarray:
+        """将 30 GHz 复数 CIR 插值到整数倍目标采样率并保持链路功率。"""
+        target_rate = float(target_sample_rate_hz)
+        ratio = target_rate / self.SOURCE_SAMPLE_RATE_HZ
+        factor = int(round(ratio))
+        if factor < 1 or not np.isclose(ratio, factor, rtol=1e-9, atol=1e-12):
+            raise ValueError(
+                "实测信道仅支持 30 GHz 的正整数倍采样率，"
+                f"当前为 {target_rate:g} Hz"
+            )
+        if factor == 1:
+            return taps.copy()
+
+        source_power = np.sum(np.abs(taps) ** 2, axis=-1, keepdims=True)
+        interpolated = resample_poly(
+            taps,
+            up=factor,
+            down=1,
+            axis=-1,
+            window=("kaiser", 8.6),
+            padtype="constant",
+        )
+        # N 个抽头覆盖 (N-1)/Fs 秒；提高采样率后应覆盖同一物理时延窗。
+        target_length = (taps.shape[-1] - 1) * factor + 1
+        interpolated = interpolated[..., :target_length]
+
+        target_power = np.sum(
+            np.abs(interpolated) ** 2, axis=-1, keepdims=True
+        )
+        scale = np.sqrt(
+            source_power / np.maximum(target_power, np.finfo(float).tiny)
+        )
+        return interpolated * scale
+
+    def load_taps(
+        self,
+        full_mimo: bool | None = None,
+        sample_rate_hz: float | None = None,
+    ) -> np.ndarray:
         if full_mimo is None:
             full_mimo = bool(self._get("enable_mimo", False))
         if self.mode == self.MODE_DETERMINISTIC:
             taps = self.deterministic_taps(bool(full_mimo))
         else:
             taps = self.random_rayleigh_taps(bool(full_mimo))
+        target_rate = (
+            self.SOURCE_SAMPLE_RATE_HZ
+            if sample_rate_hz is None else float(sample_rate_hz)
+        )
+        taps = self._resample_complex_taps(taps, target_rate)
+        factor = int(round(target_rate / self.SOURCE_SAMPLE_RATE_HZ))
         self.channel_impulse_response = taps.copy()
         self.diagnostics["output_shape"] = list(taps.shape)
         self.diagnostics["output_power"] = float(np.sum(np.abs(taps) ** 2))
+        self.diagnostics["waveform_sample_rate_Hz"] = target_rate
+        self.diagnostics["resampling_factor"] = factor
+        self.diagnostics["resampled_tap_spacing_s"] = 1.0 / target_rate
+        self.diagnostics["resampled_tap_count"] = int(taps.shape[-1])
+        self.diagnostics["recommended_gi_length_high_rate"] = int(
+            self.scenario_info["gi_length"] * factor
+        )
+        self.diagnostics["selected_path_indexes_resampled"] = (
+            self.selected_path_indexes * factor
+        ).astype(int).tolist()
+        power_profile = np.sum(np.abs(taps) ** 2, axis=(0, 1))
+        self.diagnostics["resampled_rms_delay_spread_ns"] = (
+            self._rms_delay_spread_ns(power_profile, target_rate)
+        )
         self.diagnostics["siso_rx_index"] = self.rx_index
         self.diagnostics["siso_tx_index"] = self.tx_index
         return taps
@@ -330,12 +391,28 @@ class MeasuredChannel:
         if signal.ndim != 1:
             raise ValueError("SISO 实测信道要求一维 signal_stream")
         sample_rate = float(signal_dict["sample_rate_Hz"])
-        if not np.isclose(sample_rate, self.SOURCE_SAMPLE_RATE_HZ, rtol=1e-9):
+        oversampling = int(self._get("oversampling", 1))
+        expected_sample_rate = self.SOURCE_SAMPLE_RATE_HZ * oversampling
+        if not np.isclose(sample_rate, expected_sample_rate, rtol=1e-9):
             raise ValueError(
-                "实测信道抽头基准采样率为 30 GHz，"
-                f"当前信号采样率为 {sample_rate:g} Hz；请使用 OFDM、30 GHz、1x 过采样"
+                "实测信道与发射波形采样网格不一致："
+                f"{oversampling}x 过采样应为 {expected_sample_rate:g} Hz，"
+                f"实际为 {sample_rate:g} Hz"
             )
-        taps = self.load_taps(full_mimo=False)[0, 0]
+        taps = self.load_taps(
+            full_mimo=False, sample_rate_hz=sample_rate
+        )[0, 0]
+        cp_samples_high_rate = int(self._get("gi_length", 0)) * oversampling
+        channel_delay_samples = len(taps) - 1
+        if channel_delay_samples > cp_samples_high_rate:
+            raise ValueError(
+                "实测信道时延超过 CP："
+                f"信道跨度 {channel_delay_samples} 个高采样率样点，"
+                f"CP 为 {cp_samples_high_rate} 个高采样率样点"
+            )
+        self.diagnostics["channel_delay_samples_high_rate"] = channel_delay_samples
+        self.diagnostics["cp_samples_high_rate"] = cp_samples_high_rate
+        self.diagnostics["cp_covers_channel"] = True
         output = np.convolve(signal, taps, mode="full")[: len(signal)]
         result = dict(signal_dict)
         result.update(

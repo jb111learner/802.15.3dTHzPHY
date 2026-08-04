@@ -825,8 +825,16 @@ class BackendService(QObject):
         if '时长' in ui_params:
             mapped_params['duration'] = float(ui_params['时长']) * 1e-3
 
-        # 波形类型
-        if '波形类型' in ui_params:
+        # 链路设计页是链路模式的主入口；参数页中的“波形类型”作为旧工程
+        # 和专项模式的兼容入口。避免两个页面值不一致时悄悄运行另一种波形。
+        link_mode_partition = str(ui_params.get('链路模式分区', '')).strip()
+        partition_mode_map = {
+            '单载波模式': 'sc-fde',
+            '多载波模式': 'ofdm',
+        }
+        if not mapped_params.get('enable_mimo') and link_mode_partition in partition_mode_map:
+            mapped_params['link_mode'] = partition_mode_map[link_mode_partition]
+        elif '波形类型' in ui_params:
             wf = str(ui_params['波形类型'])
             if not mapped_params.get('enable_mimo'):
                 mapped_params['link_mode'] = 'ofdm' if 'OFDM' in wf else 'sc-fde'
@@ -931,7 +939,9 @@ class BackendService(QObject):
             if mapped_params.get("enable_cfo"):
                 mapped_params.setdefault("enable_cfo_compensation", True)
 
-        # 实测抽头以 30 GHz 为基准，且只用于归一化的 OFDM 小尺度信道。
+        # 实测抽头的原始采样率为 30 GHz。sample_rate 保持为基础波形
+        # 采样率；2x/4x 时由发射端和实测 CIR 同步提升至 60/120 GHz。
+        # 不得覆盖用户选择的链路模式和过采样率。
         # 场景选择同时确定物理时延窗对应的安全 GI，避免把尾部测量噪声
         # 当成需要覆盖的 512 抽头信道。
         if str(mapped_params.get("multipath_source", "simulated")) == "measured":
@@ -939,12 +949,11 @@ class BackendService(QObject):
             gi_by_scenario = {"8cm": 64, "12cm": 64, "50cm": 32}
             if scenario not in gi_by_scenario:
                 raise ValueError(f"未知实测信道场景：{scenario}")
+            gi_length = gi_by_scenario[scenario]
             mapped_params.update({
                 "enable_multipath": True,
-                "link_mode": "ofdm",
                 "sample_rate": 30e9,
-                "oversampling": 1,
-                "gi_length": gi_by_scenario[scenario],
+                "gi_length": gi_length,
                 "noise_temperature": None,
                 "noise_figure_db": None,
             })

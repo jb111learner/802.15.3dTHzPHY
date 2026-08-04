@@ -301,12 +301,12 @@ class THzReceiver(BaseReceiver):
         # ② 粗同步（SYNC 互相关定位）
         sig = self.coarse_sync_detect(sig)
 
-        # ③ 粗 CFO（逐帧估计+补偿）
+        # ③ 细同步（在匹配滤波原始坐标系中合并 coarse+fine 偏移）
+        sig = self.fine_sync_frame(sig)
+
+        # ④ 粗 CFO（帧起点已对齐，SYNC 重复段从索引 0 开始）
         if getattr(self, "enable_cfo", True):
             sig = self.compensate_cfo_coarse(sig)
-
-        # ④ 细同步（SFD 帧定界）
-        sig = self.fine_sync_frame(sig)
 
         # ⑤ 下采样（过采样率 → 符号率）
         sig = self.downsample(sig)

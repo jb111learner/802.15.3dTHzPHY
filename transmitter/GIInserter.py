@@ -52,8 +52,9 @@ class GIInserter:
 
         n_blocks = data_dict["signal_length"] // self.block_len
         self.symbol_length = data_dict["signal_length"] + self.gi_length * n_blocks
-        self.duration = data_dict["duration_seconds"]
-        self.sample_rate = self.symbol_length / self.duration
+        # CP/GI 占用额外时间，但不会改变基础波形采样率。
+        self.sample_rate = data_dict["sample_rate_Hz"]
+        self.duration = self.symbol_length / self.sample_rate
         self.padding_bit_num = data_dict["padding_bit_num"]
         self.frame_symbol_num = fsym + self.gi_length * self.blocks_per_frame
         self.frame_num = data_dict["frame_num"]

@@ -18,6 +18,11 @@ class Downsampler:
         self.params = transmitter.params
         self.oversampling = self.params.get("oversampling")
         self.filter_delay = (len(transmitter.pulse_shaper.filter_coeffs) - 1) // 2
+        baseband_dict = getattr(transmitter, "data_with_preamble_dict", None)
+        self.expected_symbol_length = (
+            int(baseband_dict["signal_length"])
+            if isinstance(baseband_dict, dict) else None
+        )
 
 
         # 输出参数（两种模式共用）
@@ -41,9 +46,15 @@ class Downsampler:
         if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["signal_length"]:
             raise ValueError("输入数据字典中的采样率与时长不匹配")
 
-        # 考虑滤波延迟
         self.sample_rate = data_dict["sample_rate_Hz"] / self.oversampling
-        self.signal_length = int((data_dict["signal_length"] - self.filter_delay) / self.oversampling)
+        # 同步完成后应恢复发射端完整的符号级帧长。直接由剩余高采样率
+        # 长度整除会在滤波/信道群时延不是 L 整数倍时少 1 个符号。
+        if self.expected_symbol_length is not None:
+            self.signal_length = self.expected_symbol_length
+        else:
+            self.signal_length = int(np.ceil(
+                data_dict["signal_length"] / self.oversampling
+            ))
         self.duration = self.signal_length / self.sample_rate
         self.padding_bit_num = data_dict["padding_bit_num"]
     

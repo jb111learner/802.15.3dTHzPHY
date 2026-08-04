@@ -170,6 +170,12 @@ class TxPulseShaper:
     # ---------- OFDM 上采样低通滤波器设计 ----------
     def _design_lowpass_filter(self):
         """OFDM 模式下统一使用通用低通滤波器"""
+        # sps=1 时没有插零产生的频谱镜像，无需插值低通。此时若继续按
+        # 1/sps 设计，cutoff 会等于 Nyquist（归一化频率 1.0），而
+        # scipy.signal.firwin 要求截止频率严格小于 Nyquist。
+        if self.sps == 1:
+            return np.array([1.0], dtype=np.float64)
+
         # 1. 设计低通，截止频率 = 1 / sps
         num_taps = self.filter_length * self.sps + 1
         if num_taps % 2 == 0:
@@ -237,6 +243,8 @@ class TxPulseShaper:
         result_dict = {
             "signal_stream": shaped,
             "sample_rate_Hz": self.sample_rate,
+            "base_sample_rate_Hz": data_dict["sample_rate_Hz"],
+            "oversampling_factor": self.sps,
             "duration_seconds": self.duration,
             "signal_length": self.symbol_length,
             "padding_bit_num": self.padding_bit_num,

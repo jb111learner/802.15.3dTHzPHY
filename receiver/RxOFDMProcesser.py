@@ -39,6 +39,12 @@ class RxOFDMProcesser:
         self.N_SYM = self.params.get("subframe_ofdm_num")      # 48 OFDM符号/子帧
         self.pilot_indexes = self.params.get("pilot_block_indexes")  # [0, 16, 32]
         self.gi_len = self.params.get("gi_length")             # 32
+        self.channel_estimation_taps = int(self.gi_len)
+        if str(self.params.get("multipath_source", "simulated")).lower() == "measured":
+            scenario = str(self.params.get("measured_channel_scenario", "8cm")).lower()
+            max_delay_s = {"8cm": 1.6e-9, "12cm": 1.2e-9, "50cm": 0.5e-9}[scenario]
+            physical_taps = int(np.ceil(max_delay_s * 30e9 - 1e-12)) + 1
+            self.channel_estimation_taps = min(int(self.gi_len), physical_taps)
         self.N_DATA = self.N_SYM - len(self.pilot_indexes)     # 45 数据符号/子帧
 
         # —————— 导频参考 ——————
@@ -259,7 +265,7 @@ class RxOFDMProcesser:
                 eq_grid[:, col] *= np.exp(-1j * phase)
 
             H_est_list.append(H.copy())
-            h_est_list.append(np.fft.ifft(H)[:self.gi_len])
+            h_est_list.append(np.fft.ifft(H)[:self.channel_estimation_taps])
 
         return eq_grid, H_est_list, h_est_list
 
@@ -338,7 +344,7 @@ class RxOFDMProcesser:
             )
             eq_grid = self._track_equalized_common_phase(eq_grid)
             h_est_list = [
-                np.fft.ifft(response)[:self.gi_len]
+                np.fft.ifft(response)[:self.channel_estimation_taps]
                 for response in H_est_list
             ]
             self.H_est_per_subframe = H_est_list
@@ -364,7 +370,7 @@ class RxOFDMProcesser:
                     col = s * self.N_SYM + sym
                     eq_grid[:, col] = freq_grid[:, col] / (H_raw + eps)
                 H_est_list.append(H_raw.copy())
-                h_est_list.append(np.fft.ifft(H_raw)[:self.gi_len])
+                h_est_list.append(np.fft.ifft(H_raw)[:self.channel_estimation_taps])
 
         # ———— 4. 提取数据符号 ————
         data_symbols = self._extract_data_symbols(eq_grid)

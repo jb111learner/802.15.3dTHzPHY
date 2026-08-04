@@ -84,8 +84,11 @@ class BitStreamProcessor:
             else:
                 if not isinstance(self.duration, (int, float)):
                     raise ValueError("duration 必须是数值")
+                # sample_rate 表示调制后的基础符号率。每个符号承载 NCBPS
+                # 个信息比特，因此给定持续时间内的符号数为 Rs*T，比特数
+                # 为 Rs*T*NCBPS。
                 self.sample_length = int(np.round(
-                    self.sample_rate * self.duration / self.NCBPS))
+                    self.sample_rate * self.duration))
                 self.bit_length = self.sample_length * self.NCBPS
 
         elif data_src == "文件输入":
@@ -135,7 +138,7 @@ class BitStreamProcessor:
 
         self.bit_length = len(bit_list)
         if self.duration is not None:
-            self.sample_rate = self.bit_length / self.duration
+            self.sample_rate = self.bit_length / (self.duration * self.NCBPS)
         else:
             self.duration = self.bit_length / (self.sample_rate * self.NCBPS)    
         return self

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
@@ -117,6 +118,11 @@ class MainWindow(QMainWindow):
         channel_page = self.pages.get('channel_integration')
         if channel_page and hasattr(channel_page, 'set_channel_params'):
             channel_page.set_channel_params(params.get('_channel_params', {}))
+        # 新工程以链路设计页为主；旧工程没有该字段时沿用参数页波形类型。
+        if params.get('链路模式分区') in {'单载波模式', '多载波模式'}:
+            self._sync_waveform_from_link_mode_text(str(params['链路模式分区']))
+        else:
+            self._sync_link_mode_from_waveform()
 
     def _save_single_project(self) -> None:
         params = self._collect_all_params()
@@ -395,6 +401,53 @@ class MainWindow(QMainWindow):
         self.backend.tasks_updated.connect(self._on_tasks_update_received)
         self.backend.scheme_progress_updated.connect(self._on_scheme_progress_updated)
         self.backend.compare_chart_saved.connect(self._on_compare_chart_saved)
+
+        link_page = self.pages.get('link_design')
+        param_page = self.pages.get('parameter_config')
+        if link_page and param_page:
+            for button in link_page.link_mode_group.findChildren(QRadioButton):
+                button.toggled.connect(
+                    lambda checked, text=button.text():
+                    self._sync_waveform_from_link_mode_text(text) if checked else None
+                )
+            param_page.waveform_type.currentTextChanged.connect(
+                lambda _text: self._sync_link_mode_from_waveform()
+            )
+
+    def _sync_waveform_from_link_mode_text(self, link_mode_text: str) -> None:
+        """让链路设计页的 SC/OFDM 选择同步到参数配置页。"""
+        if getattr(self, '_syncing_link_mode', False):
+            return
+        waveform = {
+            '单载波模式': '单载波SC',
+            '多载波模式': '多载波OFDM',
+        }.get(link_mode_text)
+        if waveform is None:
+            return
+        self._syncing_link_mode = True
+        try:
+            self.pages['parameter_config'].waveform_type.setCurrentText(waveform)
+        finally:
+            self._syncing_link_mode = False
+
+    def _sync_link_mode_from_waveform(self) -> None:
+        """让参数配置页的波形选择同步回链路设计页。"""
+        if getattr(self, '_syncing_link_mode', False):
+            return
+        link_text = (
+            '多载波模式'
+            if self.pages['parameter_config'].waveform_type.currentText() == '多载波OFDM'
+            else '单载波模式'
+        )
+        self._syncing_link_mode = True
+        try:
+            group = self.pages['link_design'].link_mode_group
+            for button in group.findChildren(QRadioButton):
+                if button.text() == link_text:
+                    button.setChecked(True)
+                    break
+        finally:
+            self._syncing_link_mode = False
 
     def _on_compare_chart_saved(self, image_path: str):
         """处理 BER 对比图片保存事件"""

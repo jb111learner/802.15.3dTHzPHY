@@ -140,7 +140,11 @@ class FreqDomainEqualizer:
             H_safe = H.copy()
             weak_mask = H_mag < thresh
             if np.any(weak_mask):
-                H_safe[weak_mask] = (H[weak_mask] / (H_mag[weak_mask] + 1e-15)) * thresh
+                # angle(0)=0，可为精确零响应提供有限的正实保护值；旧实现
+                # 仍会把 H=0 保持为 0，随后 1/H 产生 NaN。
+                H_safe[weak_mask] = np.exp(
+                    1j * np.angle(H[weak_mask])
+                ) * thresh
             W = 1.0 / H_safe
         else:  # mmse
             if N0 is None:

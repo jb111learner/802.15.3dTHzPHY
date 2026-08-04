@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import numpy as np
+
 from thz_sim_ui.services import backend
 from thz_sim_ui.data.mock_data import TaskItem
 from simulation.SimulationManager import SimulationManager
 from params.PHYParams import PHYParams
+from transmitter.Pulseshaper import TxPulseShaper
 
 
 class _RecordingConnection:
@@ -16,6 +19,30 @@ class _RecordingConnection:
 
     def close(self):
         self.closed = True
+
+
+def test_ofdm_unit_oversampling_uses_identity_filter():
+    params = PHYParams()
+    params.update(link_mode='ofdm', oversampling=1)
+
+    pulse_shaper = TxPulseShaper(params)
+
+    assert np.array_equal(pulse_shaper._design_lowpass_filter(), np.array([1.0]))
+
+
+def test_link_design_mode_has_priority_and_measured_channel_does_not_override_it():
+    mapped = backend.BackendService.map_ui_params_to_phy_params({
+        '链路模式分区': '单载波模式',
+        '波形类型': '多载波OFDM',
+        '_channel_params': {
+            'enable_multipath': True,
+            'multipath_source': 'measured',
+            'measured_channel_scenario': '50cm',
+        },
+    })
+
+    assert mapped['link_mode'] == 'sc-fde'
+    assert mapped['sample_rate'] == 30e9
 
 
 def test_batch_worker_uses_linked_project_instead_of_result_label(monkeypatch, tmp_path):

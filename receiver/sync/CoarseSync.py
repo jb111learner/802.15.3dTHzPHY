@@ -9,8 +9,8 @@ class CoarseSync:
     处理流程（放在 RxMatchedFilter 与 CFO 粗估计之间）：
       1. 输入过采样信号（匹配滤波后）
       2. 本地 SYNC 序列与接收信号互相关 → 定位 SYNC 起始位置
-      3. 从检测位置截取有效信号段
-      4. 输出过采样信号字典 + sync_offset（供下游 FineSync 使用）
+      3. 保留原始匹配滤波坐标系
+      4. 输出过采样信号字典 + coarse_sync_start（供 FineSync 联合定界）
 
     注意：本类不下采样，下采样由 Downsampler 完成。
     """
@@ -78,8 +78,10 @@ class CoarseSync:
         print(f"  [CoarseSync] SYNC start @ index {sync_start}, "
               f"corr peak = {self.corr_peak:.1f}")
 
-        # ———— 2. 从 SYNC 起始处截取信号 ————
-        aligned_signal = rx_signal[sync_start:]
+        # 不能在这里立即截断。细同步可能给出负修正量；若粗同步已丢弃
+        # 前缀，再执行 y[-k:] 会错误地只保留信号末尾。由 FineSync 在
+        # 同一匹配滤波坐标系内合并 coarse+fine 偏移后统一截取。
+        aligned_signal = rx_signal
 
         # ———— 3. 输出 ————
         self.signal_length = len(aligned_signal)
@@ -93,6 +95,7 @@ class CoarseSync:
             "signal_length": self.signal_length,
             "padding_bit_num": self.padding_bit_num,
             "sync_offset": self.sync_offset,
+            "coarse_sync_start": self.sync_offset,
         }
         return result_dict
 

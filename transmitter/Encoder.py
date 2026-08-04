@@ -61,9 +61,11 @@ class Encoder:
         if data_dict["frame_bit_num"] * data_dict["frame_num"] != data_dict["signal_length"]:
             raise ValueError("输入数据字典中的分帧信息不匹配")
         
-        self.sample_rate = data_dict["sample_rate_Hz"] / self.efficiency
-        self.duration = data_dict["duration_seconds"]
+        # 编码增加比特数量和发送时长，不改变物理比特时钟。旧实现通过
+        # 提高 sample_rate 保持时长不变，会间接抬高最终波形采样率。
+        self.sample_rate = data_dict["sample_rate_Hz"]
         self.bit_length = data_dict["signal_length"] / self.efficiency
+        self.duration = self.bit_length / self.sample_rate
         self.frame_bit_num = data_dict["frame_bit_num"] * (self.packet_size + self.nsym) / self.packet_size
         self.frame_num = data_dict["frame_num"] 
         self.padding_bit_num = data_dict["padding_bit_num"]   

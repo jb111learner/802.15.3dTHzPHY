@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.signal import find_peaks, resample_poly
+from scipy.signal import correlate, find_peaks, resample_poly
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
 from channel.THzChannel import THzChannel
@@ -52,7 +52,7 @@ class FineSync:
         self.duration = data_dict["duration_seconds"]
         self.padding_bit_num = data_dict["padding_bit_num"]
 
-    def detect_sfd(self, rx_signal, plot_flag=False):
+    def detect_sfd(self, rx_signal, coarse_sync_start=0, plot_flag=False):
         """
         检测SFD序列位置（输入为符号级SFD序列）
         :param rx_signal: 接收信号（已上采样，如4倍）
@@ -61,15 +61,18 @@ class FineSync:
         :return: 细同步修正量（整体偏移=粗同步+该值）
         """
         # ========== 1. 截取SFD候选段（采样级，对齐MATLAB逻辑） ==========
-        sfd_candidate_start = self.sync_upsampled_length
+        sfd_candidate_start = int(coarse_sync_start) + self.sync_upsampled_length
         sfd_candidate_len = self.sfd_upsampled_length + 2 * self.search_window
         start_idx = max(0, sfd_candidate_start - self.search_window)
         end_idx = min(len(rx_signal), start_idx + sfd_candidate_len)
         rx_segment = rx_signal[start_idx:end_idx]
 
         # ========== 3. 构造匹配滤波器 + 卷积 ==========
-        sfd_rev = np.flip(np.conj(self.sfd_upsampled))
-        Mn = np.convolve(rx_segment, sfd_rev, mode="full")
+        # 高过采样率下直接时域卷积复杂度为 O(N²)，4x SFD 会非常慢。
+        # FFT 相关与原来的 conj+reverse 卷积数学等价。
+        Mn = correlate(
+            rx_segment, self.sfd_upsampled, mode="full", method="fft"
+        )
         Mn = Mn[self.sfd_upsampled_length:]  # 截断前导无效区
         abs_Mn = np.abs(Mn)
 
@@ -162,14 +165,28 @@ class FineSync:
         self._verification_data(signal_dict)
         y = signal_dict["signal_stream"]
 
-        offset = self.detect_sfd(y, plot_flag=False)
+        coarse_start = int(
+            signal_dict.get("coarse_sync_start", signal_dict.get("sync_offset", 0))
+        )
+        fine_offset = self.detect_sfd(
+            y, coarse_sync_start=coarse_start, plot_flag=False
+        )
+        frame_start = coarse_start + fine_offset
+        if frame_start < 0 or frame_start >= len(y):
+            raise ValueError(
+                f"合并同步偏移超出信号范围：coarse={coarse_start}, "
+                f"fine={fine_offset}, frame_start={frame_start}"
+            )
+        aligned = y[frame_start:]
         result_dict = {
-            "signal_stream": y[offset:],
+            "signal_stream": aligned,
             "sample_rate_Hz": self.sample_rate,
-            "duration_seconds": (self.signal_length - offset) / self.sample_rate,
-            "signal_length": self.signal_length - offset,
+            "duration_seconds": len(aligned) / self.sample_rate,
+            "signal_length": len(aligned),
             "padding_bit_num": self.padding_bit_num,
-            "sync_offset": offset,
+            "sync_offset": fine_offset,
+            "coarse_sync_start": coarse_start,
+            "frame_start": frame_start,
         }
         return result_dict
 

@@ -339,15 +339,17 @@ class PHYParams(BaseParams):
                 raise ValueError(f"{key} 必须为 0 或 1")
 
         if multipath_source == "measured":
-            required_gi = {"8cm": 64, "12cm": 64, "50cm": 32}[scenario]
-            if link_mode != "ofdm":
-                raise ValueError("实测信道当前仅支持 OFDM 链路")
-            if int(self.get("gi_length")) < required_gi:
+            oversampling = int(self.get("oversampling"))
+            max_delay_s = {"8cm": 1.6e-9, "12cm": 1.2e-9, "50cm": 0.5e-9}[scenario]
+            min_cp_high_rate = int(
+                np.ceil(max_delay_s * 30e9 * oversampling - 1e-12)
+            )
+            actual_cp_high_rate = int(self.get("gi_length")) * oversampling
+            if actual_cp_high_rate < min_cp_high_rate:
                 raise ValueError(
-                    f"{scenario} 实测信道要求 gi_length >= {required_gi}"
+                    f"{scenario} 实测信道在 {oversampling}x 过采样下要求高采样率 CP "
+                    f">= {min_cp_high_rate} 点，当前为 {actual_cp_high_rate} 点"
                 )
-            if not self.get("enable_mimo") and int(self.get("oversampling")) != 1:
-                raise ValueError("SISO 实测信道要求 oversampling=1")
 
 if __name__ == "__main__":
     params = PHYParams()

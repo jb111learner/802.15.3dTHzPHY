@@ -24,7 +24,14 @@ class ChannelEstimator:
 
         # —————— CES 公共参数 ——————
         self.N_ces = len(transmitter.preamble_gen.a512)    # 512 (a512/b512长度)
-        self.Lh = self.params.get("gi_length")             # CP长度，也是CIR保留长度
+        self.Lh = self.params.get("gi_length")             # CP长度，也是CIR最大保留长度
+        if str(self.params.get("multipath_source", "simulated")).lower() == "measured":
+            scenario = str(self.params.get("measured_channel_scenario", "8cm")).lower()
+            max_delay_s = {"8cm": 1.6e-9, "12cm": 1.2e-9, "50cm": 0.5e-9}[scenario]
+            # 估计发生在匹配滤波和抽取之后，故窗口使用 30 GHz 基础网格，
+            # 而不是 60/120 GHz 的高采样率 CIR 长度。
+            physical_taps = int(np.ceil(max_delay_s * 30e9 - 1e-12)) + 1
+            self.Lh = min(int(self.Lh), physical_taps)
         # OFDM: 512子载波, SC-FDE: 480子载波
         if self.link_mode == "ofdm":
             self.nfft = self.params.get("subwave_num")     # 512
@@ -131,6 +138,19 @@ class ChannelEstimator:
         ra = np.convolve(ra512, np.flip(np.conj(a512)), mode='full')
         rb = np.convolve(rb512, np.flip(np.conj(b512)), mode='full')
         c = (ra + rb) / (2 * self.N_ces)
+
+        if str(self.params.get("multipath_source", "simulated")).lower() == "measured":
+            # a512/b512 是 Golay 互补训练对，其相关和从零时延位置
+            # N_ces-1 起就是连续 CIR。实测 CIR 经插值和匹配滤波后通常
+            # 不是少数孤立峰；旧逻辑按 10% 峰值阈值稀疏化会丢掉主要
+            # 复数抽头，严重破坏 SC-FDE 均衡。
+            start = self.N_ces - 1
+            stop = start + self.Lh
+            h_est = np.asarray(c[start:stop], dtype=np.complex128)
+            if len(h_est) < self.Lh:
+                h_est = np.pad(h_est, (0, self.Lh - len(h_est)))
+            H_est = np.fft.fftshift(np.fft.fft(h_est, self.nfft))
+            return H_est, 0, h_est
 
         abs_c = np.abs(c)
         center = np.argmax(abs_c)
