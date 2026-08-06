@@ -112,12 +112,33 @@ def _execute_batch_point(
             progress_callback(total_frames, total_errors)
 
     final_ber = total_errors / total_bits if total_bits > 0 else float('nan')
+
+    # ── 吞吐率与谱效 ──
+    bandwidth = float(params.get("bandwidth") or 0.0)
+    duration_per_frame = float(tx.tx_signal_dict.get("duration_seconds", 0.0))
+    waveform_duration = duration_per_frame * total_frames if total_frames > 0 else 0.0
+    raw_throughput_bps = (
+        total_bits / waveform_duration if waveform_duration > 0 else float('nan')
+    )
+    effective_throughput_bps = (
+        raw_throughput_bps * (1.0 - final_ber)
+        if np.isfinite(raw_throughput_bps) and np.isfinite(final_ber)
+        else float('nan')
+    )
+    spectral_efficiency_bps_per_hz = (
+        effective_throughput_bps / bandwidth
+        if np.isfinite(effective_throughput_bps) and bandwidth > 0
+        else float('nan')
+    )
     return {
         'SNRdB': snr,
         'BER': final_ber,
         'total_bits': total_bits,
         'total_errors': total_errors,
         'total_frames': total_frames,
+        'raw_throughput_bps': raw_throughput_bps,
+        'effective_throughput_bps': effective_throughput_bps,
+        'spectral_efficiency_bps_per_hz': spectral_efficiency_bps_per_hz,
     }
 
 
@@ -296,19 +317,24 @@ class BatchCompareThread(QThread):
                     finished_payload = message
 
             while process.is_alive() and self._is_running:
-                if receive_connection.poll(0.05):
-                    try:
-                        message = receive_connection.recv()
-                    except EOFError:
-                        break
-                    handle_message(message)
+                try:
+                    if receive_connection.poll(0.05):
+                        try:
+                            message = receive_connection.recv()
+                        except EOFError:
+                            break
+                        handle_message(message)
+                except BrokenPipeError:
+                    break
             if not self._is_running and process.is_alive():
                 process.terminate()
             process.join()
-            while receive_connection.poll():
+            while True:
                 try:
+                    if not receive_connection.poll():
+                        break
                     handle_message(receive_connection.recv())
-                except EOFError:
+                except (EOFError, BrokenPipeError):
                     break
             if self._is_running:
                 if finished_payload is None:
@@ -981,6 +1007,9 @@ class BackendService(QObject):
             project_name = params['工程名称']
             if project_name.strip():
                 self._state.project_name = project_name
+        else:
+            project_name = self._state.project_name or 'unnamed'
+        # 工程目录保存参数，运行时结果存入临时目录避免污染工程文件夹
         project_folder = project_folder or getattr(self, 'current_project_folder', None)
         if project_folder is not None:
             from pathlib import Path
@@ -997,14 +1026,14 @@ class BackendService(QObject):
             tags = self._format_task_tags(mapped_params)
             start_time = time.time()
             task_name = f'THz-Sim-{len(RECENT_TASKS) + 1}'
-            result_path = None
-            if project_folder:
-                result_path = build_simulation_result_path(
-                    project_folder,
-                    task_name,
-                    time.time_ns(),
-                )
-                result_path.mkdir(parents=True, exist_ok=True)
+            # 运行时结果存入临时目录，按工程分组
+            task_root = Path(tempfile.gettempdir()) / "thz_sim_runs" / project_name
+            result_path = build_simulation_result_path(
+                str(task_root),
+                task_name,
+                time.time_ns(),
+            )
+            result_path.mkdir(parents=True, exist_ok=True)
             task = TaskItem(
                 name=task_name,
                 project=self._state.project_name,
@@ -1143,18 +1172,36 @@ class BackendService(QObject):
         self._state.progress = 100
         self.state_changed.emit(self.snapshot())
         self.tasks_updated.emit(RECENT_TASKS.copy())
-        
+
         if result is None:
             self.message_emitted.emit('仿真完成，无结果数据')
         else:
             result_count = len(result) if hasattr(result, '__len__') else 1
             self.message_emitted.emit(f'仿真完成，结果: {result_count} 次运行')
-        
+
         try:
             bers = [r["metrics"]["ber"] for r in result] if result else []
             print('运行结果BER：', bers)
         except Exception:
             pass
+
+    @staticmethod
+    def _cleanup_old_runs(run_folder: str) -> None:
+        """删除 run_folder 所在 runs/ 目录下的旧运行结果，保留 run_folder 自身。"""
+        import shutil
+        current = Path(run_folder)
+        runs_dir = current.parent
+        if not runs_dir.is_dir() or runs_dir.name != "runs":
+            return
+        dirs = sorted(
+            [d for d in runs_dir.iterdir() if d.is_dir() and d != current],
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        for old in dirs:
+            try:
+                shutil.rmtree(old, ignore_errors=True)
+            except Exception:
+                pass
 
     def handle_batch_compare_finished(self, task: TaskItem, results, error_message: str | None = None):
         now = time.time()
@@ -1231,10 +1278,50 @@ class BackendService(QObject):
             self._save_transmitter_plots(result, transmitter_dir)
             self._save_channel_plots(result, channel_dir)
             self._save_matched_filter_plots(result, matched_filter_dir)
+            self._save_metrics_json(result, project_path)
 
             print("图表保存完成")
         else:
             print("无结果数据，无法生成图表")
+
+    @staticmethod
+    def _save_metrics_json(result, project_path):
+        """将单次仿真关键指标输出到 metrics.json。"""
+        import json
+
+        metrics = result.get('metrics') or {}
+        params = result.get('params')
+        snr = params.get('SNRdB') if params is not None else None
+
+        def _sanitize(value):
+            if value is None:
+                return None
+            try:
+                vf = float(value)
+                if np.isfinite(vf):
+                    return vf
+            except (TypeError, ValueError):
+                pass
+            return None
+
+        payload = {'SNRdB': snr}
+        for key in (
+            'ber', 'raw_throughput_bps', 'effective_throughput_bps',
+            'spectral_efficiency_bps_per_hz',
+            'mimo_channel_nmse', 'mimo_mean_condition_number',
+        ):
+            payload[key] = _sanitize(metrics.get(key))
+
+        # 也尝试从 result 顶层兜底
+        if payload['ber'] is None:
+            payload['ber'] = _sanitize(result.get('ber'))
+            for key in ('raw_throughput_bps', 'effective_throughput_bps',
+                        'spectral_efficiency_bps_per_hz'):
+                if payload[key] is None:
+                    payload[key] = _sanitize(result.get(key))
+
+        with open(project_path / 'metrics.json', 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
 
     def _save_transmitter_plots(self, result, output_dir):
         import matplotlib.pyplot as plt

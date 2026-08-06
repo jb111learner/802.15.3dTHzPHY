@@ -328,6 +328,15 @@ class ParameterConfigPage(WorkbenchPage):
         total_bits = int(rs * nbps * self.duration.value() * 1e-3)  # Rs(MBd) × Nb × dur(ms)
         pad_bits = 0 if not need_pad else (frame_bit_num - (total_bits % frame_bit_num)) % frame_bit_num
 
+        # ── 理论谱效 ──
+        if is_ofdm:
+            eta_cp = n_sc / (n_sc + cp_len) if (n_sc + cp_len) > 0 else 0.0
+            eta_pilot = (n_sym - n_pilots) / n_sym if n_sym > 0 else 0.0
+        else:
+            eta_cp = n_sc / (n_sc + cp_len) if (n_sc + cp_len) > 0 else 0.0
+            eta_pilot = 1.0
+        eta_se_theory = eta_c * nbps * eta_cp * eta_pilot
+
         return {
             "is_ofdm": is_ofdm, "mod_str": mod_str, "code_str": code_str,
             "nbps": nbps, "K": k, "N": n, "eta_c": eta_c,
@@ -335,6 +344,8 @@ class ParameterConfigPage(WorkbenchPage):
             "n_sc": n_sc, "n_sym": n_sym, "n_data": n_data,
             "n_frame": n_frame, "n_pilots": n_pilots,
             "eta_f": eta_f, "eta": eta, "rs": rs,
+            "eta_cp": eta_cp, "eta_pilot": eta_pilot,
+            "eta_se_theory": eta_se_theory,
             "bandwidth": self.bandwidth.value(), "fc": self.fc.value(),
             "waveform": self.waveform_type.currentText(),
             "modulation": self.modulation.currentText(),
@@ -361,6 +372,7 @@ class ParameterConfigPage(WorkbenchPage):
             ("理论峰值速率", f"{R0 / 1e9:.2f} Gbps"),
             ("净有效速率", f"{R / 1e9:.2f} Gbps"),
             ("带宽设置", f"{p['bandwidth']:.1f} GHz"),
+            ("理论谱效", f"{p['eta_se_theory']:.2f} bit/s/Hz"),
         ])
         summary = PlaceholderList("当前配置摘要", [
             p["waveform"], p["modulation"], p["coding"],
@@ -398,6 +410,15 @@ class ParameterConfigPage(WorkbenchPage):
         ])
         self._rate_layout.addWidget(peak_card, 0, 0)
         self._rate_layout.addWidget(net_card, 0, 1)
+
+        se_card = TextSummaryCard("理论谱效 η_SE", [
+            f"CP/GI效率 ηcp = {p['eta_cp']:.4f}",
+            f"导频效率 ηpilot = {p['eta_pilot']:.4f}",
+            f"编码效率 ηc = {p['eta_c']:.4f}",
+            f"调制阶数 log₂M = {p['nbps']} bits/sym",
+            f"η_SE = ηc × log₂M × ηcp × ηpilot = {p['eta_se_theory']:.4f} bit/s/Hz",
+        ])
+        self._rate_layout.addWidget(se_card, 1, 0, 1, 2)
 
     # ── 参数校验 ──
     def _refresh_validation(self, p: dict) -> None:

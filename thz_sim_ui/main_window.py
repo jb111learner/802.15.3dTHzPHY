@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import partial
 from pathlib import Path
 import json
+import tempfile
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -34,6 +35,7 @@ from thz_sim_ui.pages import (
     TaskCenterPage,
     TbpsModePage,
 )
+from thz_sim_ui.data.mock_data import RECENT_TASKS
 from thz_sim_ui.services.backend import BackendService
 
 
@@ -129,10 +131,13 @@ class MainWindow(QMainWindow):
         project_name = params.get('工程名称', 'Unnamed_Project')
         if not project_name.strip():
             project_name = 'Unnamed_Project'
-        if not self.current_project_folder or not Path(self.current_project_folder).exists():
+        existing = Path(self.current_project_folder) if self.current_project_folder else None
+        needs_new = (existing is None or not existing.exists()
+                     or existing.name != project_name)
+        if needs_new:
             project_folder = self._default_single_project_root / project_name
         else:
-            project_folder = Path(self.current_project_folder)
+            project_folder = existing
         project_folder.mkdir(parents=True, exist_ok=True)
         self.current_project_folder = str(project_folder)
         config_file = project_folder / "config.json"
@@ -152,10 +157,13 @@ class MainWindow(QMainWindow):
             project_name = params.get('工程名称', f'BatchCompare_{len(params.get("配置方案", []))}Schemes')
             if not project_name.strip():
                 project_name = f'BatchCompare_{len(params.get("配置方案", []))}Schemes'
-            if not self.current_batch_project_folder or not Path(self.current_batch_project_folder).exists():
+            existing = Path(self.current_batch_project_folder) if self.current_batch_project_folder else None
+            needs_new = (existing is None or not existing.exists()
+                         or existing.name != project_name)
+            if needs_new:
                 project_folder = self._default_batch_project_root / project_name
             else:
-                project_folder = Path(self.current_batch_project_folder)
+                project_folder = existing
             project_folder.mkdir(parents=True, exist_ok=True)
             self.current_batch_project_folder = str(project_folder)
             config_file = project_folder / "batch_config.json"
@@ -245,7 +253,10 @@ class MainWindow(QMainWindow):
         project_name = params.get('工程名称', 'Unnamed_Project')
         if not project_name.strip():
             project_name = 'Unnamed_Project'
-        if not self.current_project_folder or not Path(self.current_project_folder).exists():
+        existing = Path(self.current_project_folder) if self.current_project_folder else None
+        needs_new = (existing is None or not existing.exists()
+                     or existing.name != project_name)
+        if needs_new:
             if not self._ensure_project_folder(project_name):
                 return
         self._save_single_project()
@@ -512,3 +523,37 @@ class MainWindow(QMainWindow):
                 page_name = type(page).__name__.replace('Page', '').lower()
                 all_params[page_name] = page.get_all_parameters()
         return all_params
+
+    def closeEvent(self, event) -> None:
+        """程序退出前将每个工程的最后一次运行结果写入对应工程文件夹。"""
+        import shutil
+        from collections import defaultdict
+
+        project_tasks = defaultdict(list)
+        for t in RECENT_TASKS:
+            if t.status == '已完成' and t.result_path:
+                project_tasks[t.project].append(t)
+
+        for project_name, tasks in project_tasks.items():
+            latest = max(tasks, key=lambda t: t.start_time or 0)
+            dest = self._default_single_project_root / project_name / "runs" / "latest"
+            if dest.exists():
+                shutil.rmtree(dest, ignore_errors=True)
+            dest.mkdir(parents=True, exist_ok=True)
+            src = Path(latest.result_path)
+            if src.is_dir():
+                for item in src.iterdir():
+                    target = dest / item.name
+                    try:
+                        if item.is_dir():
+                            shutil.copytree(item, target, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(item, target)
+                    except Exception:
+                        pass
+
+        task_temp_root = Path(tempfile.gettempdir()) / "thz_sim_runs"
+        if task_temp_root.exists():
+            shutil.rmtree(task_temp_root, ignore_errors=True)
+
+        event.accept()

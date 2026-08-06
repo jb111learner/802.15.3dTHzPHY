@@ -1,0 +1,23 @@
+{
+    "工程名称": "Multipath_compare_64QAM_SC_RS",
+    "自变量参数": "信噪比",
+    "SNR最小值": 9.0,
+    "SNR最大值": 16.0,
+    "SNR步长": 1.0,
+    "配置方案": [
+        {
+            "工程": "64QAM_SC_RS_without_Multipath",
+            "结果标签": "no_multipath"
+        },
+        {
+            "工程": "64QAM_SC_RS_multipath",
+            "结果标签": "multipath"
+        },
+        {
+            "工程": "64QAM_SC_RS_multipath",
+            "结果标签": "multipath_comp"
+        }
+    ],
+    "每点最大帧数": 200,
+    "每点最少错误比特": 2000
+}

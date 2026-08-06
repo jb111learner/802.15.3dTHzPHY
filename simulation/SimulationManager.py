@@ -131,6 +131,12 @@ class SimulationManager:
             if np.isfinite(raw_throughput_bps) and np.isfinite(ber)
             else np.nan
         )
+        bandwidth = float(params.get("bandwidth") or 0.0)
+        spectral_efficiency_bps_per_hz = (
+            effective_throughput_bps / bandwidth
+            if np.isfinite(effective_throughput_bps) and bandwidth > 0
+            else np.nan
+        )
         mimo_nmse = None
         mimo_condition_number = None
         if getattr(receiver, "rx_equalized", None):
@@ -151,6 +157,7 @@ class SimulationManager:
             "tx_bit_len": tx_bit_len,
             "raw_throughput_bps": raw_throughput_bps,
             "effective_throughput_bps": effective_throughput_bps,
+            "spectral_efficiency_bps_per_hz": spectral_efficiency_bps_per_hz,
             "mimo_channel_nmse": mimo_nmse,
             "mimo_mean_condition_number": mimo_condition_number,
             "tx_modulated": transmitter.modulated_data_dict if hasattr(transmitter, 'modulated_data_dict') else None,
@@ -185,6 +192,7 @@ class SimulationManager:
                 "ber": result.get("ber"),
                 "raw_throughput_bps": result.get("raw_throughput_bps"),
                 "effective_throughput_bps": result.get("effective_throughput_bps"),
+                "spectral_efficiency_bps_per_hz": result.get("spectral_efficiency_bps_per_hz"),
                 "mimo_channel_nmse": result.get("mimo_channel_nmse"),
                 "mimo_mean_condition_number": result.get("mimo_mean_condition_number"),
             },

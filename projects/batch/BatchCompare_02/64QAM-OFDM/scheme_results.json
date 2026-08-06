@@ -1,0 +1,80 @@
+[
+  {
+    "snr": 9.0,
+    "result": {
+      "SNRdB": 9.0,
+      "BER": 0.0853694993622449,
+      "total_bits": 903168,
+      "total_errors": 77103,
+      "total_frames": 1,
+      "raw_throughput_bps": 131478260869.56522,
+      "effective_throughput_bps": 120254027562.1118,
+      "spectral_efficiency_bps_per_hz": 4.008467585403727
+    }
+  },
+  {
+    "snr": 10.0,
+    "result": {
+      "SNRdB": 10.0,
+      "BER": 0.07001133786848072,
+      "total_bits": 903168,
+      "total_errors": 63232,
+      "total_frames": 1,
+      "raw_throughput_bps": 131478260869.56522,
+      "effective_throughput_bps": 122273291925.46584,
+      "spectral_efficiency_bps_per_hz": 4.0757763975155274
+    }
+  },
+  {
+    "snr": 11.0,
+    "result": {
+      "SNRdB": 11.0,
+      "BER": 0.055783641581632654,
+      "total_bits": 903168,
+      "total_errors": 50382,
+      "total_frames": 1,
+      "raw_throughput_bps": 131478260869.56522,
+      "effective_throughput_bps": 124143924689.441,
+      "spectral_efficiency_bps_per_hz": 4.138130822981367
+    }
+  },
+  {
+    "snr": 12.0,
+    "result": {
+      "SNRdB": 12.0,
+      "BER": 0.04244171626984127,
+      "total_bits": 903168,
+      "total_errors": 38332,
+      "total_frames": 1,
+      "raw_throughput_bps": 131478260869.56522,
+      "effective_throughput_bps": 125898097826.08696,
+      "spectral_efficiency_bps_per_hz": 4.196603260869566
+    }
+  },
+  {
+    "snr": 13.0,
+    "result": {
+      "SNRdB": 13.0,
+      "BER": 0.030477164824263037,
+      "total_bits": 903168,
+      "total_errors": 27526,
+      "total_frames": 1,
+      "raw_throughput_bps": 131478260869.56522,
+      "effective_throughput_bps": 127471176242.23602,
+      "spectral_efficiency_bps_per_hz": 4.249039208074534
+    }
+  },
+  {
+    "snr": 14.0,
+    "result": {
+      "SNRdB": 14.0,
+      "BER": 0.01588076636904762,
+      "total_bits": 903168,
+      "total_errors": 14343,
+      "total_frames": 1,
+      "raw_throughput_bps": 131478260869.56522,
+      "effective_throughput_bps": 129390285326.08694,
+      "spectral_efficiency_bps_per_hz": 4.3130095108695645
+    }
+  }
+]

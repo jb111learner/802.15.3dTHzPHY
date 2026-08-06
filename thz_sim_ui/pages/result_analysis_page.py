@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QGridLayout, QLabel, QTabWidget, QWidget
 
 from thz_sim_ui.data.mock_data import RECENT_TASKS
-from thz_sim_ui.widgets.common import PlaceholderList
+from thz_sim_ui.widgets.charts import TextSummaryCard
+from thz_sim_ui.widgets.common import PlaceholderList, TwoColumnMetricGrid
 from thz_sim_ui.widgets.forms import combo, make_form_group
 from thz_sim_ui.widgets.workbench import WorkbenchPage
 
@@ -102,12 +105,14 @@ class ResultAnalysisPage(WorkbenchPage):
         ]
         self._rx_cards = [ProjectImageCard(t, f) for t, f in rx_items]
 
-        # ── 三 Tab ──
+        # ── 四 Tab ──
+        self._metrics_tab_layout = QGridLayout()
         tabs = QTabWidget()
         tabs.addTab(self._grid_tab([self.tx_time, self.tx_spectrum,
                                      self.tx_papr, self.tx_histogram]), "发射端结果")
         tabs.addTab(self._grid_tab(self._ch_cards), "信道结果")
         tabs.addTab(self._grid_tab(self._rx_cards, cols=1), "接收端结果")
+        tabs.addTab(self._build_metrics_tab(), "指标统计")
         self.add_right_widget(tabs)
 
         self._all_cards = [self.tx_time, self.tx_spectrum,
@@ -124,6 +129,73 @@ class ResultAnalysisPage(WorkbenchPage):
         for i, card in enumerate(cards):
             layout.addWidget(card, i // cols, i % cols)
         return panel
+
+    # ── 指标统计 Tab ──
+    def _build_metrics_tab(self) -> QWidget:
+        panel = QWidget()
+        panel.setLayout(self._metrics_tab_layout)
+        self._metrics_tab_layout.setContentsMargins(8, 8, 8, 8)
+        self._metrics_tab_layout.setSpacing(10)
+        return panel
+
+    def _update_metrics(self, folder: Path | None) -> None:
+        # 清空重建
+        while self._metrics_tab_layout.count():
+            item = self._metrics_tab_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if folder is None:
+            card = TextSummaryCard("指标统计", ["无指标数据（未选择仿真任务）"])
+            self._metrics_tab_layout.addWidget(card, 0, 0)
+            return
+
+        path = folder / "metrics.json"
+        if not path.exists():
+            card = TextSummaryCard("指标统计", ["无指标数据（metrics.json 未找到）"])
+            self._metrics_tab_layout.addWidget(card, 0, 0)
+            return
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        def _fmt(v, spec=".4f"):
+            if v is None:
+                return "—"
+            try:
+                fv = float(v)
+                if not np.isfinite(fv):
+                    return "—"
+            except (TypeError, ValueError):
+                return str(v)
+            return f"{fv:{spec}}"
+
+        rows = [
+            ("SNR", f"{_fmt(data.get('SNRdB'))} dB"),
+            ("BER", _fmt(data.get("ber"), ".3e")),
+            ("实际谱效",
+             f"{_fmt(data.get('spectral_efficiency_bps_per_hz'))} bit/s/Hz"),
+            ("实际有效速率",
+             f"{_fmt((data.get('effective_throughput_bps') or 0) / 1e9, '.2f')} Gbps"),
+            ("原始吞吐率",
+             f"{_fmt((data.get('raw_throughput_bps') or 0) / 1e9, '.2f')} Gbps"),
+        ]
+        if data.get("mimo_channel_nmse") is not None:
+            rows.append(("MIMO NMSE",
+                         _fmt(data.get("mimo_channel_nmse"), ".3e")))
+        if data.get("mimo_mean_condition_number") is not None:
+            rows.append(("信道条件数",
+                         _fmt(data.get("mimo_mean_condition_number"))))
+
+        grid = TwoColumnMetricGrid(rows)
+        notes = TextSummaryCard("指标说明", [
+            "实际谱效 = 有效吞吐率 / 带宽 (bit/s/Hz)",
+            "有效吞吐率 = 原始吞吐率 × (1 − BER)",
+            "MIMO 指标仅在启用 MIMO 仿真时显示",
+        ])
+        self._metrics_tab_layout.addWidget(grid, 0, 0, 1, 2)
+        self._metrics_tab_layout.addWidget(notes, 1, 0)
+        self._metrics_tab_layout.setRowStretch(2, 1)
 
     # ── 任务列表刷新 ──
     def _refresh_task_options(self, force: bool = False) -> None:
@@ -148,6 +220,7 @@ class ResultAnalysisPage(WorkbenchPage):
         if folder is None:
             for c in self._all_cards:
                 c.set_image_path(None)
+            self._update_metrics(None)
             return
         tx_dir = folder / "transmitter"
         ch_dir = folder / "channel"
@@ -162,6 +235,8 @@ class ResultAnalysisPage(WorkbenchPage):
             c.set_image_path(ch_dir / c.image_name if ch_dir.exists() else None)
         for c in self._rx_cards:
             c.set_image_path(rx_dir / c.image_name if rx_dir.exists() else None)
+
+        self._update_metrics(folder)
 
     def _get_project_folder(self) -> Path | None:
         name = self.task.currentText()

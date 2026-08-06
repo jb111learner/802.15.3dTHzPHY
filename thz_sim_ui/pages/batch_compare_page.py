@@ -4,6 +4,8 @@ import json
 import os
 from typing import List
 
+import numpy as np
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -251,44 +253,81 @@ class BatchComparePage(WorkbenchPage):
     def _overlay_tab(self) -> QWidget:
         panel = QWidget()
         layout = QGridLayout(panel)
-        layout.setContentsMargins(12, 12, 12, 12); layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
+
+        # BER
+        ber_panel = QWidget()
+        ber_layout = QGridLayout(ber_panel)
+        ber_layout.setContentsMargins(12, 12, 12, 12); ber_layout.setSpacing(12)
         self.ber_status = QLabel('仿真未完成')
         self.ber_status.setAlignment(Qt.AlignCenter)
         self.ber_status.setMinimumHeight(300)
         self.ber_status.setStyleSheet(
             'background: #FAFBFE; border: 1px solid #E6ECF6; font-size: 14px; color: #888;')
-        layout.addWidget(self.ber_status, 0, 0)
+        ber_layout.addWidget(self.ber_status, 0, 0)
         self.ber_chart_label = QLabel()
         self.ber_chart_label.setAlignment(Qt.AlignCenter)
         self.ber_chart_label.setMinimumHeight(300)
         self.ber_chart_label.hide()
-        layout.addWidget(self.ber_chart_label, 0, 0)
+        ber_layout.addWidget(self.ber_chart_label, 0, 0)
+
+        # SE
+        se_panel = QWidget()
+        se_layout = QGridLayout(se_panel)
+        se_layout.setContentsMargins(12, 12, 12, 12); se_layout.setSpacing(12)
+        self.se_status = QLabel('仿真未完成')
+        self.se_status.setAlignment(Qt.AlignCenter)
+        self.se_status.setMinimumHeight(300)
+        self.se_status.setStyleSheet(
+            'background: #FAFBFE; border: 1px solid #E6ECF6; font-size: 14px; color: #888;')
+        se_layout.addWidget(self.se_status, 0, 0)
+        self.se_chart_label = QLabel()
+        self.se_chart_label.setAlignment(Qt.AlignCenter)
+        self.se_chart_label.setMinimumHeight(300)
+        self.se_chart_label.hide()
+        se_layout.addWidget(self.se_chart_label, 0, 0)
+
+        overlay_tabs = QTabWidget()
+        overlay_tabs.addTab(ber_panel, "BER")
+        overlay_tabs.addTab(se_panel, "谱效")
+        layout.addWidget(overlay_tabs, 0, 0)
         return panel
 
     def _try_load_existing_chart(self, project_name: str) -> None:
         if not project_name:
             return
-        # 从各方案 JSON 结果读 BER 数据直接绘图
+        # 从各方案 JSON 结果读 BER/SE 数据直接绘图
         root = os.path.abspath(os.path.join(
             os.path.dirname(__file__), '..', '..', 'projects', 'batch'))
         ber_data = []
+        se_data = []
         for cfg in self.config_groups:
             scheme_name = cfg['label'].text()
             json_path = os.path.join(root, project_name, scheme_name, 'scheme_results.json')
             if os.path.exists(json_path):
                 with open(json_path, 'r', encoding='utf-8') as f:
                     results = json.load(f)
-                snrs, bers = [], []
+                snrs, bers, snrs_se, ses = [], [], [], []
                 for item in results:
                     r = item.get('result', {})
-                    ber = r.get('BER') if isinstance(r, dict) else None
-                    if ber is not None and ber > 0:
-                        snrs.append(item.get('snr'))
-                        bers.append(ber)
+                    snr = item.get('snr')
+                    if isinstance(r, dict):
+                        ber = r.get('BER')
+                        if ber is not None and ber > 0:
+                            snrs.append(snr)
+                            bers.append(ber)
+                        se = r.get('spectral_efficiency_bps_per_hz')
+                        if se is not None and np.isfinite(se):
+                            snrs_se.append(snr)
+                            ses.append(se)
                 if snrs:
                     ber_data.append((scheme_name, snrs, bers))
+                if snrs_se:
+                    se_data.append((scheme_name, snrs_se, ses))
         if ber_data:
             self._plot_ber_overlay(ber_data)
+        if se_data:
+            self._plot_se_overlay(se_data)
 
     def _plot_ber_overlay(self, ber_data: list) -> None:
         import matplotlib
@@ -325,6 +364,45 @@ class BatchComparePage(WorkbenchPage):
         self.ber_chart_label.setPixmap(pixmap.scaled(
             self.ber_chart_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self.ber_chart_label.show()
+
+    def _plot_se_overlay(self, se_data: list) -> None:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import io
+
+        plt.rcParams.update({
+            "font.family": "serif", "axes.unicode_minus": False,
+            "axes.linewidth": 0.8, "xtick.direction": "in", "ytick.direction": "in",
+            "xtick.major.size": 4, "ytick.major.size": 4,
+            "grid.alpha": 0.25, "grid.linestyle": "--", "grid.linewidth": 0.4,
+        })
+        fig, ax = plt.subplots(figsize=(7.5, 5))
+        ax.set_facecolor("white"); fig.patch.set_facecolor("white")
+        colors = ['#2C68B4', '#D95F02', '#3A9D3A', '#9467BD', '#E54B4F', '#8C6B4F']
+        for i, (name, snrs, ses) in enumerate(se_data):
+            ax.plot(snrs, ses, marker='o', ms=6, lw=1.3,
+                    color=colors[i % len(colors)], label=name)
+        ax.set_xlabel("SNR (dB)"); ax.set_ylabel("Spectral Efficiency (bit/s/Hz)")
+        ax.set_title("Spectral Efficiency Comparison", fontsize=11, pad=6)
+        ax.legend(loc="best", fontsize=9)
+        ax.grid(True, which="major", alpha=0.25, ls="--", lw=0.4)
+        ax.grid(True, which="minor", alpha=0.10, ls="--", lw=0.3)
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        pixmap = QPixmap()
+        pixmap.loadFromData(buf.read(), "PNG")
+        self.se_status.hide()
+        if self.se_chart_label.width() > 0 and self.se_chart_label.height() > 0:
+            self.se_chart_label.setPixmap(pixmap.scaled(
+                self.se_chart_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            self.se_chart_label.setPixmap(pixmap)
+        self.se_chart_label.show()
 
     def update_ber_chart(self, image_path: str) -> None:
         """兼容旧版信号（直接加载已有 PNG）"""
