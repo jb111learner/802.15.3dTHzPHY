@@ -1,0 +1,106 @@
+[
+  {
+    "snr": 9.0,
+    "result": {
+      "SNRdB": 9.0,
+      "BER": 0.06380911619084362,
+      "total_bits": 995328,
+      "total_errors": 63511,
+      "total_frames": 1,
+      "raw_throughput_bps": 112695652173.91306,
+      "effective_throughput_bps": 105504642210.14494,
+      "spectral_efficiency_bps_per_hz": 3.5168214070048314
+    }
+  },
+  {
+    "snr": 10.0,
+    "result": {
+      "SNRdB": 10.0,
+      "BER": 0.04894366480195473,
+      "total_bits": 995328,
+      "total_errors": 48715,
+      "total_frames": 1,
+      "raw_throughput_bps": 112695652173.91306,
+      "effective_throughput_bps": 107179913949.27538,
+      "spectral_efficiency_bps_per_hz": 3.572663798309179
+    }
+  },
+  {
+    "snr": 11.0,
+    "result": {
+      "SNRdB": 11.0,
+      "BER": 0.035335085519547324,
+      "total_bits": 995328,
+      "total_errors": 35170,
+      "total_frames": 1,
+      "raw_throughput_bps": 112695652173.91306,
+      "effective_throughput_bps": 108713541666.66667,
+      "spectral_efficiency_bps_per_hz": 3.6237847222222226
+    }
+  },
+  {
+    "snr": 12.0,
+    "result": {
+      "SNRdB": 12.0,
+      "BER": 0.02398807227366255,
+      "total_bits": 995328,
+      "total_errors": 23876,
+      "total_frames": 1,
+      "raw_throughput_bps": 112695652173.91306,
+      "effective_throughput_bps": 109992300724.6377,
+      "spectral_efficiency_bps_per_hz": 3.66641002415459
+    }
+  },
+  {
+    "snr": 13.0,
+    "result": {
+      "SNRdB": 13.0,
+      "BER": 0.0065666795267489714,
+      "total_bits": 995328,
+      "total_errors": 6536,
+      "total_frames": 1,
+      "raw_throughput_bps": 112695652173.91306,
+      "effective_throughput_bps": 111955615942.029,
+      "spectral_efficiency_bps_per_hz": 3.7318538647343003
+    }
+  },
+  {
+    "snr": 14.0,
+    "result": {
+      "SNRdB": 14.0,
+      "BER": 7.3001060956790125e-06,
+      "total_bits": 497664000,
+      "total_errors": 3633,
+      "total_frames": 500,
+      "raw_throughput_bps": 112695652173.91306,
+      "effective_throughput_bps": 112694829483.69566,
+      "spectral_efficiency_bps_per_hz": 3.756494316123189
+    }
+  },
+  {
+    "snr": 15.0,
+    "result": {
+      "SNRdB": 15.0,
+      "BER": 0.0,
+      "total_bits": 497664000,
+      "total_errors": 0,
+      "total_frames": 500,
+      "raw_throughput_bps": 112695652173.91306,
+      "effective_throughput_bps": 112695652173.91306,
+      "spectral_efficiency_bps_per_hz": 3.7565217391304353
+    }
+  },
+  {
+    "snr": 16.0,
+    "result": {
+      "SNRdB": 16.0,
+      "BER": 0.0,
+      "total_bits": 497664000,
+      "total_errors": 0,
+      "total_frames": 500,
+      "raw_throughput_bps": 112695652173.91306,
+      "effective_throughput_bps": 112695652173.91306,
+      "spectral_efficiency_bps_per_hz": 3.7565217391304353
+    }
+  }
+]

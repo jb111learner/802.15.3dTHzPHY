@@ -21,6 +21,15 @@ class _RecordingConnection:
         self.closed = True
 
 
+def test_batch_point_requires_minimum_independent_runs_before_error_stop():
+    should_continue = backend._should_continue_batch_point
+
+    assert should_continue(5000, 1, 5000, 20, 500)
+    assert not should_continue(5000, 20, 5000, 20, 500)
+    assert should_continue(4999, 20, 5000, 20, 500)
+    assert not should_continue(4999, 500, 5000, 20, 500)
+
+
 def test_ofdm_unit_oversampling_uses_identity_filter():
     params = PHYParams()
     params.update(link_mode='ofdm', oversampling=1)
@@ -53,7 +62,11 @@ def test_batch_worker_uses_linked_project_instead_of_result_label(monkeypatch, t
         loaded_projects.append(project_name)
         return {'工程名称': project_name}
 
-    def fake_execute(ui_params, snr, max_frames, min_errors, progress_callback=None):
+    def fake_execute(
+        ui_params, snr, max_frames, min_independent_runs, min_errors,
+        progress_callback=None,
+    ):
+        assert min_independent_runs == 1
         if progress_callback:
             progress_callback(1, 0)
         return {
@@ -80,6 +93,7 @@ def test_batch_worker_uses_linked_project_instead_of_result_label(monkeypatch, t
             'SNR最大值': 10.0,
             'SNR步长': 1.0,
             '每点最大帧数': 1,
+            '每点最少独立运行次数': 1,
             '每点最少错误比特': 1,
         },
         str(tmp_path),
