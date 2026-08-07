@@ -71,6 +71,8 @@ class BatchComparePage(WorkbenchPage):
             self.snr_step.setValue(float(params['SNR步长']))
         if '每点最大帧数' in params:
             self.max_frames.setValue(int(params['每点最大帧数']))
+        if '每点最少独立运行次数' in params:
+            self.min_independent_runs.setValue(int(params['每点最少独立运行次数']))
         if '每点最少错误比特' in params:
             self.min_errors.setValue(int(params['每点最少错误比特']))
         configs = params.get('配置方案', [])
@@ -130,15 +132,18 @@ class BatchComparePage(WorkbenchPage):
         # ── 调度策略 ──
         self.max_frames = spin(1, 1000, 300)
         self.max_frames.setSingleStep(10)
+        self.min_independent_runs = spin(1, 1000, 20)
+        self.min_independent_runs.setSingleStep(5)
         self.min_errors = spin(1, 10000, 5000)
         self.min_errors.setSingleStep(100)
         self.add_left_widget(make_form_group('调度策略', [
             ('每点最大帧数', self.max_frames),
+            ('每点最少独立运行次数', self.min_independent_runs),
             ('每点最少错误比特', self.min_errors),
         ]))
         self.add_left_widget(PlaceholderList('说明', [
             '从单方案工程读取配置进行对比仿真',
-            '每点达到最少错误比特或最大帧数后结束',
+            '每点先满足最少独立运行次数，再按错误比特或最大帧数结束',
             '不保存过程图像，仅保存 BER 数据',
         ]))
         self.add_left_stretch()
@@ -434,5 +439,6 @@ class BatchComparePage(WorkbenchPage):
             'SNR步长': self.snr_step.value(),
             '配置方案': configs,
             '每点最大帧数': self.max_frames.value(),
+            '每点最少独立运行次数': self.min_independent_runs.value(),
             '每点最少错误比特': self.min_errors.value(),
         }

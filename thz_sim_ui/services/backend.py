@@ -67,10 +67,23 @@ def _load_batch_project_config(project_name: str) -> dict:
         return json.load(file)
 
 
+def _should_continue_batch_point(
+    total_errors: int,
+    total_frames: int,
+    min_errors: int,
+    min_independent_runs: int,
+    max_frames: int,
+) -> bool:
+    return total_frames < max_frames and (
+        total_frames < min_independent_runs or total_errors < min_errors
+    )
+
+
 def _execute_batch_point(
     ui_params: dict,
     snr: float,
     max_frames: int,
+    min_independent_runs: int,
     min_errors: int,
     progress_callback=None,
 ) -> dict:
@@ -96,7 +109,13 @@ def _execute_batch_point(
     tx.run()
     channel = THzChannel(params)
     receiver = THzReceiver(params, tx)
-    while total_errors < min_errors and total_frames < max_frames:
+    while _should_continue_batch_point(
+        total_errors,
+        total_frames,
+        min_errors,
+        min_independent_runs,
+        max_frames,
+    ):
         tx.assembler.duration = params.get('duration')
         tx.assembler.sample_length = None
         tx.run()
@@ -189,6 +208,7 @@ def _batch_compare_process_entry(connection, params: dict, project_folder: str) 
         snr_max = params.get('SNR最大值', 30)
         snr_step = params.get('SNR步长', 2)
         max_frames = int(params.get('每点最大帧数', 300))
+        min_independent_runs = int(params.get('每点最少独立运行次数', 20))
         min_errors = int(params.get('每点最少错误比特', 5000))
         snr_points = []
         current_snr = snr_min
@@ -215,9 +235,16 @@ def _batch_compare_process_entry(connection, params: dict, project_folder: str) 
                         now = time.monotonic()
                         if now - last_live_update < 0.5:
                             return
-                        frame_ratio = frame_count / max_frames if max_frames else 1.0
+                        max_frame_ratio = frame_count / max_frames if max_frames else 1.0
+                        min_run_ratio = (
+                            frame_count / min_independent_runs
+                            if min_independent_runs else 1.0
+                        )
                         error_ratio = error_count / min_errors if min_errors else 1.0
-                        point_ratio = min(0.99, max(frame_ratio, error_ratio))
+                        point_ratio = min(0.99, max(
+                            max_frame_ratio,
+                            min(min_run_ratio, error_ratio),
+                        ))
                         completed_in_scheme = len(scheme_results) + point_ratio
                         scheme_progress = int(completed_in_scheme / len(snr_points) * 100)
                         overall_progress = int(
@@ -232,6 +259,7 @@ def _batch_compare_process_entry(connection, params: dict, project_folder: str) 
                         ui_params,
                         snr,
                         max_frames,
+                        min_independent_runs,
                         min_errors,
                         progress_callback=report_point_progress,
                     )
@@ -279,6 +307,7 @@ class BatchCompareThread(QThread):
         self._current_task = None
         self._scheme_progress = {}
         self._max_frames = int(params.get('每点最大帧数', 300))
+        self._min_independent_runs = int(params.get('每点最少独立运行次数', 20))
         self._min_errors = int(params.get('每点最少错误比特', 5000))
         self._last_progress_update = 0
         self._progress_update_interval = 0.2
