@@ -43,7 +43,7 @@ _IEEE802153D_1440_TABLES = {
             (31, 234, 150),
             (159, 364, 91),
             (302, 45, 286),
-            (126, 239, 71),
+            (126, 239, 371),
             (17, 158, 272),
             (28, 336, 178),
             (214, 60, 369),
@@ -88,15 +88,14 @@ def ieee802153d_rate11_direction_note(direction: str) -> str:
     direction = normalize_ieee802153d_rate11_direction(direction)
     if direction == RATE11_MINUS_LITERAL:
         return (
-            "minus_literal follows the literal Equation 13-1 derivation "
-            "i = 96*g + ((r0 - s) % 96); H[:,1056:1440] has rank 383, "
-            "so standard c=[i,p] systematic encoding is not available."
+            "minus_literal follows the IEEE 802.15.3d Equation 13-1 derivation "
+            "i = 96*g + ((r0 - s) % 96); H[:,1056:1440] is full rank "
+            "and supports c=[i,p] systematic encoding."
         )
     return (
         "plus_systematic_candidate uses i = 96*g + ((r0 + s) % 96); "
-        "H[:,1056:1440] is full rank and supports c=[i,p] systematic "
-        "encoding. This is a candidate mode pending advisor or IEEE errata "
-        "confirmation, not a confirmed standard correction."
+        "it is retained only for backward compatibility and is not the "
+        "Equation 13-1 construction used by the standard mode."
     )
 
 
@@ -107,8 +106,8 @@ def ieee802153d_standard_confirmation_status(rate: str, rate11_direction: str | 
 
     direction = normalize_ieee802153d_rate11_direction(rate11_direction)
     if direction == RATE11_MINUS_LITERAL:
-        return "minus_literal_equation_conflicts_with_systematic_encoding"
-    return "plus_systematic_candidate_pending_advisor_or_ieee_errata_confirmation"
+        return "standard_systematic_encoding_confirmed_by_rank_checks"
+    return "nonstandard_plus_direction_retained_for_backward_compatibility"
 
 
 def ieee802153d_1440_dimensions(rate: str) -> tuple[int, int, int]:
@@ -130,11 +129,9 @@ def build_ieee802153d_1440_h(
     The entries are generated from Table 12-17 + Equation 12-6 for rate 14/15,
     and Table 13-10 + Equation 13-1 for rate 11/15.
 
-    For rate 11/15, Table 13-10 has been manually checked. The
-    minus_literal direction follows Equation 13-1 literally, but conflicts
-    with standard c=[i,p] systematic encodability because Hp rank is 383.
-    plus_systematic_candidate gives full-rank Hp and is kept as an explicit
-    candidate mode pending advisor or IEEE errata confirmation.
+    For rate 11/15, minus_literal follows Equation 13-1 and supports standard
+    c=[i,p] systematic encoding. plus_systematic_candidate is retained only
+    for backward compatibility with earlier experiments.
     """
     rate = normalize_ieee802153d_rate(rate)
     if rate == "11/15":

@@ -112,7 +112,7 @@ class PHYParams(BaseParams):
             "ldpc_k": 336,                                                                          # Engineering LDPC information length
             "ldpc_matrix_type": "ieee802153d_1440",                                                 # engineering / ieee802153d_1440
             "ldpc_standard_rate": "14/15",                                                          # IEEE 802.15.3d LDPC rate: 14/15 / 11/15
-            "ldpc_rate11_direction": "minus_literal",                                               # 11/15: minus_literal follows Eq. 13-1 but cannot encode c=[i,p]; plus_systematic_candidate is pending confirmation
+            "ldpc_rate11_direction": "minus_literal",                                               # 11/15: IEEE Equation 13-1 direction; plus_systematic_candidate is legacy compatibility only
             "ldpc_max_iter": 30,                                                                    # LDPC min-sum max iterations
             "ldpc_col_weight": 3,                                                                   # LDPC sparse A row weight
             "ldpc_dv": 3,                                                                           # Legacy alias for ldpc_col_weight

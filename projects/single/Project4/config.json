@@ -43,7 +43,27 @@
         "enable_cfo": false,
         "ppm": 1.0,
         "enable_phase_noise": false,
-        "enable_iq_imbalance": false,
+        "enable_iq_imbalance": true,
+        "iq_imbalance_position": "rx",
+        "iq_imbalance_model": "fid",
+        "rx_iq_gain_imbalance_db": 2.0,
+        "rx_iq_phase_imbalance_deg": 5.0,
+        "rx_iq_gI_taps": [
+            1.0,
+            0.08,
+            -0.03
+        ],
+        "rx_iq_gQ_taps": [
+            1.0,
+            -0.12,
+            0.04
+        ],
+        "tx_iq_gI_taps": [
+            1.0
+        ],
+        "tx_iq_gQ_taps": [
+            1.0
+        ],
         "enable_pa": false
     }
 }

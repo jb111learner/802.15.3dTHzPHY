@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 import numpy as np
-import galois
 from typing import List, Optional, Tuple
 from itertools import product
 from utils.LDPCMatrix import (
@@ -20,6 +21,11 @@ class RSCoder:
     已修复编码长度不匹配问题，严格保证输出比特长度正确
     """
     def __init__(self, params):
+        # galois is required only by RS coding. Keep the import local so LDPC
+        # users do not need to import or install the unrelated RS dependency.
+        global galois
+        import galois
+
         self.params = params
         self.nsym = params.get("rs_nsym")
         self.c_exp = params.get("rs_c_exp")
@@ -355,9 +361,9 @@ class LDPCCoder:
 
     IEEE 802.15.3d mode uses the standard THz-SC mandatory LDPC(1440,1344)
     or LDPC(1440,1056) H matrix and solves parity bits over GF(2).
-    For 11/15, minus_literal follows Equation 13-1 literally but is not
-    encodable as c=[i,p]; plus_systematic_candidate is explicitly marked as
-    a pending-confirmation candidate, not a confirmed IEEE correction.
+    For 11/15, minus_literal follows Equation 13-1 and supports systematic
+    c=[i,p] encoding. plus_systematic_candidate is retained only for backward
+    compatibility with earlier experiments.
     """
 
     def __init__(self, params):

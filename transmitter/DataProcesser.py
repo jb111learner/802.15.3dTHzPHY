@@ -2,6 +2,7 @@ import os
 import random
 import numpy as np
 from params.PHYParams import PHYParams
+from utils.LDPCMatrix import ieee802153d_1440_dimensions
 
 class BitStreamProcessor:
     """
@@ -21,7 +22,17 @@ class BitStreamProcessor:
         if self.code_type == "RS":
             self.code_rate = self.params.get("rs_packet_size") / (self.params.get("rs_packet_size") + self.params.get("rs_nsym"))  # RS编码包大小
         elif self.code_type == "LDPC":
-            self.code_rate = 14 / 15  # LDPC编码率(目前固定为14/15)
+            matrix_type = self.params.get("ldpc_matrix_type", "engineering")
+            if matrix_type == "ieee802153d_1440":
+                n, k, _ = ieee802153d_1440_dimensions(
+                    self.params.get("ldpc_standard_rate", "14/15")
+                )
+            elif matrix_type == "engineering":
+                n = int(self.params.get("ldpc_n"))
+                k = int(self.params.get("ldpc_k"))
+            else:
+                raise ValueError("ldpc_matrix_type must be 'engineering' or 'ieee802153d_1440'")
+            self.code_rate = k / n
         link_mode = (self.params.get("link_mode")).lower()
         if link_mode == "ofdm":
             n_pilots = len(self.params.get("pilot_block_indexes"))

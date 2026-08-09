@@ -21,10 +21,10 @@ class Encoder:
             self.encoded_packet_size = self.packet_size + self.nsym
         elif self.code_type == "LDPC":
             self.encoder = LDPCCoder(self.params)
-            self.nsym = 96                  # parity bits per codeword
-            self.packet_size = 1344         # info bits per codeword
-            self.efficiency = 1344 / (1344 + 96)
-            self.encoded_packet_size = 1440
+            self.nsym = self.encoder.r          # parity bits per codeword
+            self.packet_size = self.encoder.k   # info bits per codeword
+            self.efficiency = self.encoder.efficiency
+            self.encoded_packet_size = self.encoder.n
         
         # 输出参数      
         self.sample_rate = None  # 采样率
