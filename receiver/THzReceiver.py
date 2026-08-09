@@ -340,10 +340,7 @@ class THzReceiver(BaseReceiver):
                 sig = self.equalize(sig)
 
         # ⑩ SC-FDE 专用判决导向IQ补偿；OFDM 在频域网格内完成补偿。
-        if (
-            self.enable_channel_est
-            and getattr(self, "iq_dd_compensator", None) is not None
-        ):
+        if getattr(self, "iq_dd_compensator", None) is not None:
             sig = self.compensate_iq_decision_directed(sig)
 
         # ⑪ 解调（LLR，使用噪声方差）

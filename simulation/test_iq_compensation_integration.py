@@ -195,11 +195,12 @@ def test_receiver_places_iq_compensation_before_noise_and_mode_branch(link_mode,
     assert calls == expected
 
 
-def test_receiver_skips_decision_directed_iq_without_channel_equalization():
+def test_receiver_runs_decision_directed_iq_without_channel_equalization():
     receiver_class = _import_receiver_without_optional_galois()
     receiver = receiver_class.__new__(receiver_class)
     receiver.link_mode = "sc-fde"
     receiver.enable_channel_est = False
+    receiver.iq_dd_compensator = object()
     calls = []
     passthrough_stages = [
         "compensate_iq_configured", "matched_filter", "coarse_sync_detect", "compensate_cfo_coarse",
@@ -218,4 +219,5 @@ def test_receiver_skips_decision_directed_iq_without_channel_equalization():
 
     receiver.run({"signal_stream": np.array([0j])})
 
-    assert "compensate_iq_decision_directed" not in calls
+    assert calls.index("equalize") < calls.index("compensate_iq_decision_directed")
+    assert calls.index("compensate_iq_decision_directed") < calls.index("demodulate")
