@@ -99,7 +99,7 @@ class FreqDomainEqualizer:
         :param frame_data: 1D数组，包含GI+数据
         :param H: 频域信道响应 (fftshift后)
         :param N0: 噪声方差 (MMSE)
-        :return: 均衡后的数据 (1D)
+        :return: 均衡后的数据、均衡后噪声方差和诊断信息
         """
         gi_length = self.gi_length
         subframe_length = self.subframe_length
@@ -152,6 +152,23 @@ class FreqDomainEqualizer:
             den = np.abs(H) ** 2 + N0
             W = np.conj(H) / den
 
+        # 频域权重会改变时域输出噪声功率。FFT/IFFT 的尺度相消后，
+        # 循环块内每个时域符号的噪声方差为 N0 * mean(|W|^2)。
+        # 对裁剪 ZF/MMSE，再把 W*H 未能形成纯单位冲激的部分作为残余
+        # ISI 功率计入等效噪声；调制星座在本项目中按单位平均功率归一化。
+        post_noise_var = None
+        residual_isi_var = 0.0
+        equivalent_gain = np.mean(W * H)
+        if N0 is not None:
+            noise_enhancement = float(np.mean(np.abs(W) ** 2))
+            response = W * H
+            residual_isi_var = float(max(
+                np.mean(np.abs(response) ** 2)
+                - np.abs(equivalent_gain) ** 2,
+                0.0,
+            ))
+            post_noise_var = float(N0) * noise_enhancement + residual_isi_var
+
         # 4. 均衡
         EQ = Y * W[:, np.newaxis]
 
@@ -160,7 +177,13 @@ class FreqDomainEqualizer:
 
         # 6. 按列拉平（先列后行）
         y = yt_blocks.ravel(order='F')
-        return y
+        diagnostics = {
+            "equivalent_gain_real": float(np.real(equivalent_gain)),
+            "equivalent_gain_imag": float(np.imag(equivalent_gain)),
+            "residual_isi_var": residual_isi_var,
+            "post_equalization_noise_var": post_noise_var,
+        }
+        return y, post_noise_var, diagnostics
 
     def equalize(self, data_dict):
         """
@@ -198,6 +221,8 @@ class FreqDomainEqualizer:
 
         # 逐帧均衡
         equalized_frames = []
+        post_noise_vars = []
+        equalizer_diagnostics = []
         total_symbol_len = 0
         for i, frame in enumerate(frames):
             # 提取数据部分（跳过前导码）
@@ -207,8 +232,13 @@ class FreqDomainEqualizer:
                 continue
             H_i = H_list[i]
             N0_i = N0_list[i]
-            eq_data = self._equalize_frame(data_part, H_i, N0_i)
+            eq_data, post_noise_var, diagnostics = self._equalize_frame(
+                data_part, H_i, N0_i
+            )
             equalized_frames.append(eq_data)
+            if post_noise_var is not None:
+                post_noise_vars.append(post_noise_var)
+            equalizer_diagnostics.append(diagnostics)
             total_symbol_len += len(eq_data)
 
         if len(equalized_frames) == 0:
@@ -227,7 +257,14 @@ class FreqDomainEqualizer:
             "duration_seconds": self.duration,
             "signal_length": total_symbol_len,
             "padding_bit_num": self.padding_bit_num,
+            "pre_equalization_noise_var": N0_in,
+            "post_equalization_noise_var": (
+                float(np.mean(post_noise_vars)) if post_noise_vars else None
+            ),
+            "equalizer_diagnostics": equalizer_diagnostics,
         }
+        if post_noise_vars:
+            result_dict["noise_var"] = float(np.mean(post_noise_vars))
         return result_dict
     
 if __name__ == "__main__":

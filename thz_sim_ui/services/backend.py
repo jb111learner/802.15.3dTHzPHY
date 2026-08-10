@@ -198,11 +198,32 @@ def _save_batch_compare_chart(results: list, chart_path: str) -> None:
     plt.close(fig)
 
 
+def _atomic_write_json(payload, result_path: str) -> None:
+    """先写入同目录临时文件，再原子替换结果文件。"""
+    import json
+
+    result_dir = os.path.dirname(result_path)
+    os.makedirs(result_dir, exist_ok=True)
+    file_descriptor, temporary_path = tempfile.mkstemp(
+        prefix='.scheme_results.', suffix='.tmp', dir=result_dir,
+    )
+    try:
+        with os.fdopen(file_descriptor, 'w', encoding='utf-8') as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, result_path)
+    except BaseException:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _batch_compare_process_entry(connection, params: dict, project_folder: str) -> None:
     """在一个常驻子进程中执行整批任务，避免重复支付重模块/JIT 初始化成本。"""
     try:
-        import json
-
         configs = params.get('配置方案', [])
         snr_min = params.get('SNR最小值', 0)
         snr_max = params.get('SNR最大值', 30)
@@ -225,6 +246,7 @@ def _batch_compare_process_entry(connection, params: dict, project_folder: str) 
             ui_params = _load_batch_project_config(project_name)
             scheme_folder = os.path.join(project_folder, scheme_name)
             os.makedirs(scheme_folder, exist_ok=True)
+            result_path = os.path.join(scheme_folder, 'scheme_results.json')
             scheme_results = []
             for snr in snr_points:
                 try:
@@ -267,15 +289,14 @@ def _batch_compare_process_entry(connection, params: dict, project_folder: str) 
                     result = None
                     connection.send(('point_error', scheme_name, snr, traceback.format_exc()))
                 scheme_results.append({'snr': snr, 'result': result})
+                # 每个仿真点完成后立即持久化，中途终止时仍保留已完成结果。
+                _atomic_write_json(scheme_results, result_path)
                 completed_points += 1
                 scheme_progress = int(len(scheme_results) / len(snr_points) * 100)
                 overall_progress = int(completed_points / total_points * 100) if total_points else 100
                 connection.send(('progress', scheme_index, scheme_progress, overall_progress))
 
             all_results.append({'scheme': config, 'results': scheme_results})
-            result_path = os.path.join(scheme_folder, 'scheme_results.json')
-            with open(result_path, 'w', encoding='utf-8') as file:
-                json.dump(scheme_results, file, ensure_ascii=False, indent=2)
 
         compare_folder = os.path.join(project_folder, 'compare_results')
         os.makedirs(compare_folder, exist_ok=True)

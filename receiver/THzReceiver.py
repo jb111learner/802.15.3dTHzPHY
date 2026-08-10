@@ -238,7 +238,15 @@ class THzReceiver(BaseReceiver):
 
     def demodulate(self, signal_dict):
         # 使用噪声方差估计值计算 sigma
-        noise_var = self.noise_var if self.noise_var and self.noise_var > 0 else 0.01
+        noise_var = signal_dict.get(
+            "post_equalization_noise_var",
+            signal_dict.get("noise_var", self.noise_var),
+        )
+        if isinstance(noise_var, (list, tuple, np.ndarray)):
+            noise_var = float(np.mean(noise_var))
+        noise_var = float(noise_var) if noise_var is not None else 0.01
+        if not np.isfinite(noise_var) or noise_var <= 0:
+            noise_var = 0.01
         sigma = np.sqrt(noise_var / 2)
         # 重建兼容的 dict（确保 sample_rate * duration == signal_length）
         sym = signal_dict["signal_stream"]
@@ -320,6 +328,10 @@ class THzReceiver(BaseReceiver):
 
         # ⑦ 噪声方差估计（基于 SYNC，需在 OFDM 解调前）
         self.estimate_noise(sig)
+        # 将噪声估计显式送入后续信道估计/均衡链路；此前该值只保存在
+        # receiver 成员中，MMSE 和均衡后噪声传播都无法读取。
+        sig = dict(sig)
+        sig["noise_var"] = self.noise_var
 
         if self.enable_channel_est:
             if self.link_mode == "ofdm":

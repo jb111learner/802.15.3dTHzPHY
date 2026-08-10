@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import numpy as np
 
@@ -105,6 +106,47 @@ def test_batch_worker_uses_linked_project_instead_of_result_label(monkeypatch, t
     assert [message[0] for message in connection.messages].count('progress') == 2
     assert (tmp_path / '论文曲线A' / 'scheme_results.json').exists()
     assert (tmp_path / 'compare_results' / 'ber_compare.png').exists()
+
+
+def test_batch_worker_persists_each_completed_point_before_later_interruption(
+    monkeypatch, tmp_path,
+):
+    connection = _RecordingConnection()
+    executed_snrs = []
+
+    monkeypatch.setattr(backend, '_load_batch_project_config', lambda _name: {})
+
+    def fake_execute(
+        ui_params, snr, max_frames, min_independent_runs, min_errors,
+        progress_callback=None,
+    ):
+        executed_snrs.append(snr)
+        if len(executed_snrs) == 2:
+            raise KeyboardInterrupt('simulated interruption')
+        return {'SNRdB': snr, 'BER': 0.1}
+
+    monkeypatch.setattr(backend, '_execute_batch_point', fake_execute)
+
+    backend._batch_compare_process_entry(
+        connection,
+        {
+            '配置方案': [{'工程': 'Project4', '结果标签': '方案A'}],
+            'SNR最小值': 10.0,
+            'SNR最大值': 11.0,
+            'SNR步长': 1.0,
+            '每点最大帧数': 1,
+            '每点最少独立运行次数': 1,
+            '每点最少错误比特': 1,
+        },
+        str(tmp_path),
+    )
+
+    result_path = tmp_path / '方案A' / 'scheme_results.json'
+    assert json.loads(result_path.read_text(encoding='utf-8')) == [
+        {'snr': 10.0, 'result': {'SNRdB': 10.0, 'BER': 0.1}},
+    ]
+    assert connection.messages[-1][0] == 'fatal_error'
+    assert connection.closed
 
 
 def test_running_task_elapsed_refreshes_without_progress_event(monkeypatch):

@@ -140,17 +140,34 @@ class ChannelEstimator:
         c = (ra + rb) / (2 * self.N_ces)
 
         if str(self.params.get("multipath_source", "simulated")).lower() == "measured":
-            # a512/b512 是 Golay 互补训练对，其相关和从零时延位置
-            # N_ces-1 起就是连续 CIR。实测 CIR 经插值和匹配滤波后通常
-            # 不是少数孤立峰；旧逻辑按 10% 峰值阈值稀疏化会丢掉主要
-            # 复数抽头，严重破坏 SC-FDE 均衡。
-            start = self.N_ces - 1
+            # 帧同步在多径下可能锁定到主径附近，而不是最早到达径。此时
+            # CIR 会跨过零时延；固定从 N_ces-1 向后截取会丢失前游标。
+            # 在零时延附近搜索能量最大的 Lh 点窗口，并在构造频响时按
+            # 有符号时延循环放置抽头，使负时延所对应的线性相位得以保留。
+            center = self.N_ces - 1
+            search_radius = max(int(self.params.get("gi_length")), self.Lh)
+            min_lag = max(-search_radius, -center)
+            max_lag = min(
+                search_radius,
+                len(c) - center - self.Lh,
+            )
+            candidate_lags = np.arange(min_lag, max_lag + 1, dtype=int)
+            window_energy = np.asarray([
+                np.sum(np.abs(c[center + lag:center + lag + self.Lh]) ** 2)
+                for lag in candidate_lags
+            ])
+            best_lag = int(candidate_lags[int(np.argmax(window_energy))])
+            start = center + best_lag
             stop = start + self.Lh
             h_est = np.asarray(c[start:stop], dtype=np.complex128)
             if len(h_est) < self.Lh:
                 h_est = np.pad(h_est, (0, self.Lh - len(h_est)))
-            H_est = np.fft.fftshift(np.fft.fft(h_est, self.nfft))
-            return H_est, 0, h_est
+
+            h_circular = np.zeros(self.nfft, dtype=np.complex128)
+            tap_indexes = (best_lag + np.arange(self.Lh)) % self.nfft
+            h_circular[tap_indexes] = h_est
+            H_est = np.fft.fftshift(np.fft.fft(h_circular))
+            return H_est, best_lag, h_est
 
         abs_c = np.abs(c)
         center = np.argmax(abs_c)
@@ -302,7 +319,8 @@ class ChannelEstimator:
             self.channel_freq_response = H_list
             self.channel_time_response = h_list
 
-        result_dict = {
+        result_dict = dict(signal_dict)
+        result_dict.update({
             "signal_stream": rx_symbols,
             "sample_rate_Hz": self.sample_rate,
             "duration_seconds": self.duration,
@@ -311,7 +329,7 @@ class ChannelEstimator:
             "channel_freq_response": H_list,
             "channel_time_response": h_list,
             "fine_offset": fine_offset_list,
-        }
+        })
         return result_dict
 
 
