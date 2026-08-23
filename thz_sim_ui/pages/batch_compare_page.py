@@ -312,21 +312,30 @@ class BatchComparePage(WorkbenchPage):
             if os.path.exists(json_path):
                 with open(json_path, 'r', encoding='utf-8') as f:
                     results = json.load(f)
-                snrs, bers, snrs_se, ses = [], [], [], []
+                all_snrs, snrs, bers, ebn0s, all_ebn0s = [], [], [], [], []
+                snrs_se, ses = [], []
                 for item in results:
                     r = item.get('result', {})
                     snr = item.get('snr')
                     if isinstance(r, dict):
                         ber = r.get('BER')
-                        if ber is not None and ber > 0:
-                            snrs.append(snr)
-                            bers.append(ber)
+                        if ber is not None:
+                            all_snrs.append(snr)
+                            eb = r.get('EbN0_dB')
+                            if eb is not None and np.isfinite(eb):
+                                all_ebn0s.append(eb)
+                            if ber > 0:
+                                snrs.append(snr)
+                                bers.append(ber)
+                                if eb is not None and np.isfinite(eb):
+                                    ebn0s.append(eb)
                         se = r.get('spectral_efficiency_bps_per_hz')
                         if se is not None and np.isfinite(se):
                             snrs_se.append(snr)
                             ses.append(se)
-                if snrs:
-                    ber_data.append((scheme_name, snrs, bers))
+                if all_snrs:
+                    ber_data.append((scheme_name, snrs, bers, ebn0s if ebn0s else None,
+                                     all_snrs, all_ebn0s if all_ebn0s else None))
                 if snrs_se:
                     se_data.append((scheme_name, snrs_se, ses))
         if ber_data:
@@ -348,17 +357,46 @@ class BatchComparePage(WorkbenchPage):
         })
         fig, ax = plt.subplots(figsize=(7.5, 5))
         ax.set_facecolor("white"); fig.patch.set_facecolor("white")
+        ax2 = ax.twiny()
         colors = ['#2C68B4', '#D95F02', '#3A9D3A', '#9467BD', '#E54B4F', '#8C6B4F']
-        for i, (name, snrs, bers) in enumerate(ber_data):
-            ax.semilogy(snrs, bers, marker='o', ms=6, lw=1.3,
-                        color=colors[i % len(colors)], label=name)
+        for i, item in enumerate(ber_data):
+            name, snrs, bers = item[0], item[1], item[2]
+            color = colors[i % len(colors)]
+            if snrs:
+                ax.semilogy(snrs, bers, marker='o', ms=6, lw=1.3,
+                            color=color, label=name)
+                # 垂直下降线
+                all_snrs = item[4] if len(item) > 4 else snrs
+                if len(all_snrs) > len(snrs):
+                    zero_snrs = [s for s in all_snrs if s not in set(snrs)]
+                    if zero_snrs:
+                        lx, lb = snrs[-1], bers[-1]
+                        zx = min(zero_snrs)
+                        ax.plot([lx, zx], [lb, lb], ':', color=color, lw=0.8)
+                        ax.plot([zx, zx], [lb, 1e-10], ':', color=color, lw=0.8)
+                        ax.plot(zero_snrs, [1e-10]*len(zero_snrs), marker='o', ms=6,
+                                color=color, fillstyle='none', linestyle='none')
         ax.set_xlabel("SNR (dB)"); ax.set_ylabel("BER")
+        ax2.set_xlabel("Eₐ/N₀ (dB)")
         ax.set_title("BER Comparison", fontsize=11, pad=6)
         ax.legend(loc="lower left", fontsize=9)
         ax.grid(True, which="major", alpha=0.25, ls="--", lw=0.4)
         ax.grid(True, which="minor", alpha=0.10, ls="--", lw=0.3)
-        fig.tight_layout()
 
+        # Eb/N0 上横轴刻度（含 BER=0 的全部点）
+        if ber_data:
+            all_ebn0s = ber_data[0][5] if len(ber_data[0]) > 5 else None
+            all_snrs0 = ber_data[0][4] if len(ber_data[0]) > 4 else ber_data[0][1]
+            if all_ebn0s and len(all_ebn0s) == len(all_snrs0):
+                ax2.set_xlim(ax.get_xlim())
+                n_pts = len(all_snrs0)
+                idx = list(range(n_pts)) if n_pts <= 8 else list(
+                    np.linspace(0, n_pts - 1, min(10, n_pts), dtype=int)
+                )
+                ax2.set_xticks([all_snrs0[i] for i in idx])
+                ax2.set_xticklabels([f'{all_ebn0s[i]:.1f}' for i in idx])
+
+        fig.tight_layout()
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
         plt.close(fig)

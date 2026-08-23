@@ -149,6 +149,18 @@ def _execute_batch_point(
         if np.isfinite(effective_throughput_bps) and bandwidth > 0
         else float('nan')
     )
+    # Eb/N0 用名义谱效（raw_throughput / bandwidth），不含 BER 修正，
+    # 避免 Eb/N0 随 BER 变化导致横轴刻度不稳定。
+    nominal_se = (
+        raw_throughput_bps / bandwidth
+        if np.isfinite(raw_throughput_bps) and bandwidth > 0
+        else float('nan')
+    )
+    eb_n0_db = (
+        snr - 10.0 * np.log10(nominal_se)
+        if np.isfinite(nominal_se) and nominal_se > 0
+        else float('nan')
+    )
     return {
         'SNRdB': snr,
         'BER': final_ber,
@@ -158,6 +170,7 @@ def _execute_batch_point(
         'raw_throughput_bps': raw_throughput_bps,
         'effective_throughput_bps': effective_throughput_bps,
         'spectral_efficiency_bps_per_hz': spectral_efficiency_bps_per_hz,
+        'EbN0_dB': eb_n0_db,
     }
 
 
@@ -172,25 +185,68 @@ def _save_batch_compare_chart(results: list, chart_path: str) -> None:
     fig, ax = plt.subplots(figsize=(8, 5.5))
     ax.set_facecolor('white')
     fig.patch.set_facecolor('white')
+    ax2 = ax.twiny()
     colors = ['#2C68B4', '#D95F02', '#3A9D3A', '#9467BD', '#E54B4F', '#8C6B4F']
     has_data = False
+    first_snrs = None
+    first_ebn0s = None
     for index, scheme_data in enumerate(results):
         scheme_name = scheme_data['scheme'].get('结果标签', f'方案{index + 1}')
-        snrs, bers = [], []
+        snrs, bers, ebn0s = [], [], []
+        all_snrs, all_ebn0s = [], []
         for item in scheme_data.get('results', []):
+            snr_val = item.get('snr')
             result = item.get('result')
-            if isinstance(result, dict) and result.get('BER') is not None and result['BER'] > 0:
-                snrs.append(item.get('snr'))
-                bers.append(result['BER'])
-        if snrs:
-            ax.semilogy(snrs, bers, marker='o', ms=6, lw=1.3,
-                        color=colors[index % len(colors)], label=scheme_name)
-            has_data = True
+            if isinstance(result, dict) and result.get('BER') is not None:
+                ber_val = result['BER']
+                all_snrs.append(snr_val)
+                eb = result.get('EbN0_dB')
+                if eb is not None and np.isfinite(eb):
+                    all_ebn0s.append(eb)
+                if ber_val > 0:
+                    snrs.append(snr_val)
+                    bers.append(ber_val)
+                    if eb is not None and np.isfinite(eb):
+                        ebn0s.append(eb)
+        if all_snrs:
+            color = colors[index % len(colors)]
+            if snrs:
+                ax.semilogy(snrs, bers, marker='o', ms=6, lw=1.3,
+                            color=color, label=scheme_name)
+                has_data = True
+                # 垂直下降线：最后一个非零 BER → 下一个 SNR 点底部
+                zero_snrs = [s for s in all_snrs if s not in snrs]
+                if zero_snrs:
+                    last_snr = snrs[-1]
+                    last_ber = bers[-1]
+                    first_zero = min(zero_snrs)
+                    ax.plot([last_snr, first_zero], [last_ber, last_ber], ':',
+                            color=color, lw=0.8)
+                    ax.plot([first_zero, first_zero], [last_ber, 1e-10], ':',
+                            color=color, lw=0.8)
+            # BER=0 的点画空心标记在底部
+            if len(all_snrs) > len(snrs):
+                zero_indices = [i for i, s in enumerate(all_snrs) if s not in set(snrs)]
+                zero_x = [all_snrs[i] for i in zero_indices]
+                ax.plot(zero_x, [1e-10] * len(zero_x), marker='o', ms=6,
+                        color=color, fillstyle='none', linestyle='none')
+            if first_snrs is None:
+                first_snrs = all_snrs
+                first_ebn0s = all_ebn0s
     ax.set_xlabel('SNR (dB)')
+    ax2.set_xlabel('Eₐ/N₀ (dB)')
     ax.set_ylabel('BER')
     ax.set_title('BER Comparison', fontsize=11, pad=6)
     if has_data:
         ax.legend(loc='lower left', fontsize=9)
+        if first_ebn0s and len(first_ebn0s) == len(first_snrs):
+            ax2.set_xlim(ax.get_xlim())
+            n_pts = len(first_snrs)
+            tick_idx = list(range(n_pts)) if n_pts <= 8 else list(
+                np.linspace(0, n_pts - 1, min(10, n_pts), dtype=int)
+            )
+            ax2.set_xticks([first_snrs[i] for i in tick_idx])
+            ax2.set_xticklabels([f'{first_ebn0s[i]:.1f}' for i in tick_idx])
     ax.grid(True, which='major', alpha=0.25, ls='--', lw=0.4)
     ax.grid(True, which='minor', alpha=0.10, ls='--', lw=0.3)
     fig.tight_layout()

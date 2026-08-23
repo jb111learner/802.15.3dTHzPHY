@@ -25,6 +25,7 @@ from thz_sim_ui.constants import APP_NAME, NAV_ITEMS, WINDOW_MIN_SIZE
 from thz_sim_ui.pages import (
     BatchComparePage,
     ChannelIntegrationPage,
+    FunctionalTestPage,
     HomePage,
     LinkDesignPage,
     ParameterConfigPage,
@@ -376,6 +377,7 @@ class MainWindow(QMainWindow):
             'link_design': LinkDesignPage(),
             'parameter_config': ParameterConfigPage(),
             'channel_integration': ChannelIntegrationPage(),
+            'functional_test': FunctionalTestPage(),
             'batch_compare': BatchComparePage(),
             'task_center': TaskCenterPage(),
             'result_analysis': ResultAnalysisPage(),

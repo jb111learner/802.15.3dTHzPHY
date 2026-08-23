@@ -32,7 +32,7 @@
     "频偏补偿": "否",
     "IQ补偿": "否",
     "信道估计与均衡": "否",
-    "随机种子策略": "固定种子",
+    "随机种子策略": "时间种子",
     "_channel_params": {
         "enable_awgn": true,
         "SNRdB": 24.0,
@@ -40,7 +40,7 @@
         "noise_figure_db": null,
         "enable_multipath": true,
         "multipath_source": "measured",
-        "measured_channel_mode": "pdp_rayleigh",
+        "measured_channel_mode": "deterministic",
         "measured_channel_scenario": "50cm",
         "measured_channel_retained_power": 0.95,
         "measured_channel_tx_index": 0,

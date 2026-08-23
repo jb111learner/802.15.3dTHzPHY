@@ -11,6 +11,7 @@ NAV_ITEMS = OrderedDict(
         ('parameter_config', '参数配置'),
         ('channel_integration', '信道集成'),
         ('batch_compare', '批量对比'),
+        ('functional_test', '功能测试'),
         ('task_center', '任务中心'),
         ('result_analysis', '结果分析'),
         ('tbps_mode', '1Tbps 专项模式'),

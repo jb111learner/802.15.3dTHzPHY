@@ -31,8 +31,8 @@
     "时长": 0.01,
     "频偏补偿": "否",
     "IQ补偿": "是",
-    "信道估计与均衡": "是",
-    "随机种子策略": "固定种子",
+    "信道估计与均衡": "否",
+    "随机种子策略": "时间种子",
     "_channel_params": {
         "enable_awgn": true,
         "SNRdB": 24.0,
@@ -45,7 +45,7 @@
         "enable_phase_noise": false,
         "enable_iq_imbalance": true,
         "iq_imbalance_position": "rx",
-        "iq_imbalance_model": "fid",
+        "iq_imbalance_model": "fd",
         "rx_iq_gain_imbalance_db": 2.0,
         "rx_iq_phase_imbalance_deg": 5.0,
         "rx_iq_gI_taps": [
