@@ -104,6 +104,8 @@ class FunctionalTestPage(WorkbenchPage):
         self.wave_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
         self.wave_symbols = spin(64, 1024, 128)
         self.wave_show = spin(64, 4096, 600)
+        self.wave_papr_syms = spin(16384, 1048576, 262144)
+        self.wave_papr_syms.setSingleStep(16384)
         box = make_form_group("波形测试参数", [
             ("链路模式", self.wave_mode),
             ("滚降滤波器长度", self.wave_filter_len),
@@ -111,10 +113,13 @@ class FunctionalTestPage(WorkbenchPage):
             ("滚降系数", self.wave_rolloff),
             ("符号数", self.wave_symbols),
             ("显示点数", self.wave_show),
+            ("PAPR 符号数/调制", self.wave_papr_syms),
         ])
         hint = QLabel(
             "SC：±1 脉冲点相隔 2×滤波器长度，期望正负交替的滚降波形；"
             "OFDM：每个符号仅单个子载波有值且索引逐符号递增，期望频率渐升正弦。"
+            "另生成多调制 PAPR CCDF 曲线（BPSK/QPSK/16QAM/64QAM 叠加，"
+            "符号数越多曲线越精确但越耗时）与经成型滤波后的功率谱（标截止频率）。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
@@ -206,20 +211,13 @@ class FunctionalTestPage(WorkbenchPage):
         self.wave_placeholder = self._make_placeholder("点击左侧「运行测试」生成波形")
         layout.addWidget(self.wave_placeholder)
 
-        card1 = CardWidget("时域波形")
-        self.wave_image_label = QLabel()
-        self.wave_image_label.setAlignment(Qt.AlignCenter)
-        self.wave_image_label.setMinimumHeight(280)
-        card1.layout.addWidget(self.wave_image_label)
+        # 结果图卡片容器：按每次运行产出的图数量动态生成（时域/星座/CCDF/频谱等）
+        self.wave_cards_container = QWidget()
+        self.wave_cards_layout = QVBoxLayout(self.wave_cards_container)
+        self.wave_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.wave_cards_layout.setSpacing(12)
+        layout.addWidget(self.wave_cards_container)
 
-        card2 = CardWidget("辅助图")
-        self.wave_image_label2 = QLabel()
-        self.wave_image_label2.setAlignment(Qt.AlignCenter)
-        self.wave_image_label2.setMinimumHeight(220)
-        card2.layout.addWidget(self.wave_image_label2)
-
-        layout.addWidget(card1)
-        layout.addWidget(card2)
         self.wave_checks_card = _UpdatableSummaryCard("验证结果", ["尚未运行"])
         layout.addWidget(self.wave_checks_card)
         layout.addStretch(1)
@@ -345,6 +343,7 @@ class FunctionalTestPage(WorkbenchPage):
                 "rolloff": self.wave_rolloff.value(),
                 "num_symbols": self.wave_symbols.value(),
                 "show_points": self.wave_show.value(),
+                "papr_symbols_per_mod": self.wave_papr_syms.value(),
             }
         if test_type == "codec":
             return {"config_text": self.codec_editor.toPlainText()}
@@ -394,8 +393,7 @@ class FunctionalTestPage(WorkbenchPage):
         if test_type == "waveform":
             self.wave_placeholder.setText("运行中，请稍候…")
             self.wave_placeholder.show()
-            self.wave_image_label.clear()
-            self.wave_image_label2.clear()
+            self._clear_wave_cards()
             self._wave_pixmaps = []
             self.wave_checks_card.set_lines(["运行中…"])
         elif test_type == "codec":
@@ -411,15 +409,27 @@ class FunctionalTestPage(WorkbenchPage):
             self.prec_table.setRowCount(0)
             self.prec_summary_card.set_lines(["运行中…"])
 
+    def _clear_wave_cards(self) -> None:
+        while self.wave_cards_layout.count():
+            item = self.wave_cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
     def _render_waveform(self, result: dict) -> None:
+        self._clear_wave_cards()
         self._wave_pixmaps = []
-        labels = [self.wave_image_label, self.wave_image_label2]
-        for i, plot in enumerate(result.get("plots", [])):
-            if i >= len(labels):
-                break
+        for plot in result.get("plots", []):
+            card = CardWidget(plot.get("title", ""))
+            label = QLabel()
+            label.setAlignment(Qt.AlignCenter)
+            label.setMinimumHeight(240)
+            card.layout.addWidget(label)
+            self.wave_cards_layout.addWidget(card)
             pm = QPixmap()
             if pm.loadFromData(plot.get("png", b""), "PNG"):
-                self._wave_pixmaps.append((labels[i], pm))
+                self._wave_pixmaps.append((label, pm))
         self.wave_placeholder.hide()
         self._apply_wave_pixmaps()
         lines = [
@@ -473,6 +483,7 @@ class FunctionalTestPage(WorkbenchPage):
                 "滚降系数": self.wave_rolloff.value(),
                 "符号数": self.wave_symbols.value(),
                 "显示点数": self.wave_show.value(),
+                "PAPR符号数": self.wave_papr_syms.value(),
             },
             "编码类型": self.codec_type_combo.currentText(),
             "精度验证": {

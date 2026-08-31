@@ -329,11 +329,11 @@ class MainWindow(QMainWindow):
 
         self.project_label = QLabel('工程：-')
         self.project_label.setStyleSheet('font-weight: 700;')
-        self.user_label = QLabel('用户：李 喆')
+        # self.user_label = QLabel('用户：李 喆')
         self.version_label = QLabel('版本：-')
         layout.addWidget(self.project_label)
         layout.addWidget(self.version_label)
-        layout.addWidget(self.user_label)
+        # layout.addWidget(self.user_label)
 
         actions = [
             ('保存', self._save_project, ''),

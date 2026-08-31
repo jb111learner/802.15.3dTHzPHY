@@ -19,8 +19,11 @@ import matplotlib.pyplot as plt
 
 from PySide6.QtCore import QThread, Signal
 
+# 绘图格式对齐 backend.py（SimHei 中文 + DejaVu 回退）与 batch_compare_page
+# 的白底/网格/颜色表风格。semilogy 的负指数刻度改用 ASCII Formatter，
+# 避免 mathtext 的 U+2212 在 SimHei 首字体下缺字形。
 PLOT_STYLE = {
-    "font.sans-serif": ["SimHei", "Microsoft YaHei", "DejaVu Sans"],
+    "font.sans-serif": ["SimHei", "DejaVu Sans", "Arial Unicode MS"],
     "axes.unicode_minus": False,
     "axes.linewidth": 0.8,
     "xtick.direction": "in",
@@ -31,6 +34,7 @@ PLOT_STYLE = {
     "grid.linestyle": "--",
     "grid.linewidth": 0.4,
 }
+PLOT_COLORS = ["#2C68B4", "#D95F02", "#3A9D3A", "#9467BD", "#E54B4F", "#8C6B4F"]
 
 plt.rcParams["font.sans-serif"] = PLOT_STYLE["font.sans-serif"]
 plt.rcParams["axes.unicode_minus"] = False
@@ -75,6 +79,20 @@ def _count_contiguous_regions(mask: np.ndarray) -> int:
     return int(starts + np.count_nonzero(edges == 1))
 
 
+def _make_signal_dict(stream: np.ndarray, rate: float, extra: Optional[dict] = None) -> dict:
+    """按 dict 协议构造信号字典（sample_rate × duration == signal_length）。"""
+    data = {
+        "signal_stream": np.asarray(stream),
+        "sample_rate_Hz": rate,
+        "duration_seconds": len(stream) / rate,
+        "signal_length": len(stream),
+        "padding_bit_num": 0,
+    }
+    if extra:
+        data.update(extra)
+    return data
+
+
 def _run_sc_waveform_test(params, num_symbols: int, show_points: int,
                           checks: list, plots: list, summary: list) -> None:
     from transmitter.Modulator import THzModulator
@@ -103,7 +121,7 @@ def _run_sc_waveform_test(params, num_symbols: int, show_points: int,
     derot = syms * np.exp(-1j * np.pi * np.arange(len(syms)) / 2)
     ok_mod = (abs(derot[0] - 1.0) < 1e-12) and (abs(derot[1] + 1.0) < 1e-12)
     checks.append({
-        "name": "pi/2-BPSK 调制输出（去旋转后应为 +1/-1）",
+        "name": "BPSK 调制输出（去旋转后应为 +1/-1）",
         "ok": bool(ok_mod),
         "detail": f"去旋转符号 = [{derot[0]:.6g}, {derot[1]:.6g}]",
     })
@@ -177,30 +195,6 @@ def _run_sc_waveform_test(params, num_symbols: int, show_points: int,
     ax.legend(fontsize=8)
     fig.tight_layout()
     plots.append({"title": "SC-FDE 时域波形", "png": _figure_to_png(fig)})
-
-    # 6) 图 (b)：pi/2-BPSK 去旋转星座校验
-    bits16 = np.tile(np.array([1, 0], dtype=np.uint8), 8)
-    mod_dict16 = mod.modulate({
-        "signal_stream": bits16,
-        "sample_rate_Hz": 30e9,
-        "duration_seconds": len(bits16) / 30e9,
-        "signal_length": len(bits16),
-        "padding_bit_num": 0,
-        "frame_bit_num": len(bits16),
-        "frame_num": 1,
-    })
-    syms16 = np.asarray(mod_dict16["signal_stream"])
-    derot16 = syms16 * np.exp(-1j * np.pi * np.arange(len(syms16)) / 2)
-    _apply_plot_style()
-    fig, ax = plt.subplots(figsize=(4.6, 3.4))
-    ax.scatter(np.real(derot16), np.imag(derot16), s=14, color="#2C68B4")
-    ax.set_xlabel("实部")
-    ax.set_ylabel("虚部")
-    ax.set_title("pi/2-BPSK 解旋转星座校验")
-    ax.axis("equal")
-    ax.grid(True)
-    fig.tight_layout()
-    plots.append({"title": "pi/2-BPSK 星座", "png": _figure_to_png(fig)})
 
     summary.extend([
         {"label": "滤波器", "value": f"RRC L={L}，{sps}×，β={beta}"},
@@ -370,17 +364,6 @@ def _run_ofdm_waveform_test(params, include_optional_pipeline: bool,
                 "detail": f"子载波 k=480 处相对直流衰减 = {att:.4f}（期望 < 0.1）",
             })
 
-        # 图 (c)：模块链路时域波形（GI 后前 2048 采样）
-        _apply_plot_style()
-        n3 = min(2048, len(gi_sig))
-        fig, ax = plt.subplots(figsize=(7.5, 3.0))
-        ax.plot(np.arange(n3), np.real(gi_sig[:n3]), color="#2C68B4", lw=0.6)
-        ax.set_xlabel("采样点")
-        ax.set_ylabel("幅度")
-        ax.set_title("模块链路输出（TxOFDMProcesser → 插入 GI）时域波形")
-        ax.grid(True)
-        fig.tight_layout()
-        plots.append({"title": "OFDM 模块链路波形", "png": _figure_to_png(fig)})
         summary.append({"label": "模块链路", "value": "ofdm_process + GI 校验通过"})
     except Exception as exc:
         checks.append({
@@ -390,14 +373,290 @@ def _run_ofdm_waveform_test(params, include_optional_pipeline: bool,
         })
 
 
+def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
+                        checks: list, plots: list, summary: list) -> None:
+    """多调制 PAPR CCDF：BPSK/QPSK/16QAM/64QAM 经调制与成型滤波后叠加一张图。
+
+    SC：每符号周期（sps 样本）为一块；OFDM：每个 OFDM 符号（512 样本）为一块。
+    点数默认 262144 符号/调制（SC 可分辨到 ~4e-6，OFDM 约 528 个符号块 ~2e-3）。
+    """
+    from params.PHYParams import PHYParams
+    from transmitter.Modulator import THzModulator
+    from transmitter.Pulseshaper import TxPulseShaper
+
+    L = int(params.get("filter_length"))
+    sps = int(params.get("oversampling"))
+    rolloff = float(params.get("rolloff"))
+    fs_base = 30e9
+    mods = [("BPSK", 1), ("QPSK", 2), ("16QAM", 4), ("64QAM", 6)]
+    rng = np.random.default_rng(20260829)
+
+    sorted_papr = {}
+    n_blocks_list = []
+    for name, ncbps in mods:
+        p = PHYParams()
+        p.update(link_mode=mode, filter_length=L, oversampling=sps, rolloff=rolloff,
+                 NCBPS=ncbps, MCS=1, scramble=False)
+        mod = THzModulator(p)
+        if mode == "sc-fde":
+            n_syms = int(symbols_per_mod)
+            bits = rng.integers(0, 2, n_syms * ncbps).astype(np.uint8)
+            syms = mod.modulate(_make_signal_dict(
+                bits, fs_base, {"frame_bit_num": len(bits), "frame_num": 1}))["signal_stream"]
+            shaped = TxPulseShaper(p).shape_pulse(_make_signal_dict(syms, fs_base))
+            sig = np.asarray(shaped["signal_stream"])
+            block_len = sps
+        else:
+            from transmitter.TxOFDMProcesser import TxOFDMProcesser
+            data_per_sub = 45 * 512
+            # OFDM 每个 PAPR 块（512 样本）对应 480 个调制符号：默认 262144
+            # 符号只有 ~500 块，CCDF 统计波动大（标准误 ~0.016，曲线间
+            # 出现系统性偏移假象）。IFFT 开销远小于 SC 的成型卷积，故用
+            # 4× 符号数把块数提到 ~2000（标准误 ~0.009），曲线平滑可辨。
+            n_sub = max(1, int(symbols_per_mod) * 4 // data_per_sub)
+            data_syms = n_sub * data_per_sub
+            bits = rng.integers(0, 2, data_syms * ncbps).astype(np.uint8)
+            syms = mod.modulate(_make_signal_dict(
+                bits, fs_base, {"frame_bit_num": len(bits), "frame_num": 1}))["signal_stream"]
+            ofdm = TxOFDMProcesser(p).ofdm_process(_make_signal_dict(
+                syms, fs_base, {"frame_symbol_num": data_per_sub, "frame_num": n_sub}))
+            sig = np.asarray(ofdm["signal_stream"])
+            block_len = 512
+
+        n_blocks = len(sig) // block_len
+        blocks = sig[:n_blocks * block_len].reshape(n_blocks, block_len)
+        if mode == "ofdm":
+            # 排除导频块：固定 a512 序列的 PAPR 恒为 ~3.0 dB（std=0），
+            # 混入统计会在 CCDF 上造成 6.25% 的陡降台阶，曲线失真。
+            pilots = set(params.get("pilot_block_indexes"))
+            blocks_per_subframe = int(params.get("subframe_ofdm_num"))
+            keep = np.array([b % blocks_per_subframe not in pilots
+                             for b in range(n_blocks)])
+            blocks = blocks[keep]
+            n_blocks = len(blocks)
+        pwr = np.mean(np.abs(blocks) ** 2, axis=1) + 1e-15
+        peak = np.max(np.abs(blocks) ** 2, axis=1)
+        sorted_papr[name] = np.sort(10 * np.log10(peak / pwr))
+        n_blocks_list.append(n_blocks)
+
+    # 动态 x 轴：覆盖全部曲线实际 PAPR 范围（SC 的 pi/2-BPSK 从 ~0 dB 起，
+    # OFDM 数据块集中在 6~12 dB），避免 0~15 固定轴上的大段空白平台。
+    x_lo = max(0.0, float(np.floor(min(p[0] for p in sorted_papr.values())) - 1.0))
+    x_hi = float(np.ceil(max(p[-1] for p in sorted_papr.values())) + 1.0)
+    x = np.linspace(x_lo, x_hi, 151)
+    ccdf_curves = {}
+    min_y = 1.0
+    for name, papr_db in sorted_papr.items():
+        y = 1.0 - np.searchsorted(papr_db, x) / len(papr_db)
+        ccdf_curves[name] = y
+        min_y = min(min_y, float(y[-1]))
+
+    ok_blocks = len(set(n_blocks_list)) == 1
+    ok_mono = all(bool(np.all(np.diff(y) <= 0)) for y in ccdf_curves.values())
+    ok_head = all(bool(y[0] == 1.0) for y in ccdf_curves.values())
+    pilot_note = "（已排除导频块）" if mode == "ofdm" else ""
+    checks.append({
+        "name": "PAPR CCDF 曲线有效（各调制点数一致、单调递减）",
+        "ok": bool(ok_blocks and ok_mono and ok_head),
+        "detail": f"每调制 {symbols_per_mod} 符号{pilot_note}（块数 {n_blocks_list[0]}），"
+                  f"CCDF({x_lo:.0f} dB)=1，单调性 {'正常' if ok_mono else '异常'}",
+    })
+
+    # OFDM：与高斯近似理论对比（正交 IFFT 输出近似复高斯，
+    # CCDF(x) = 1-(1-e^(-x))^N，x 为线性 PAPR）。用 QPSK 曲线做参照：
+    # pi/2-BPSK 因频域实虚交替使时域包络镜像对称（自由度减半为 N/2），
+    # PAPR 系统性偏低，属真实物理特性，不做 512 音校验。
+    if mode == "ofdm":
+        n_sc = int(params.get("subwave_num"))
+        ref_y = ccdf_curves["QPSK"]
+        theory_devs = []
+        for x_db in (8.0, 9.0, 10.0):
+            idx = int(np.argmin(np.abs(x - x_db)))
+            theory = 1.0 - (1.0 - np.exp(-10 ** (x_db / 10))) ** n_sc
+            theory_devs.append(abs(float(ref_y[idx]) - theory))
+        ok_theory = max(theory_devs) < 0.08
+        checks.append({
+            "name": "OFDM PAPR CCDF 符合理论预期（QPSK 参照）",
+            "ok": bool(ok_theory),
+            "detail": f"QPSK 在 8/9/10 dB 处与 {n_sc} 音高斯理论最大偏差"
+                      f" {max(theory_devs):.3f}（< 0.08）；"
+                      f"BPSK 因频域实虚交替镜像对称，PAPR 偏低属正常",
+        })
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(7.5, 4.0))
+    ax.set_facecolor("white")
+    fig.patch.set_facecolor("white")
+    linestyles = ["-", "--", "-.", ":"]
+    for (name, y), color, ls in zip(ccdf_curves.items(), PLOT_COLORS, linestyles):
+        ax.semilogy(x, y, color=color, ls=ls, lw=1.2, label=name)
+    # 负指数刻度用 ASCII 格式（1e-5），避免 mathtext 的 U+2212 缺字形
+    from matplotlib.ticker import FuncFormatter
+    ax.yaxis.set_major_formatter(FuncFormatter(
+        lambda v, _: "1" if abs(v - 1.0) < 1e-12 else
+        (f"1e{int(round(np.log10(v)))}" if v > 0 else "0")))
+    ax.set_xlabel("PAPR (dB)")
+    ax.set_ylabel("CCDF  P(PAPR > x)")
+    ax.set_title(f"{mode.upper()} 多调制 PAPR CCDF（每调制 {symbols_per_mod} 符号，成型滤波后）")
+    ax.set_xlim(x_lo, x_hi)
+    ax.set_ylim(max(min_y / 2, 1e-5), 2.0)
+    ax.grid(True, which="both")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    plots.append({"title": "PAPR CCDF（多调制）", "png": _figure_to_png(fig)})
+    summary.append({"label": "PAPR 测试", "value": f"4 种调制 × {symbols_per_mod} 符号"})
+
+
+def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: list) -> None:
+    """经过成型滤波器后的功率谱（Welch），叠加理论滤波器响应并标注截止频率。
+
+    采样方式：成型输出为基带复数信号，采样率 fs_base×sps；Welch 分 8192 点段
+    平均（hann 窗）以压低方差；频率轴归一化为 f/fs_base，便于标注通带/截止。
+    """
+    from params.PHYParams import PHYParams
+    from transmitter.Modulator import THzModulator
+    from transmitter.Pulseshaper import TxPulseShaper
+    from scipy.signal import welch
+
+    L = int(params.get("filter_length"))
+    sps = int(params.get("oversampling"))
+    rolloff = float(params.get("rolloff"))
+    fs_base = 30e9
+    p = PHYParams()
+    p.update(link_mode=mode, filter_length=L, oversampling=sps, rolloff=rolloff,
+             NCBPS=2, MCS=1, scramble=False)
+    mod = THzModulator(p)
+    rng = np.random.default_rng(20260829)
+
+    if mode == "sc-fde":
+        n_syms = 32768
+        bits = rng.integers(0, 2, n_syms * 2).astype(np.uint8)
+        syms_raw = mod.modulate(_make_signal_dict(
+            bits, fs_base, {"frame_bit_num": len(bits), "frame_num": 1}))["signal_stream"]
+        # 去 pi/2 旋转：旋转使频谱整体搬移 Rs/4（双峰），会遮住成型滤波器
+        # 本征形状；测试信号去旋转后频谱平坦，RRC 形状与截止点清晰可验。
+        syms = np.asarray(syms_raw) * np.exp(-1j * np.pi * np.arange(len(syms_raw)) / 2)
+        shaper = TxPulseShaper(p)
+        shaped = shaper.shape_pulse(_make_signal_dict(syms, fs_base))
+        sig = np.asarray(shaped["signal_stream"])
+        fs_out = float(shaped["sample_rate_Hz"])
+        cut_lines = [0.5]                 # RRC 半功率点（-3dB）±Rs/2
+        band_edges = [(1 - rolloff) / 2, (1 + rolloff) / 2]
+        cut_text = f"±Rs/2 处 -3dB；通带边缘 ±{band_edges[0]:.3f}；理论带宽 ±{band_edges[1]:.3f}"
+        passband = 0.30                   # 平坦度检查区间（通带内）
+        stopband = band_edges[1] + 0.05   # 阻带检查起点
+        title_note = "调制：QPSK（测试信号已去除符号相位旋转）"
+    else:
+        from transmitter.TxOFDMProcesser import TxOFDMProcesser
+        data_syms = 45 * 512
+        bits = rng.integers(0, 2, data_syms * 2).astype(np.uint8)
+        syms = mod.modulate(_make_signal_dict(
+            bits, fs_base, {"frame_bit_num": len(bits), "frame_num": 1}))["signal_stream"]
+        ofdm = TxOFDMProcesser(p).ofdm_process(_make_signal_dict(
+            syms, fs_base, {"frame_symbol_num": data_syms, "frame_num": 1}))
+        shaper = TxPulseShaper(p)
+        shaped = shaper.shape_pulse(_make_signal_dict(ofdm["signal_stream"], fs_base))
+        sig = np.asarray(shaped["signal_stream"])
+        fs_out = float(shaped["sample_rate_Hz"])
+        cut_lines = [0.5]                 # 低通截止 ±fs_base/2
+        band_edges = []
+        cut_text = "低通截止 ±fs_base/2（抗镜像，DC 增益 ×sps）"
+        passband = 0.40
+        stopband = 0.60
+        title_note = "调制：QPSK（符号相位旋转不改变 OFDM 频谱形状）"
+
+    # 理论滤波器响应（成型滤波器的形状）
+    h_resp = np.fft.fft(shaper.filter_coeffs, 4096)
+    f_h = np.fft.fftfreq(4096, 1 / fs_out) / fs_base
+    h_db = 20 * np.log10(np.abs(h_resp) / (np.max(np.abs(h_resp)) + 1e-15))
+    order_h = np.argsort(f_h)
+
+    # Welch 功率谱（分段平均，双边谱）
+    f, psd = welch(sig, fs=fs_out, nperseg=8192, window="hann", return_onesided=False)
+    f_n = f / fs_base
+    order = np.argsort(f_n)
+    f_n, psd_db = f_n[order], 10 * np.log10(psd[order] / (np.max(psd) + 1e-15))
+
+    # dB 域移动平均平滑：周期图 bin 呈指数分布、单 bin 波动大且平滑后
+    # 最大值仍虚高约 1~2 dB；平滑后才能正确呈现滤波器形状并做校验。
+    smooth_win = 31
+    psd_db_s = np.convolve(psd_db, np.ones(smooth_win) / smooth_win, mode="same")
+
+    # 归一化到通带中位数：周期图 max 虚高会把整条谱面压低，中位数参照
+    # 是无偏的，使实测与理论曲线可直接对齐、绝对值校验有意义。
+    mask_ref = np.abs(f_n) < 0.35
+    psd_db_s = psd_db_s - float(np.median(psd_db_s[mask_ref]))
+    h_db = h_db - float(np.median(h_db[np.abs(f_h) < 0.35]))
+
+    # 校验（用平滑谱）：通带平坦、截止点、阻带衰减
+    mask_pass = np.abs(f_n) < passband
+    flat_min = float(np.min(psd_db_s[mask_pass]))
+    ok_flat = flat_min > -1.5
+    if mode == "sc-fde":
+        mask_cut = np.abs(np.abs(f_n) - 0.5) < 0.01
+        cut_db = float(np.mean(psd_db_s[mask_cut]))
+        ok_cut = -4.5 < cut_db < -1.5
+        cut_detail = f"±Rs/2 处实测 {cut_db:.1f} dB（期望约 -3 dB）"
+    else:
+        mask_cut = np.abs(np.abs(f_n) - 0.5) < 0.01
+        cut_db = float(np.mean(psd_db_s[mask_cut]))
+        ok_cut = cut_db < -2.0
+        cut_detail = f"截止 ±fs_base/2 处实测 {cut_db:.1f} dB"
+    mask_stop = np.abs(f_n) > stopband
+    stop_max = float(np.max(psd_db_s[mask_stop]))
+    ok_stop = stop_max < -20.0
+    checks.append({
+        "name": "频谱通带平坦",
+        "ok": bool(ok_flat),
+        "detail": f"|f|<{passband}·fs_base 内最小值 {flat_min:.1f} dB（期望 > -1.5 dB）",
+    })
+    checks.append({
+        "name": "截止频率位置正确",
+        "ok": bool(ok_cut),
+        "detail": cut_detail,
+    })
+    checks.append({
+        "name": "阻带衰减充分",
+        "ok": bool(ok_stop),
+        "detail": f"|f|>{stopband}·fs_base 外最大 {stop_max:.1f} dB（期望 < -20 dB）",
+    })
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(7.5, 4.0))
+    ax.set_facecolor("white")
+    fig.patch.set_facecolor("white")
+    ax.plot(f_n, psd_db_s, color="#2C68B4", lw=1.0, label="实测功率谱（Welch 平滑）")
+    ax.plot(f_h[order_h], h_db[order_h], color="#D95F02", lw=1.0, ls="--",
+            label="理论滤波器响应")
+    for cf in cut_lines:
+        ax.axvline(cf, color="#E5484D", lw=1.0, ls="-.")
+        ax.axvline(-cf, color="#E5484D", lw=1.0, ls="-.")
+    for be in band_edges:
+        ax.axvline(be, color="gray", lw=0.6, ls=":")
+        ax.axvline(-be, color="gray", lw=0.6, ls=":")
+    ax.set_xlabel("归一化频率 f / fs_base")
+    ax.set_ylabel("功率谱 (dB)")
+    ax.set_title(f"{mode.upper()} 成型滤波后功率谱（{title_note}；{cut_text}）")
+    ax.set_xlim(-1.2, 1.2)
+    ax.set_ylim(-60, 5)
+    ax.grid(True)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    plots.append({"title": "功率谱（经成型滤波）", "png": _figure_to_png(fig)})
+    summary.append({"label": "频谱测试", "value": f"Welch 8192 点分段平均，采样率 {fs_out / 1e9:.0f} GHz"})
+
+
 def run_waveform_test(link_mode: str = "sc-fde", filter_length: int = 32,
                       oversampling: int = 4, rolloff: float = 0.22,
                       num_symbols: int = 128, show_points: int = 600,
-                      include_optional_pipeline: bool = True) -> Dict[str, Any]:
+                      include_optional_pipeline: bool = True,
+                      papr_symbols_per_mod: int = 262144) -> Dict[str, Any]:
     """发射端波形调制与成型滤波测试。
 
     SC-FDE：±1 脉冲点相隔 2×滚降滤波器长度，期望正负交替的滚降波形；
     OFDM：每符号仅单个子载波有值且索引逐符号递增，期望频率渐升正弦。
+    另含：多调制（BPSK/QPSK/16QAM/64QAM）PAPR CCDF 叠加曲线、
+    经成型滤波后的功率谱（Welch，叠加理论滤波器响应并标注截止频率）。
     """
     from params.PHYParams import PHYParams
 
@@ -422,6 +681,11 @@ def run_waveform_test(link_mode: str = "sc-fde", filter_length: int = 32,
     else:
         _run_ofdm_waveform_test(params, bool(include_optional_pipeline),
                                 result["checks"], result["plots"], result["summary"])
+
+    _run_papr_ccdf_test(params, mode, int(papr_symbols_per_mod),
+                        result["checks"], result["plots"], result["summary"])
+    _run_spectrum_test(params, mode,
+                       result["checks"], result["plots"], result["summary"])
 
     result["ok"] = all(c["ok"] for c in result["checks"])
     result["elapsed_ms"] = (time.perf_counter() - t0) * 1e3
