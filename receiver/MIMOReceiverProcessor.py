@@ -94,23 +94,24 @@ class MIMOReceiverProcessor:
         received = self._compensate_known_rx_iq(received)
         sample_rate = float(signal_dict["sample_rate_Hz"])
 
-        sync_offset, sync_metric = self._detect_sync(received)
-        compensated, estimated_cfo = self._estimate_and_compensate_cfo(
-            received, sync_offset, sample_rate
+        # 帧结构：发射端逐帧组帧（每帧 = 保护 + 2 SYNC + 训练 + 数据块）
+        frame_num = int(self.frame.get("frame_num", 1))
+        num_data_per_frame = int(self.frame["num_data_symbols"])
+        guard_length = int(self.frame.get("guard_length", 0))
+        frame_length = (
+            guard_length
+            + (2 + self.num_tx + num_data_per_frame) * self.block_length
         )
-        sync_frequency = self._extract_fft_blocks(compensated, sync_offset, 2)
-        estimated_noise_frequency = float(
-            np.mean(np.abs(sync_frequency[:, 0] - sync_frequency[:, 1]) ** 2) / 2.0
-        )
+        tx_scale = float(self.frame["tx_scale"])
+        csi_mode = str(self.params.get("mimo_csi_mode", "estimated")).lower()
+        if csi_mode not in ("estimated", "ideal"):
+            raise ValueError("mimo_csi_mode 仅支持 'estimated' 或 'ideal'")
 
-        training_start = sync_offset + 2 * self.block_length
-        training = self._extract_fft_blocks(compensated, training_start, self.num_tx)
-        estimated_channel = MIMOChannelEstimator.estimate(
-            training, self.frame["pilot_frequency"]
-        )
+        # 首帧同步（其余帧按等长帧结构顺延定位）
+        sync_offset, sync_metric = self._detect_sync(received)
+        timing_shift = sync_offset - guard_length
 
         true_channel = signal_dict.get("mimo_channel_frequency_response")
-        timing_shift = sync_offset - int(self.frame.get("guard_length", 0))
         aligned_true_channel = None
         if true_channel is not None:
             aligned_true_channel = np.asarray(true_channel)
@@ -124,52 +125,105 @@ class MIMOReceiverProcessor:
                     / self.nfft
                 )
                 aligned_true_channel = aligned_true_channel * phase[None, None, :]
+
+        noise_frequency_known = signal_dict.get("noise_power")
+        zf_mode = str(self.params.get("mimo_detector", "mmse")).lower() == "zf"
+
+        # ── 逐帧处理：CFO / 噪声 / 信道估计 / 检测 / 层解映射 ──
+        # 注意：_detect_sync 定位的是 SYNC 块（含 CP）起点，帧起点在其前
+        # guard_length 个样点处；后续帧按等长帧结构顺延。
+        recovered_frames = []
+        post_vars = []
+        cfo_list = []
+        channel_estimates = []
+        detector_diagnostics = None
+        frame0_start = sync_offset - guard_length
+        for frame_index in range(frame_num):
+            frame_start = frame0_start + frame_index * frame_length
+            frame_end = frame_start + frame_length
+            if frame_end > received.shape[1]:
+                raise ValueError(
+                    f"第 {frame_index} 帧不完整：需要 {frame_end} 个采样，"
+                    f"实际仅 {received.shape[1]} 个"
+                )
+            frame_signal = received[:, frame_start:frame_end]
+
+            # 帧内 CFO（两个重复 SYNC 的相位差）
+            compensated, cfo_frame = self._estimate_and_compensate_cfo(
+                frame_signal, guard_length, sample_rate
+            )
+            cfo_list.append(cfo_frame)
+
+            # 帧内噪声方差（SYNC 重复块差分）
+            sync_frequency = self._extract_fft_blocks(
+                compensated, guard_length, 2
+            )
+            noise_frequency = float(
+                np.mean(np.abs(sync_frequency[:, 0] - sync_frequency[:, 1]) ** 2) / 2.0
+            )
+
+            # 帧内训练符号 → LS 信道估计
+            training_start = guard_length + 2 * self.block_length
+            training = self._extract_fft_blocks(
+                compensated, training_start, self.num_tx
+            )
+            estimated_channel = MIMOChannelEstimator.estimate(
+                training, self.frame["pilot_frequency"]
+            )
+            channel_estimates.append(estimated_channel)
+
+            if csi_mode == "ideal":
+                if true_channel is None:
+                    raise ValueError("mimo_csi_mode='ideal' 需要信道提供真实频率响应")
+                detection_channel = aligned_true_channel
+            else:
+                detection_channel = estimated_channel
+
+            data_start = training_start + self.num_tx * self.block_length
+            received_data = self._extract_fft_blocks(
+                compensated, data_start, num_data_per_frame
+            )
+            if noise_frequency_known is not None:
+                detector_noise = max(
+                    float(noise_frequency_known) * self.nfft, 0.0
+                ) if not zf_mode else 0.0
+            else:
+                detector_noise = 0.0 if zf_mode else max(noise_frequency, 0.0)
+
+            detected, detector_diagnostics = self.detector.detect(
+                received_data, detection_channel, detector_noise
+            )
+            layers = []
+            for stream_index, length in enumerate(self.frame["layer_lengths"]):
+                layer = detected[stream_index].reshape(-1)[:int(length)] / tx_scale
+                layers.append(layer)
+            recovered_frames.append(
+                MIMOLayerDemapper.demap(
+                    layers, self.frame["original_symbol_count"]
+                )
+            )
+
+            post_variance = detector_diagnostics["post_noise_variance"]
+            if tx_scale != 0:
+                post_variance = post_variance / (tx_scale ** 2)
+            post_vars.append(
+                float(np.mean(post_variance)) if post_variance.size else 0.0
+            )
+
+        recovered_symbols = (
+            np.concatenate(recovered_frames)
+            if recovered_frames
+            else np.zeros(0, dtype=np.complex128)
+        )
+        # 多帧信道估计取平均（静态信道假设下降低估计噪声）
+        mean_channel_estimate = np.mean(np.asarray(channel_estimates), axis=0)
         channel_nmse = None
         if aligned_true_channel is not None:
             channel_nmse = MIMOChannelEstimator.nmse(
-                estimated_channel, aligned_true_channel
+                mean_channel_estimate, aligned_true_channel
             )
-
-        csi_mode = str(self.params.get("mimo_csi_mode", "estimated")).lower()
-        if csi_mode == "ideal":
-            if true_channel is None:
-                raise ValueError("mimo_csi_mode='ideal' 需要信道提供真实频率响应")
-            detection_channel = aligned_true_channel
-        elif csi_mode == "estimated":
-            detection_channel = estimated_channel
-        else:
-            raise ValueError("mimo_csi_mode 仅支持 'estimated' 或 'ideal'")
-
-        data_start = training_start + self.num_tx * self.block_length
-        received_data = self._extract_fft_blocks(
-            compensated, data_start, int(self.frame["num_data_symbols"])
-        )
-        noise_frequency = signal_dict.get("noise_power")
-        if noise_frequency is None:
-            noise_frequency = estimated_noise_frequency
-        else:
-            noise_frequency = float(noise_frequency) * self.nfft
-        if str(self.params.get("mimo_detector", "mmse")).lower() == "zf":
-            detector_noise = 0.0
-        else:
-            detector_noise = max(float(noise_frequency), 0.0)
-
-        detected, detector_diagnostics = self.detector.detect(
-            received_data, detection_channel, detector_noise
-        )
-        tx_scale = float(self.frame["tx_scale"])
-        layers = []
-        for stream_index, length in enumerate(self.frame["layer_lengths"]):
-            layer = detected[stream_index].reshape(-1)[:int(length)] / tx_scale
-            layers.append(layer)
-        recovered_symbols = MIMOLayerDemapper.demap(
-            layers, self.frame["original_symbol_count"]
-        )
-
-        post_variance = detector_diagnostics["post_noise_variance"]
-        if tx_scale != 0:
-            post_variance = post_variance / (tx_scale ** 2)
-        mean_post_variance = float(np.mean(post_variance)) if post_variance.size else 0.0
+        estimated_cfo = float(np.mean(cfo_list)) if cfo_list else 0.0
+        mean_post_variance = float(np.mean(post_vars)) if post_vars else 0.0
 
         output = {
             "signal_stream": recovered_symbols,
@@ -177,8 +231,8 @@ class MIMOReceiverProcessor:
             "duration_seconds": len(recovered_symbols) / sample_rate,
             "signal_length": len(recovered_symbols),
             "padding_bit_num": signal_dict.get("padding_bit_num", 0),
-            "channel_freq_response": estimated_channel,
-            "mimo_channel_estimate": estimated_channel,
+            "channel_freq_response": mean_channel_estimate,
+            "mimo_channel_estimate": mean_channel_estimate,
             "mimo_channel_nmse": channel_nmse,
             "mimo_sync_offset": sync_offset,
             "mimo_timing_shift_samples": timing_shift,
@@ -189,6 +243,6 @@ class MIMOReceiverProcessor:
         }
         self.equalized = output
         self.compensated_signal = dict(signal_dict)
-        self.compensated_signal["signal_stream"] = compensated
+        self.compensated_signal["signal_stream"] = received
         self.compensated_signal["mimo_sync_offset"] = sync_offset
         return output

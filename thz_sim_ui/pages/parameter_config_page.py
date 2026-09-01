@@ -13,29 +13,30 @@ from thz_sim_ui.widgets.workbench import WorkbenchPage
 
 # ── P01–P12 参数测试模版 ──────────────────────────────────────────
 PRESET_TABLE = {
-    "P01 — SC + QPSK + RS + AWGN":       {"波形": "单载波SC", "调制": "QPSK",  "编码": "RS（192,255）",     "信道": "AWGN"},
-    "P02 — SC + QPSK + LDPC + AWGN":     {"波形": "单载波SC", "调制": "QPSK",  "编码": "LDPC（1344,1440）", "信道": "AWGN"},
-    "P03 — SC + 16QAM + RS + AWGN":      {"波形": "单载波SC", "调制": "16QAM", "编码": "RS（192,255）",     "信道": "AWGN"},
-    "P04 — SC + 16QAM + LDPC + AWGN":    {"波形": "单载波SC", "调制": "16QAM", "编码": "LDPC（1344,1440）", "信道": "AWGN"},
-    "P05 — SC + 64QAM + RS + AWGN":      {"波形": "单载波SC", "调制": "64QAM", "编码": "RS（192,255）",     "信道": "AWGN"},
-    "P06 — SC + 64QAM + LDPC + AWGN":    {"波形": "单载波SC", "调制": "64QAM", "编码": "LDPC（1344,1440）", "信道": "AWGN"},
-    "P07 — OFDM + QPSK + RS + AWGN":     {"波形": "多载波OFDM", "调制": "QPSK",  "编码": "RS（11,15）",      "信道": "AWGN"},
-    "P08 — OFDM + QPSK + LDPC + AWGN":   {"波形": "多载波OFDM", "调制": "QPSK",  "编码": "LDPC（1344,1440）", "信道": "AWGN"},
-    "P09 — OFDM + 16QAM + RS + AWGN":    {"波形": "多载波OFDM", "调制": "16QAM", "编码": "RS（11,15）",      "信道": "AWGN"},
-    "P10 — OFDM + 16QAM + LDPC + AWGN":  {"波形": "多载波OFDM", "调制": "16QAM", "编码": "LDPC（1344,1440）", "信道": "AWGN"},
-    "P11 — OFDM + 64QAM + RS + AWGN":    {"波形": "多载波OFDM", "调制": "64QAM", "编码": "RS（11,15）",      "信道": "AWGN"},
-    "P12 — OFDM + 64QAM + LDPC + AWGN":  {"波形": "多载波OFDM", "调制": "64QAM", "编码": "LDPC（1344,1440）", "信道": "AWGN"},
+    "P01 — SC + QPSK + RS + AWGN":       {"链路模式": "SC", "调制": "QPSK",  "编码": "RS（192,255）",     "信道": "AWGN"},
+    "P02 — SC + QPSK + LDPC + AWGN":     {"链路模式": "SC", "调制": "QPSK",  "编码": "LDPC（1344,1440）", "信道": "AWGN"},
+    "P03 — SC + 16QAM + RS + AWGN":      {"链路模式": "SC", "调制": "16QAM", "编码": "RS（192,255）",     "信道": "AWGN"},
+    "P04 — SC + 16QAM + LDPC + AWGN":    {"链路模式": "SC", "调制": "16QAM", "编码": "LDPC（1344,1440）", "信道": "AWGN"},
+    "P05 — SC + 64QAM + RS + AWGN":      {"链路模式": "SC", "调制": "64QAM", "编码": "RS（192,255）",     "信道": "AWGN"},
+    "P06 — SC + 64QAM + LDPC + AWGN":    {"链路模式": "SC", "调制": "64QAM", "编码": "LDPC（1344,1440）", "信道": "AWGN"},
+    "P07 — OFDM + QPSK + RS + AWGN":     {"链路模式": "SISO-OFDM", "调制": "QPSK",  "编码": "RS（11,15）",      "信道": "AWGN"},
+    "P08 — OFDM + QPSK + LDPC + AWGN":   {"链路模式": "SISO-OFDM", "调制": "QPSK",  "编码": "LDPC（1344,1440）", "信道": "AWGN"},
+    "P09 — OFDM + 16QAM + RS + AWGN":    {"链路模式": "SISO-OFDM", "调制": "16QAM", "编码": "RS（11,15）",      "信道": "AWGN"},
+    "P10 — OFDM + 16QAM + LDPC + AWGN":  {"链路模式": "SISO-OFDM", "调制": "16QAM", "编码": "LDPC（1344,1440）", "信道": "AWGN"},
+    "P11 — OFDM + 64QAM + RS + AWGN":    {"链路模式": "SISO-OFDM", "调制": "64QAM", "编码": "RS（11,15）",      "信道": "AWGN"},
+    "P12 — OFDM + 64QAM + LDPC + AWGN":  {"链路模式": "SISO-OFDM", "调制": "64QAM", "编码": "LDPC（1344,1440）", "信道": "AWGN"},
 }
 PRESET_KEYS = list(PRESET_TABLE.keys())
 
 # ── 调制阶数映射 ──────────────────────────────────────────────────
-MOD_ORDER = {"BPSK": 1, "QPSK": 2, "8PSK": 3, "16QAM": 4, "64QAM": 6}
+MOD_ORDER = {"BPSK": 1, "QPSK": 2, "8PSK": 3, "16QAM": 4, "64QAM": 6, "256QAM": 8}
 
 # ── 编码效率映射 ──────────────────────────────────────────────────
 CODE_RATE = {
     "RS（192,255）":     (192, 255),
     "RS（11,15）":       (11, 15),
     "LDPC（1344,1440）": (1344, 1440),
+    "LDPC（1056,1440）": (1056, 1440),
 }
 
 # ── 前导码长度 (SYNC + SFD + CES) ─────────────────────────────────
@@ -59,7 +60,7 @@ class ParameterConfigPage(WorkbenchPage):
         # =================================================================
         # 链路参数
         # =================================================================
-        self.waveform_type = combo(["单载波SC", "多载波OFDM"])
+        self.link_mode = combo(["SC", "SISO-OFDM", "MIMO-OFDM"])
         self.bandwidth = dspin(1, 200, 30, suffix="GHz")
         self.fc = dspin(0.1, 10000, 1000, suffix="GHz")
 
@@ -81,7 +82,7 @@ class ParameterConfigPage(WorkbenchPage):
         self.subframe_num = spin(1, 100, 51)
         self.cp_length = spin(0, 512, 32, "symbols")
 
-        self.modulation = combo(["BPSK", "QPSK", "8PSK", "16QAM", "64QAM"])
+        self.modulation = combo(["QPSK", "16QAM", "64QAM", "256QAM"])
         self.coding = combo(list(CODE_RATE.keys()))
         self.scrambling = combo(["启用", "关闭"])
 
@@ -92,7 +93,7 @@ class ParameterConfigPage(WorkbenchPage):
 
         self.preamble = combo(["短前导", "长前导"])
 
-        self.ofdm_subcarriers = combo(["64", "128", "256", "512"])
+        self.ofdm_subcarriers = combo(["64", "128", "256", "512", "1024"])
         self.ofdm_subcarriers.setCurrentIndex(3)
         self.ofdm_symbols = spin(1, 100, 48)
         self.pilot_indexes = line("[0, 16, 32]")
@@ -133,7 +134,7 @@ class ParameterConfigPage(WorkbenchPage):
 
         self.add_left_widget(
             make_form_group("链路参数", [
-                ("波形类型", self.waveform_type),
+                ("链路模式", self.link_mode),
                 ("带宽", self.bandwidth),
                 ("载频", self.fc),
                 ("数据源配置", self.bit_source),
@@ -283,7 +284,10 @@ class ParameterConfigPage(WorkbenchPage):
 
     def _collect_params(self) -> dict:
         """收集所有当前参数值"""
-        is_ofdm = (self.waveform_type.currentText() == "多载波OFDM")
+        mode_str = self.link_mode.currentText()   # SC / SISO-OFDM / MIMO-OFDM
+        is_ofdm = mode_str != "SC"
+        is_mimo = mode_str == "MIMO-OFDM"
+        n_streams = 2 if is_mimo else 1           # MIMO 双流并行发送
         mod_str = self.modulation.currentText()
         code_str = self.coding.currentText()
         nbps = MOD_ORDER.get(mod_str, 1)
@@ -304,21 +308,17 @@ class ParameterConfigPage(WorkbenchPage):
                 n_pilots = 0
             n_data_sym = n_sym - n_pilots
             n_data = n_data_sym * n_sc
-            n_frame = preamble_len + (n_sc + cp_len) * n_sym
         else:
             n_sc = self.subframe_length.value()  # SC 块大小
             n_sym = self.subframe_num.value()
             n_data = n_sc * n_sym
-            n_frame = preamble_len + (n_sc + cp_len) * n_sym
             n_pilots = 0
 
-        eta_f = n_data / n_frame if n_frame > 0 else 0
-        eta = eta_c * eta_f
         rs = self.sample_rate.value() * 1e6  # MBd → Bd
 
         # frame_bit_num (对齐 DataProcesser.frame_process 的校验逻辑)
         if is_ofdm:
-            frame_bits_raw = nbps * (n_sym - n_pilots) * n_sc * eta_c
+            frame_bits_raw = nbps * n_data_sym * n_sc * eta_c
         else:
             frame_bits_raw = nbps * n_sc * n_sym * eta_c
         frame_bit_num = round(frame_bits_raw)
@@ -327,18 +327,43 @@ class ParameterConfigPage(WorkbenchPage):
         # 补零计算 (参考 DataProcesser.frame_process)
         total_bits = int(rs * nbps * self.duration.value() * 1e-3)  # Rs(MBd) × Nb × dur(ms)
         pad_bits = 0 if not need_pad else (frame_bit_num - (total_bits % frame_bit_num)) % frame_bit_num
+        total_frames = (
+            (total_bits + pad_bits) // frame_bit_num if frame_bit_num > 0 else 0
+        )
+
+        # ── 帧结构 / 帧效率 ──
+        if is_mimo:
+            # MIMO 帧结构（与发射端逐帧组帧一致）：
+            #   每帧 = 保护间隔 64 + (2 SYNC + 2 训练 + 每流数据块) × (n_sc+cp)
+            #   数据块数 = ceil(n_data_sym / 2)（每流 n_data_sym×n_sc/2 符号）
+            # 帧效率按单流时间线计算（帧长为时间量纲，n_data 为两流符号总数，
+            # 取单流符号数 n_data/2），保证 ηf ≤ 1、R ≤ R0。
+            import math as _math
+            blocks_per_stream = _math.ceil(n_data_sym / 2)
+            n_frame = 64 + (2 + 2 + blocks_per_stream) * (n_sc + cp_len)
+            eta_f = (n_data / n_streams) / n_frame if n_frame > 0 else 0.0
+        elif is_ofdm:
+            n_frame = preamble_len + (n_sc + cp_len) * n_sym
+            eta_f = n_data / n_frame
+        else:
+            n_frame = preamble_len + (n_sc + cp_len) * n_sym
+            eta_f = n_data / n_frame
+        eta = eta_c * eta_f
 
         # ── 理论谱效 ──
         if is_ofdm:
             eta_cp = n_sc / (n_sc + cp_len) if (n_sc + cp_len) > 0 else 0.0
-            eta_pilot = (n_sym - n_pilots) / n_sym if n_sym > 0 else 0.0
+            # MIMO 不用块状导频（训练符号已计入帧效率 ηf），ηpilot=1
+            eta_pilot = 1.0 if is_mimo else ((n_sym - n_pilots) / n_sym if n_sym > 0 else 0.0)
         else:
             eta_cp = n_sc / (n_sc + cp_len) if (n_sc + cp_len) > 0 else 0.0
             eta_pilot = 1.0
-        eta_se_theory = eta_c * nbps * eta_cp * eta_pilot
+        # MIMO 双流使谱效翻倍
+        eta_se_theory = eta_c * nbps * eta_cp * eta_pilot * n_streams
 
         return {
-            "is_ofdm": is_ofdm, "mod_str": mod_str, "code_str": code_str,
+            "is_ofdm": is_ofdm, "is_mimo": is_mimo, "n_streams": n_streams,
+            "mod_str": mod_str, "code_str": code_str,
             "nbps": nbps, "K": k, "N": n, "eta_c": eta_c,
             "preamble_len": preamble_len, "cp_len": cp_len,
             "n_sc": n_sc, "n_sym": n_sym, "n_data": n_data,
@@ -347,7 +372,7 @@ class ParameterConfigPage(WorkbenchPage):
             "eta_cp": eta_cp, "eta_pilot": eta_pilot,
             "eta_se_theory": eta_se_theory,
             "bandwidth": self.bandwidth.value(), "fc": self.fc.value(),
-            "waveform": self.waveform_type.currentText(),
+            "link_mode": self.link_mode.currentText(),
             "modulation": self.modulation.currentText(),
             "coding": self.coding.currentText(),
             "preamble": self.preamble.currentText(),
@@ -355,6 +380,7 @@ class ParameterConfigPage(WorkbenchPage):
             "ofdm_subcarriers": self.ofdm_subcarriers.currentText(),
             "frame_bits_raw": frame_bits_raw, "frame_bit_num": frame_bit_num,
             "need_pad": need_pad, "total_bits": total_bits, "pad_bits": pad_bits,
+            "total_frames": total_frames,
         }
 
     # ── 参数总览 ──
@@ -365,7 +391,7 @@ class ParameterConfigPage(WorkbenchPage):
             if item.widget():
                 item.widget().deleteLater()
 
-        R0 = p["rs"] * p["nbps"]
+        R0 = p["rs"] * p["nbps"] * p["n_streams"]
         R = R0 * p["eta"]
 
         metrics = TwoColumnMetricGrid([
@@ -374,12 +400,14 @@ class ParameterConfigPage(WorkbenchPage):
             ("带宽设置", f"{p['bandwidth']:.1f} GHz"),
             ("理论谱效", f"{p['eta_se_theory']:.2f} bit/s/Hz"),
         ])
+        mimo_note = "（2 流）" if p["is_mimo"] else ""
         summary = PlaceholderList("当前配置摘要", [
-            p["waveform"], p["modulation"], p["coding"],
+            p["link_mode"] + mimo_note, p["modulation"], p["coding"],
             f"前导: {p['preamble']}", f"扰码: {p['scrambling']}",
         ])
         notes = TextSummaryCard("当前链路说明", [
-            f"调制阶数 {p['nbps']} bits/sym，编码效率 {p['eta_c']:.3f}",
+            f"调制阶数 {p['nbps']} bits/sym，编码效率 {p['eta_c']:.3f}"
+            + (f"，空间流数 {p['n_streams']}" if p["is_mimo"] else ""),
             f"帧效率 {p['eta_f']:.3f}，综合效率 {p['eta']:.3f}",
             f"符号速率 {p['rs']/1e6:.0f} MBd，R₀ = {R0/1e9:.2f} Gbps",
         ])
@@ -394,19 +422,21 @@ class ParameterConfigPage(WorkbenchPage):
             if item.widget():
                 item.widget().deleteLater()
 
-        R0 = p["rs"] * p["nbps"]
+        R0 = p["rs"] * p["nbps"] * p["n_streams"]
         R = R0 * p["eta"]
         peak_card = TextSummaryCard("理论峰值速率 R₀", [
             f"Rs = {p['rs']/1e6:.0f} MBd",
             f"log₂M = {p['nbps']} bits/sym",
+            f"空间流数 = {p['n_streams']}" if p["is_mimo"] else "空间流数 = 1",
             f"R₀ = {R0/1e9:.2f} Gbps",
         ])
         net_card = TextSummaryCard("净有效速率 R", [
-            f"前导码: {p['preamble']} → {p['preamble_len']} symbols",
+            f"前导码: {p['preamble']} → {p['preamble_len']} symbols" if not p["is_mimo"] else "帧结构: 保护 + 2 SYNC + 2 训练 + 数据块 ×2 流",
             f"编码效率 ηc = {p['eta_c']:.4f}",
-            f"帧效率 ηf = {p['eta_f']:.4f}",
+            f"帧效率 ηf = {p['eta_f']:.4f}"
+            + ("（单流时间线，含逐帧 SYNC/训练开销）" if p["is_mimo"] else ""),
             f"综合效率 η = {p['eta']:.4f}",
-            f"R = {R/1e9:.2f} Gbps",
+            f"R = {R/1e9:.2f} Gbps（≤ R₀）",
         ])
         self._rate_layout.addWidget(peak_card, 0, 0)
         self._rate_layout.addWidget(net_card, 0, 1)
@@ -416,7 +446,8 @@ class ParameterConfigPage(WorkbenchPage):
             f"导频效率 ηpilot = {p['eta_pilot']:.4f}",
             f"编码效率 ηc = {p['eta_c']:.4f}",
             f"调制阶数 log₂M = {p['nbps']} bits/sym",
-            f"η_SE = ηc × log₂M × ηcp × ηpilot = {p['eta_se_theory']:.4f} bit/s/Hz",
+            f"空间流数 = {p['n_streams']}（MIMO 谱效翻倍）" if p["is_mimo"] else "空间流数 = 1",
+            f"η_SE = ηc × log₂M × ηcp × ηpilot × 流数 = {p['eta_se_theory']:.4f} bit/s/Hz",
         ])
         self._rate_layout.addWidget(se_card, 1, 0, 1, 2)
 
@@ -455,7 +486,11 @@ class ParameterConfigPage(WorkbenchPage):
                      "用于吸收多径时延" if p["cp_len"] > 0 else "无保护间隔"))
 
         # ⑤ OFDM 导频校验
-        if p["is_ofdm"] and p["n_pilots"] > 0:
+        if p["is_ofdm"] and p["is_mimo"]:
+            rows.append(("提示", "导频索引",
+                         "MIMO 模式不使用块状导频（内置 SYNC+训练符号）",
+                         "导频索引仅影响帧比特数计算（n_data_sym = 符号数 − 导频数）"))
+        if p["is_ofdm"] and p["n_pilots"] > 0 and not p["is_mimo"]:
             try:
                 max_pilot = max(ast.literal_eval(self.pilot_indexes.text()))
                 if max_pilot >= p["n_sym"]:
@@ -475,6 +510,13 @@ class ParameterConfigPage(WorkbenchPage):
                          "OFDM 模式建议使用 RS（11,15）",
                          "切换编码或使用参数测试模版 P07–P12"))
 
+        # ⑦ 高阶调制 SNR 需求提示
+        if p["nbps"] >= 8:
+            rows.append(("提示", "SNR 需求",
+                         f"{p['mod_str']} 误码瀑布区较高：LDPC 11/15 需 ≥26 dB，"
+                         f"LDPC 14/15 需 ≥30 dB，RS 需 ≥33 dB（AWGN 恒等信道下实测）",
+                         "在信道集成页提高 SNR，或在低 SNR 下改用 16/64QAM"))
+
         self._val_table.setRowCount(len(rows))
         for r, (level, param, desc, suggestion) in enumerate(rows):
             self._val_table.setItem(r, 0, QTableWidgetItem(level))
@@ -485,7 +527,22 @@ class ParameterConfigPage(WorkbenchPage):
     # ── 帧结构总览 ──
     def _refresh_frame_structure(self, p: dict) -> None:
         cp_total = p["cp_len"] * p["n_sym"]
-        if p["is_ofdm"]:
+        if p["is_mimo"]:
+            import math as _math
+            blocks_per_stream = _math.ceil((p["n_sym"] - p["n_pilots"]) / 2)
+            rows = [
+                ("保护间隔（前 32 + 后 32 样点）", "64"),
+                (f"SYNC（2 × {p['n_sc']}+{p['cp_len']}）",
+                 f"{2 * (p['n_sc'] + p['cp_len'])}"),
+                (f"训练（2 × {p['n_sc']}+{p['cp_len']}）",
+                 f"{2 * (p['n_sc'] + p['cp_len'])}"),
+                (f"数据块（每流 {blocks_per_stream} × {p['n_sc']}+{p['cp_len']}，2 流并行）",
+                 f"{2 * blocks_per_stream * (p['n_sc'] + p['cp_len'])}"),
+                ("帧总样点数（每帧均含上述开销）", f"{p['n_frame']}"),
+                (f"净数据符号（{p['n_sym'] - p['n_pilots']} × {p['n_sc']} × 2 流）",
+                 f"{p['n_data']}"),
+            ]
+        elif p["is_ofdm"]:
             rows = [
                 ("前导码 (SYNC+SFD+CES)", f"{p['preamble_len']}"),
                 (f"CP ({p['cp_len']} × {p['n_sym']} 符号)", f"{cp_total}"),
@@ -514,7 +571,7 @@ class ParameterConfigPage(WorkbenchPage):
     # =================================================================
     def _refresh_sources(self):
         return [
-            self.waveform_type, self.modulation, self.coding,
+            self.link_mode, self.modulation, self.coding,
             self.scrambling, self.preamble,
             self.ofdm_subcarriers, self.pilot_indexes,
             self.rs_decode_mode, self.bit_source,
@@ -535,7 +592,7 @@ class ParameterConfigPage(WorkbenchPage):
         if idx < 0 or idx >= len(PRESET_KEYS):
             return
         preset = PRESET_TABLE[PRESET_KEYS[idx]]
-        for name, widget in [("波形", self.waveform_type),
+        for name, widget in [("链路模式", self.link_mode),
                               ("调制", self.modulation),
                               ("编码", self.coding)]:
             i = widget.findText(preset[name])
@@ -564,7 +621,7 @@ class ParameterConfigPage(WorkbenchPage):
             "工程名称": self.project_name.text(),
             "参数测试模版": self.preset_mode.currentText(),
             "链路名称": self.link_name.text(),
-            "波形类型": self.waveform_type.currentText(),
+            "链路模式": self.link_mode.currentText(),
             "带宽": self.bandwidth.value(),
             "载频": self.fc.value(),
             "数据源配置": self.bit_source.currentText(),
@@ -619,7 +676,14 @@ class ParameterConfigPage(WorkbenchPage):
         _set_combo(params, "参数测试模版", self.preset_mode)
         _set_text(params, "工程名称", self.project_name)
         _set_text(params, "链路名称", self.link_name)
-        _set_combo(params, "波形类型", self.waveform_type)
+        _set_combo(params, "链路模式", self.link_mode)
+        if "链路模式" not in params and "波形类型" in params:
+            # 旧工程兼容：波形类型 → 链路模式
+            legacy = str(params["波形类型"])
+            target = "SC" if "SC" in legacy and "OFDM" not in legacy else "SISO-OFDM"
+            idx = self.link_mode.findText(target)
+            if idx >= 0:
+                self.link_mode.setCurrentIndex(idx)
         _set_dspin(params, "带宽", self.bandwidth)
         _set_dspin(params, "载频", self.fc)
         _set_combo(params, "数据源配置", self.bit_source)

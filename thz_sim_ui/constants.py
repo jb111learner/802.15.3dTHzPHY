@@ -7,7 +7,6 @@ WINDOW_MIN_SIZE = (1440, 900)
 NAV_ITEMS = OrderedDict(
     [
         ('home', '首页'),
-        ('link_design', '仿真链路设计'),
         ('parameter_config', '参数配置'),
         ('channel_integration', '信道集成'),
         ('batch_compare', '批量对比'),

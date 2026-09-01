@@ -107,11 +107,18 @@ class NoiseEstimator:
         self.params = transmitter.params
         self.link_mode = self.params.get("link_mode").lower()
         self.oversampling = transmitter.params.get("oversampling")
-        self.base_sequences_length = len(transmitter.preamble_gen.a128)  # 128（符号级）
-        self.sync_len = len(transmitter.sync)  # SYNC 总符号数
+        # OFDM 补零 IFFT 后信号全程处于高采样率域，SYNC 块长与帧长 ×sps；
+        # 估计公式不变（块长与总功率同步 ×sps，归一化因子自动正确）。
+        sps = (
+            int(self.oversampling)
+            if self.link_mode == "ofdm" and self.oversampling
+            else 1
+        )
+        self.base_sequences_length = len(transmitter.preamble_gen.a128) * sps  # 128×sps
+        self.sync_len = len(transmitter.sync) * sps  # SYNC 总样点数
         self.estimation_mode = estimation_mode  # 'global' 或 'per_frame'
 
-        # 计算帧长度（符号级）— SC-FDE / OFDM 自适应
+        # 计算帧长度 — SC-FDE / OFDM 自适应
         gi_len = self.params.get("gi_length")
         preamble_len = len(transmitter.preamble)
         if self.link_mode == "ofdm":
@@ -120,7 +127,9 @@ class NoiseEstimator:
         else:
             block_len = self.params.get("subframe_length")
             subframe_count = self.params.get("subframe_num")
-        self.frame_symbol_num = (block_len + gi_len) * subframe_count + preamble_len
+        self.frame_symbol_num = (
+            (block_len + gi_len) * subframe_count + preamble_len
+        ) * sps
 
         # 输出缓存
         self.noise_var = None   # 若 global，则为标量；若 per_frame，则为列表
@@ -193,9 +202,14 @@ class NoiseEstimator:
         sync_blk = np.reshape(rx_sync_valid, (self.base_sequences_length, Nblks), order='F')
         # 相邻块差分
         diff_blk = np.diff(sync_blk, axis=1)
+        if self.link_mode == "ofdm" and diff_blk.shape[1] >= 3:
+            # OFDM 补零 IFFT 后前导码经 resample_poly 插值：首块含滤波器
+            # 启动瞬态、末块被后续 SFD（-a128）的滤波器拖尾污染，破坏
+            # “相邻块完全相同”的模型假设，丢弃首尾两个差分列。
+            diff_blk = diff_blk[:, 1:-1]
         total_power = np.sum(np.abs(diff_blk) ** 2)
         # 无偏归一化：差分方差 = 2*σ²
-        norm_factor = self.base_sequences_length * (Nblks - 1) * 2
+        norm_factor = self.base_sequences_length * diff_blk.shape[1] * 2
         noise_var = total_power / norm_factor
         return noise_var
 

@@ -98,7 +98,7 @@ class FunctionalTestPage(WorkbenchPage):
         self.add_left_stretch()
 
     def _build_waveform_params(self) -> QWidget:
-        self.wave_mode = combo(["SC-FDE 单载波", "OFDM 多载波"])
+        self.wave_mode = combo(["SC", "OFDM"])
         self.wave_filter_len = spin(8, 128, 32)
         self.wave_sps = spin(1, 16, 4)
         self.wave_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
@@ -117,9 +117,11 @@ class FunctionalTestPage(WorkbenchPage):
         ])
         hint = QLabel(
             "SC：±1 脉冲点相隔 2×滤波器长度，期望正负交替的滚降波形；"
-            "OFDM：每个符号仅单个子载波有值且索引逐符号递增，期望频率渐升正弦。"
-            "另生成多调制 PAPR CCDF 曲线（BPSK/QPSK/16QAM/64QAM 叠加，"
-            "符号数越多曲线越精确但越耗时）与经成型滤波后的功率谱（标截止频率）。"
+            "OFDM：每个符号仅单个子载波有值且索引逐符号递增，期望频率渐升正弦"
+            "（过采样由频域补零 IFFT 完成）。"
+            "另生成多调制 PAPR CCDF 曲线（BPSK/QPSK/16QAM/64QAM/256QAM 叠加，"
+            "符号数越多曲线越精确但越耗时）与成型后功率谱（SC 标滤波器截止频率，"
+            "OFDM 验证补零 IFFT 理想带限）。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
@@ -160,7 +162,7 @@ class FunctionalTestPage(WorkbenchPage):
         return wrap
 
     def _build_precision_params(self) -> QWidget:
-        self.prec_mode = combo(["SC-FDE 单载波", "OFDM 多载波"])
+        self.prec_mode = combo(["SC", "OFDM"])
         self.prec_duration = dspin(1e-7, 1e-4, 1e-6, decimals=7)
         self.prec_snr = dspin(-20.0, 60.0, 24.0, decimals=1)
         box = make_form_group("浮点精度验证参数", [
@@ -337,7 +339,7 @@ class FunctionalTestPage(WorkbenchPage):
     def _build_payload(self, test_type: str) -> dict:
         if test_type == "waveform":
             return {
-                "link_mode": "sc-fde" if "SC" in self.wave_mode.currentText() else "ofdm",
+                "link_mode": "sc-fde" if self.wave_mode.currentText() == "SC" else "ofdm",
                 "filter_length": self.wave_filter_len.value(),
                 "oversampling": self.wave_sps.value(),
                 "rolloff": self.wave_rolloff.value(),
@@ -348,7 +350,7 @@ class FunctionalTestPage(WorkbenchPage):
         if test_type == "codec":
             return {"config_text": self.codec_editor.toPlainText()}
         return {
-            "link_mode": "sc-fde" if "SC" in self.prec_mode.currentText() else "ofdm",
+            "link_mode": "sc-fde" if self.prec_mode.currentText() == "SC" else "ofdm",
             "duration": self.prec_duration.value(),
             "SNRdB": self.prec_snr.value(),
         }

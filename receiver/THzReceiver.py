@@ -317,7 +317,10 @@ class THzReceiver(BaseReceiver):
             sig = self.compensate_cfo_coarse(sig)
 
         # ⑤ 下采样（过采样率 → 符号率）
-        sig = self.downsample(sig)
+        # OFDM 补零 IFFT 后信号全程保持高采样率：RX 在 2048 点 FFT 内
+        # 取回子载波，无需（也不能）在时域做 y[0::sps] 抽取。
+        if self.link_mode != "ofdm":
+            sig = self.downsample(sig)
 
         # ⑥ 细 CFO（逐帧估计+补偿，符号率）
         if getattr(self, "enable_cfo", True):

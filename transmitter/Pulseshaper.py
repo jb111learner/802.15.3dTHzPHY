@@ -73,10 +73,17 @@ class TxPulseShaper:
         if round(data_dict["sample_rate_Hz"] * data_dict["duration_seconds"]) != data_dict["signal_length"]:
             raise ValueError("输入数据字典中的采样率与时长不匹配")  
         
-        self.symbol_length = data_dict["signal_length"] * self.sps
-        self.duration = data_dict["duration_seconds"]
-        self.sample_rate = data_dict["sample_rate_Hz"] * self.sps
-        self.padding_bit_num = data_dict["padding_bit_num"]     
+        if self.link_mode == "ofdm":
+            # OFDM：过采样已由 TxOFDMProcesser 的补零 IFFT 完成，
+            # 本模块退化为直通，不再做插零+低通插值。
+            self.symbol_length = data_dict["signal_length"]
+            self.duration = data_dict["duration_seconds"]
+            self.sample_rate = data_dict["sample_rate_Hz"]
+        else:
+            self.symbol_length = data_dict["signal_length"] * self.sps
+            self.duration = data_dict["duration_seconds"]
+            self.sample_rate = data_dict["sample_rate_Hz"] * self.sps
+        self.padding_bit_num = data_dict["padding_bit_num"]
 
     def _rrc_impulse_response(self, span_symbols, sps, beta, T):
         """
@@ -223,17 +230,24 @@ class TxPulseShaper:
     def shape_pulse(self, data_dict):
         """
         脉冲成型 / 上采样主函数
-        SC-FDE 模式：完成成型滤波；OFDM 模式：仅插值抗镜像
+        SC-FDE 模式：完成成型滤波；OFDM 模式：直通（补零 IFFT 已完成过采样）
         """
         self._verification_data(data_dict)
-        self.filter_coeffs = self._design_tx_filter()
         symbols = data_dict["signal_stream"]
-        up = self.upsample_symbols(symbols)
 
-        # 卷积 + 延迟对齐
-        sig = np.convolve(up, self.filter_coeffs, mode="full")
-        delay = len(self.filter_coeffs) // 2
-        shaped = sig[delay : delay + len(up)]   # 对齐后截取有效长度
+        if self.link_mode == "ofdm":
+            # 直通：信号已处于过采样率，无需插零+低通插值
+            self.filter_coeffs = np.array([1.0], dtype=np.float64)
+            shaped = symbols
+            up = symbols.copy()  # 兼容下游对 "up" 键的读取
+        else:
+            self.filter_coeffs = self._design_tx_filter()
+            up = self.upsample_symbols(symbols)
+
+            # 卷积 + 延迟对齐
+            sig = np.convolve(up, self.filter_coeffs, mode="full")
+            delay = len(self.filter_coeffs) // 2
+            shaped = sig[delay : delay + len(up)]   # 对齐后截取有效长度
 
         if len(shaped) != self.symbol_length:
             raise ValueError(

@@ -27,9 +27,13 @@ class RxMatchedFilter:
             # RRC/RC匹配滤波器：时间反转共轭
             self.h_rx = np.conj(tx_coeffs[::-1])
         elif self.link_mode == "ofdm":
-            # OFDM低通滤波器：与TX相同形状，DC增益=1（TX的DC增益=sps）
-            # TX滤波器 = firwin / sum(h) * sps，除以sps即得单位DC增益的RX滤波器
-            self.h_rx = tx_coeffs / self.sps
+            if np.ndim(tx_coeffs) == 1 and np.allclose(tx_coeffs, [1.0]):
+                # TX 直通（补零 IFFT 已在上采样域完成过采样）→ RX 恒等
+                self.h_rx = np.array([1.0], dtype=np.float64)
+            else:
+                # OFDM低通滤波器：与TX相同形状，DC增益=1（TX的DC增益=sps）
+                # TX滤波器 = firwin / sum(h) * sps，除以sps即得单位DC增益的RX滤波器
+                self.h_rx = tx_coeffs / self.sps
 
         # 线性相位滤波器的延迟
         self.filter_delay = (len(self.h_rx) - 1) // 2  

@@ -18,9 +18,12 @@ class GIInserter:
         self.gi_type = params.get("gi_type")
 
         if self.link_mode == "ofdm":
-            self.block_len = params.get("subwave_num")           # 512
+            # 补零 IFFT 后每个 OFDM 符号为 subwave_num×oversampling 个样点
+            self.oversampling = int(params.get("oversampling", 4))
+            self.block_len = params.get("subwave_num") * self.oversampling          # 512×sps
             self.blocks_per_frame = params.get("subframe_ofdm_num")  # 48
         else:
+            self.oversampling = 1
             self.block_len = params.get("subframe_length")       # 480
             self.blocks_per_frame = params.get("subframe_num")   # 51
 
@@ -51,12 +54,13 @@ class GIInserter:
             raise ValueError(f"frame_symbol_num/block_len({fsym//self.block_len}) != blocks_per_frame({self.blocks_per_frame})")
 
         n_blocks = data_dict["signal_length"] // self.block_len
-        self.symbol_length = data_dict["signal_length"] + self.gi_length * n_blocks
+        gi_samples = self.gi_length * self.oversampling
+        self.symbol_length = data_dict["signal_length"] + gi_samples * n_blocks
         # CP/GI 占用额外时间，但不会改变基础波形采样率。
         self.sample_rate = data_dict["sample_rate_Hz"]
         self.duration = self.symbol_length / self.sample_rate
         self.padding_bit_num = data_dict["padding_bit_num"]
-        self.frame_symbol_num = fsym + self.gi_length * self.blocks_per_frame
+        self.frame_symbol_num = fsym + gi_samples * self.blocks_per_frame
         self.frame_num = data_dict["frame_num"]
 
     def insert_gi(self, data_dict):
@@ -64,7 +68,8 @@ class GIInserter:
         data = data_dict["signal_stream"]
 
         data_blocks = data.reshape(-1, self.block_len).T
-        gi_blocks = np.concatenate([data_blocks[-self.gi_length:, :], data_blocks], axis=0)
+        gi_samples = self.gi_length * self.oversampling
+        gi_blocks = np.concatenate([data_blocks[-gi_samples:, :], data_blocks], axis=0)
         data_with_gi = gi_blocks.T.flatten()
 
         if len(data_with_gi) != self.symbol_length:

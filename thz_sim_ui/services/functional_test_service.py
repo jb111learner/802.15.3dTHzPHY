@@ -299,13 +299,14 @@ def _run_ofdm_waveform_test(params, include_optional_pipeline: bool,
         blocks = int(params.get("subframe_ofdm_num"))            # 48
         cp = int(params.get("gi_length"))                        # 32
 
+        # 补零 IFFT 后每个 OFDM 符号为 (N_SC+cp)×sps 个高采样率样点
         n_gi_good = 0
         gi_first_bad = None
         for b in range(blocks):
             if b in pilot_indexes:
                 continue  # 导频块为整块 512 音序列，不在单音校验范围
-            start = b * (N_SC + cp) + cp
-            spec = np.fft.fft(gi_sig[start:start + N_SC], norm="ortho")
+            start = b * (N_SC + cp) * sps + cp * sps
+            spec = np.fft.fft(gi_sig[start:start + N_SC * sps], norm="ortho")
             j = b - sum(1 for p in pilot_indexes if p < b)
             k_peak = int(np.argmax(np.abs(spec)))
             if k_peak == j and abs(abs(spec[j]) - 1.0) < 1e-9:
@@ -320,49 +321,43 @@ def _run_ofdm_waveform_test(params, include_optional_pipeline: bool,
                          if gi_first_bad else ""),
         })
 
-        # 成型滤波（OFDM 模式 = 抗镜像低通插值）
+        # 成型滤波（OFDM 模式 = 直通：补零 IFFT 已完成过采样，无插值滤波）
         shaper = TxPulseShaper(params)
         shaped = shaper.shape_pulse(gi)
         shaped_sig = np.asarray(shaped["signal_stream"])
         ok_shaped = (shaped_sig.dtype == np.complex128) and \
-                    (len(shaped_sig) == len(gi_sig) * sps)
+                    (len(shaped_sig) == len(gi_sig))
         checks.append({
             "name": "OFDM 成型输出类型与长度",
             "ok": bool(ok_shaped),
             "detail": f"dtype={shaped_sig.dtype}，长度={len(shaped_sig)}"
-                      f"（期望 complex128 / {len(gi_sig) * sps}）",
+                      f"（期望 complex128 / {len(gi_sig)}，直通无二次上采样）",
         })
 
-        # 单音保留率：取数据块 20（单音 j=18），成型后对符号体做 FFT。
-        # 零插值在频域为周期复制（基带频谱原样出现在低 512 个 bin），
-        # 单音仍位于 bin j；幅度放大 √sps 倍（2048 点 ortho FFT）。
+        # 单音保留率：取数据块 20（单音 j=18），对高采样率符号体做 N_SC×sps 点 FFT。
+        # 补零 IFFT 无损还原：单音仍位于 bin j，幅度为 1（无需除以 √sps）。
         b = 20
         j = b - sum(1 for p in pilot_indexes if p < b)
         seg = shaped_sig[b * (N_SC + cp) * sps + cp * sps:
                          b * (N_SC + cp) * sps + (cp + N_SC) * sps]
         spec2 = np.fft.fft(seg, norm="ortho")
-        retention = float(abs(spec2[j]) / np.sqrt(sps))
+        retention = float(abs(spec2[j]))
         checks.append({
-            "name": "OFDM 成型低通对带内单音的保留",
+            "name": "补零 IFFT 对带内单音的保留",
             "ok": bool(retention > 0.9),
-            "detail": f"块 20（单音 j={j}）成型后保留率 = {retention:.3f}（期望 > 0.9）",
+            "detail": f"块 20（单音 j={j}）过采样符号体 FFT 后保留率 = {retention:.3f}（期望 > 0.9）",
         })
 
-        # 低通特性：实测滤波器频率响应在高频（k=480 子载波处）衰减
-        if sps == 1:
-            checks.append({
-                "name": "OFDM 成型滤波器低通特性",
-                "ok": True,
-                "detail": "过采样率 1×：无插零镜像，无需低通（跳过）",
-            })
-        else:
-            h_resp = np.fft.fft(shaper.filter_coeffs, 4096)
-            att = float(abs(h_resp[int(480 * 8 / sps)]) / (abs(h_resp[0]) + 1e-15))
-            checks.append({
-                "name": "OFDM 成型滤波器低通特性",
-                "ok": bool(att < 0.1),
-                "detail": f"子载波 k=480 处相对直流衰减 = {att:.4f}（期望 < 0.1）",
-            })
+        # 带限特性：补零 IFFT 的保护带（中间 N_SC×(sps-1) 个频点）应无能量，
+        # 等价于原插零+低通的抗镜像功能（理想砖墙带限）。
+        guard_lo = N_SC // 2
+        guard_hi = N_SC * sps - N_SC // 2
+        guard_max = float(np.max(np.abs(spec2[guard_lo:guard_hi])))
+        checks.append({
+            "name": "补零 IFFT 频谱带限（保护带无能量）",
+            "ok": bool(guard_max < 1e-9),
+            "detail": f"块 20 保护带 [bin {guard_lo}..{guard_hi}) 最大幅度 = {guard_max:.2e}（期望 < 1e-9）",
+        })
 
         summary.append({"label": "模块链路", "value": "ofdm_process + GI 校验通过"})
     except Exception as exc:
@@ -375,7 +370,7 @@ def _run_ofdm_waveform_test(params, include_optional_pipeline: bool,
 
 def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
                         checks: list, plots: list, summary: list) -> None:
-    """多调制 PAPR CCDF：BPSK/QPSK/16QAM/64QAM 经调制与成型滤波后叠加一张图。
+    """多调制 PAPR CCDF：BPSK/QPSK/16QAM/64QAM/256QAM 经调制与成型滤波后叠加一张图。
 
     SC：每符号周期（sps 样本）为一块；OFDM：每个 OFDM 符号（512 样本）为一块。
     点数默认 262144 符号/调制（SC 可分辨到 ~4e-6，OFDM 约 528 个符号块 ~2e-3）。
@@ -388,7 +383,7 @@ def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
     sps = int(params.get("oversampling"))
     rolloff = float(params.get("rolloff"))
     fs_base = 30e9
-    mods = [("BPSK", 1), ("QPSK", 2), ("16QAM", 4), ("64QAM", 6)]
+    mods = [("BPSK", 1), ("QPSK", 2), ("16QAM", 4), ("64QAM", 6), ("256QAM", 8)]
     rng = np.random.default_rng(20260829)
 
     sorted_papr = {}
@@ -409,10 +404,11 @@ def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
         else:
             from transmitter.TxOFDMProcesser import TxOFDMProcesser
             data_per_sub = 45 * 512
-            # OFDM 每个 PAPR 块（512 样本）对应 480 个调制符号：默认 262144
-            # 符号只有 ~500 块，CCDF 统计波动大（标准误 ~0.016，曲线间
-            # 出现系统性偏移假象）。IFFT 开销远小于 SC 的成型卷积，故用
-            # 4× 符号数把块数提到 ~2000（标准误 ~0.009），曲线平滑可辨。
+            # OFDM 每个 PAPR 块对应一个 OFDM 符号：补零 IFFT 后为
+            # 512×sps 个高采样率样点。默认 262144 符号只有 ~500 块，
+            # CCDF 统计波动大（标准误 ~0.016，曲线间出现系统性偏移假象）。
+            # IFFT 开销远小于 SC 的成型卷积，故用 4× 符号数把块数提到
+            # ~2000（标准误 ~0.009），曲线平滑可辨。
             n_sub = max(1, int(symbols_per_mod) * 4 // data_per_sub)
             data_syms = n_sub * data_per_sub
             bits = rng.integers(0, 2, data_syms * ncbps).astype(np.uint8)
@@ -421,7 +417,7 @@ def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
             ofdm = TxOFDMProcesser(p).ofdm_process(_make_signal_dict(
                 syms, fs_base, {"frame_symbol_num": data_per_sub, "frame_num": n_sub}))
             sig = np.asarray(ofdm["signal_stream"])
-            block_len = 512
+            block_len = 512 * sps
 
         n_blocks = len(sig) // block_len
         blocks = sig[:n_blocks * block_len].reshape(n_blocks, block_len)
@@ -465,21 +461,24 @@ def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
     # OFDM：与高斯近似理论对比（正交 IFFT 输出近似复高斯，
     # CCDF(x) = 1-(1-e^(-x))^N，x 为线性 PAPR）。用 QPSK 曲线做参照：
     # pi/2-BPSK 因频域实虚交替使时域包络镜像对称（自由度减半为 N/2），
-    # PAPR 系统性偏低，属真实物理特性，不做 512 音校验。
+    # PAPR 系统性偏低，属真实物理特性，不做 N 音校验。
+    # 补零 IFFT 输出为 sps 倍过采样波形，其 PAPR 统计等效于 αN 个子载波
+    # 的奈奎斯特采样（业界公认 L=4 过采样时经验 α≈2.8）。
     if mode == "ofdm":
         n_sc = int(params.get("subwave_num"))
+        n_eff = n_sc if sps == 1 else int(round(2.8 * n_sc))
         ref_y = ccdf_curves["QPSK"]
         theory_devs = []
         for x_db in (8.0, 9.0, 10.0):
             idx = int(np.argmin(np.abs(x - x_db)))
-            theory = 1.0 - (1.0 - np.exp(-10 ** (x_db / 10))) ** n_sc
+            theory = 1.0 - (1.0 - np.exp(-10 ** (x_db / 10))) ** n_eff
             theory_devs.append(abs(float(ref_y[idx]) - theory))
         ok_theory = max(theory_devs) < 0.08
         checks.append({
             "name": "OFDM PAPR CCDF 符合理论预期（QPSK 参照）",
             "ok": bool(ok_theory),
-            "detail": f"QPSK 在 8/9/10 dB 处与 {n_sc} 音高斯理论最大偏差"
-                      f" {max(theory_devs):.3f}（< 0.08）；"
+            "detail": f"QPSK 在 8/9/10 dB 处与 {n_eff} 音（α≈2.8 × {n_sc}）"
+                      f"高斯理论最大偏差 {max(theory_devs):.3f}（< 0.08）；"
                       f"BPSK 因频域实虚交替镜像对称，PAPR 偏低属正常",
         })
 
@@ -504,7 +503,7 @@ def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
     ax.legend(fontsize=8)
     fig.tight_layout()
     plots.append({"title": "PAPR CCDF（多调制）", "png": _figure_to_png(fig)})
-    summary.append({"label": "PAPR 测试", "value": f"4 种调制 × {symbols_per_mod} 符号"})
+    summary.append({"label": "PAPR 测试", "value": f"{len(mods)} 种调制 × {symbols_per_mod} 符号"})
 
 
 def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: list) -> None:
@@ -555,20 +554,30 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
         ofdm = TxOFDMProcesser(p).ofdm_process(_make_signal_dict(
             syms, fs_base, {"frame_symbol_num": data_syms, "frame_num": 1}))
         shaper = TxPulseShaper(p)
-        shaped = shaper.shape_pulse(_make_signal_dict(ofdm["signal_stream"], fs_base))
+        # 补零 IFFT 输出已是 sps 倍高采样率信号，直通成型后采样率不变
+        shaped = shaper.shape_pulse(_make_signal_dict(
+            ofdm["signal_stream"], float(ofdm["sample_rate_Hz"])))
         sig = np.asarray(shaped["signal_stream"])
         fs_out = float(shaped["sample_rate_Hz"])
-        cut_lines = [0.5]                 # 低通截止 ±fs_base/2
+        cut_lines = [0.5]                 # 带限边界 ±fs_base/2
         band_edges = []
-        cut_text = "低通截止 ±fs_base/2（抗镜像，DC 增益 ×sps）"
+        cut_text = "理想带限 ±fs_base/2（补零 IFFT，无成型滤波）"
         passband = 0.40
-        stopband = 0.60
+        # 0.6 处仍处于砖墙边缘的 hann 泄漏裙内（实测约 -21 dB），
+        # 阻带检查从 0.7 起算（实测 < -35 dB），阈值 -20 dB 稳健。
+        stopband = 0.70
         title_note = "调制：QPSK（符号相位旋转不改变 OFDM 频谱形状）"
 
     # 理论滤波器响应（成型滤波器的形状）
-    h_resp = np.fft.fft(shaper.filter_coeffs, 4096)
     f_h = np.fft.fftfreq(4096, 1 / fs_out) / fs_base
-    h_db = 20 * np.log10(np.abs(h_resp) / (np.max(np.abs(h_resp)) + 1e-15))
+    if mode == "sc-fde":
+        h_resp = np.fft.fft(shaper.filter_coeffs, 4096)
+        h_db = 20 * np.log10(np.abs(h_resp) / (np.max(np.abs(h_resp)) + 1e-15))
+        h_label = "理论滤波器响应"
+    else:
+        # OFDM：补零 IFFT 的理想砖墙带限（|f| ≤ fs_base/2 平坦，保护带为 0）
+        h_db = np.where(np.abs(f_h) <= 0.5, 0.0, -120.0)
+        h_label = "理想带限响应（补零 IFFT）"
     order_h = np.argsort(f_h)
 
     # Welch 功率谱（分段平均，双边谱）
@@ -627,7 +636,7 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
     fig.patch.set_facecolor("white")
     ax.plot(f_n, psd_db_s, color="#2C68B4", lw=1.0, label="实测功率谱（Welch 平滑）")
     ax.plot(f_h[order_h], h_db[order_h], color="#D95F02", lw=1.0, ls="--",
-            label="理论滤波器响应")
+            label=h_label)
     for cf in cut_lines:
         ax.axvline(cf, color="#E5484D", lw=1.0, ls="-.")
         ax.axvline(-cf, color="#E5484D", lw=1.0, ls="-.")
@@ -654,9 +663,10 @@ def run_waveform_test(link_mode: str = "sc-fde", filter_length: int = 32,
     """发射端波形调制与成型滤波测试。
 
     SC-FDE：±1 脉冲点相隔 2×滚降滤波器长度，期望正负交替的滚降波形；
-    OFDM：每符号仅单个子载波有值且索引逐符号递增，期望频率渐升正弦。
-    另含：多调制（BPSK/QPSK/16QAM/64QAM）PAPR CCDF 叠加曲线、
-    经成型滤波后的功率谱（Welch，叠加理论滤波器响应并标注截止频率）。
+    OFDM：每符号仅单个子载波有值且索引逐符号递增，期望频率渐升正弦
+    （过采样由频域补零 IFFT 完成，成型级为直通）。
+    另含：多调制（BPSK/QPSK/16QAM/64QAM/256QAM）PAPR CCDF 叠加曲线、
+    经成型滤波后的功率谱（Welch，叠加理论滤波器/带限响应并标注截止频率）。
     """
     from params.PHYParams import PHYParams
 

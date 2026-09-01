@@ -923,11 +923,28 @@ class BackendService(QObject):
     def map_ui_params_to_phy_params(ui_params: dict[str, object]) -> dict[str, object]:
         mapped_params = {}
 
-        # 空间模式。UI 当前提供固定的 2×2 空间复用入口。
-        spatial_mode = str(
-            ui_params.get('空间模式分区', ui_params.get('spatial_mode', '非 MIMO'))
+        # 链路模式：参数配置页「链路模式」参数（SC / SISO-OFDM / MIMO-OFDM）。
+        # MIMO-OFDM 即固定 2×2 空间复用。旧工程兼容键：链路模式分区 /
+        # 空间模式分区 / 波形类型（见下方 legacy 分支）。
+        link_mode_ui = str(ui_params.get('链路模式', '')).strip()
+        legacy_partition = str(ui_params.get('链路模式分区', '')).strip()
+        legacy_spatial = str(
+            ui_params.get('空间模式分区', ui_params.get('spatial_mode', ''))
+        ).strip()
+        legacy_waveform = str(ui_params.get('波形类型', '')).strip()
+
+        use_mimo = (
+            link_mode_ui == 'MIMO-OFDM'
+            or ('MIMO' in legacy_spatial and '非' not in legacy_spatial)
         )
-        if 'MIMO' in spatial_mode and '非' not in spatial_mode:
+        if use_mimo:
+            # 信道模型跟随多径开关：“仅 AWGN”（多径关闭）时使用恒等信道，
+            # 与用户“AWGN 信道”的直觉一致，且与单链路测试脚本可比；
+            # 多径开启时使用 iid Rayleigh（或信道页指定模型）。
+            ch_cfg = ui_params.get('_channel_params', {})
+            if not isinstance(ch_cfg, dict):
+                ch_cfg = {}
+            multipath_on = bool(ch_cfg.get('enable_multipath', False))
             mapped_params.update({
                 'enable_mimo': True,
                 'num_tx': 2,
@@ -936,7 +953,10 @@ class BackendService(QObject):
                 'mimo_scheme': 'spatial_multiplexing',
                 'mimo_detector': str(ui_params.get('MIMO检测算法', 'mmse')).lower(),
                 'mimo_csi_mode': str(ui_params.get('MIMO CSI模式', 'estimated')).lower(),
-                'mimo_channel_model': str(ui_params.get('MIMO信道模型', 'iid_rayleigh')).lower(),
+                'mimo_channel_model': (
+                    'identity' if not multipath_on
+                    else str(ui_params.get('MIMO信道模型', 'iid_rayleigh')).lower()
+                ),
                 'link_mode': 'ofdm',
             })
         else:
@@ -957,19 +977,22 @@ class BackendService(QObject):
         if '时长' in ui_params:
             mapped_params['duration'] = float(ui_params['时长']) * 1e-3
 
-        # 链路设计页是链路模式的主入口；参数页中的“波形类型”作为旧工程
-        # 和专项模式的兼容入口。避免两个页面值不一致时悄悄运行另一种波形。
-        link_mode_partition = str(ui_params.get('链路模式分区', '')).strip()
-        partition_mode_map = {
-            '单载波模式': 'sc-fde',
-            '多载波模式': 'ofdm',
-        }
-        if not mapped_params.get('enable_mimo') and link_mode_partition in partition_mode_map:
-            mapped_params['link_mode'] = partition_mode_map[link_mode_partition]
-        elif '波形类型' in ui_params:
-            wf = str(ui_params['波形类型'])
-            if not mapped_params.get('enable_mimo'):
-                mapped_params['link_mode'] = 'ofdm' if 'OFDM' in wf else 'sc-fde'
+        # 新键「链路模式」优先；旧工程用链路模式分区 / 波形类型兼容回退。
+        if link_mode_ui == 'SC':
+            mapped_params['link_mode'] = 'sc-fde'
+        elif link_mode_ui == 'SISO-OFDM':
+            mapped_params['link_mode'] = 'ofdm'
+        elif link_mode_ui == 'MIMO-OFDM':
+            mapped_params['link_mode'] = 'ofdm'
+        elif not mapped_params.get('enable_mimo'):
+            partition_mode_map = {
+                '单载波模式': 'sc-fde',
+                '多载波模式': 'ofdm',
+            }
+            if legacy_partition in partition_mode_map:
+                mapped_params['link_mode'] = partition_mode_map[legacy_partition]
+            elif legacy_waveform:
+                mapped_params['link_mode'] = 'ofdm' if 'OFDM' in legacy_waveform else 'sc-fde'
 
         # 数据源
         if '数据源配置' in ui_params:
@@ -990,7 +1013,7 @@ class BackendService(QObject):
             mapped_params['gi_length'] = int(ui_params['CP长度'])
 
         # 调制
-        modulation_map = {'BPSK': 1, 'QPSK': 2, '8PSK': 3, '16QAM': 4, '64QAM': 6}
+        modulation_map = {'BPSK': 1, 'QPSK': 2, '8PSK': 3, '16QAM': 4, '64QAM': 6, '256QAM': 8}
         if '调制方式' in ui_params and str(ui_params['调制方式']) in modulation_map:
             mapped_params['NCBPS'] = modulation_map[str(ui_params['调制方式'])]
 
@@ -999,7 +1022,10 @@ class BackendService(QObject):
             code_str = str(ui_params['信道编码类型'])
             if 'LDPC' in code_str:
                 mapped_params['code_type'] = 'LDPC'
-                mapped_params['ldpc_standard_rate'] = '14/15'
+                # LDPC（1056,1440）→ 11/15；LDPC（1344,1440）→ 14/15
+                mapped_params['ldpc_standard_rate'] = (
+                    '11/15' if '1056' in code_str else '14/15'
+                )
             elif 'RS' in code_str:
                 mapped_params['code_type'] = 'RS'
                 if '11,15' in code_str or '11，15' in code_str:
@@ -1391,6 +1417,65 @@ class BackendService(QObject):
             print("无结果数据，无法生成图表")
 
     @staticmethod
+    def _compute_theoretical_net_rate(params):
+        """按帧结构推导的理论净有效速率（与参数配置页同一定义）。
+
+        R = Rs × log₂M × 空间流数 × ηc × ηf
+          ηc  = k/n（RS 或 LDPC 码率）
+          ηf  = 净数据符号数 / 帧总符号数（时间量纲，MIMO 取单流数据符号）
+              SISO-OFDM/SC：含前导码与 CP/GI 开销
+              MIMO-OFDM：每帧 = 保护 64 + (2 SYNC + 2 训练 + 数据块) × (n_sc+cp)
+        """
+        if params is None:
+            return None
+        try:
+            nbps = params.get("NCBPS")
+            rs = params.get("sample_rate")
+            if nbps is None or not rs:
+                return None
+            n_streams = (
+                int(params.get("num_spatial_streams", 1))
+                if params.get("enable_mimo") else 1
+            )
+            code_type = str(params.get("code_type", "")).upper()
+            if code_type == "RS":
+                k = float(params.get("rs_packet_size", 11))
+                n = k + float(params.get("rs_nsym", 4))
+            else:  # LDPC
+                from utils.LDPCMatrix import ieee802153d_1440_dimensions
+                n, k, _ = ieee802153d_1440_dimensions(
+                    str(params.get("ldpc_standard_rate", "14/15"))
+                )
+            eta_c = k / n if n > 0 else 1.0
+            cp = int(params.get("gi_length", 32))
+            preamble_len = 3328 if str(params.get("Preamble_type")) == "short" else 5120
+            link_mode = str(params.get("link_mode", "")).lower()
+            if link_mode == "ofdm":
+                n_sc = int(params.get("subwave_num", 512))
+                if params.get("enable_mimo"):
+                    # 逐帧组帧：每帧 = 保护 64 + (4 + ceil(n_data/2)) × (n_sc+cp)
+                    import math as _math
+                    n_sym = int(params.get("subframe_ofdm_num", 48))
+                    n_pilots = len(list(params.get("pilot_block_indexes", [])))
+                    n_data_sym = n_sym - n_pilots
+                    blocks_per_stream = _math.ceil(n_data_sym / 2)
+                    n_frame = 64 + (2 + 2 + blocks_per_stream) * (n_sc + cp)
+                    eta_f = (n_data_sym * n_sc / 2.0) / n_frame if n_frame > 0 else 0.0
+                else:
+                    n_sym = int(params.get("subframe_ofdm_num", 48))
+                    n_pilots = len(list(params.get("pilot_block_indexes", [])))
+                    n_frame = preamble_len + n_sym * (n_sc + cp)
+                    eta_f = (n_sym - n_pilots) * n_sc / n_frame if n_frame > 0 else 0.0
+            else:  # sc-fde
+                n_sc = int(params.get("subframe_length", 480))
+                n_sym = int(params.get("subframe_num", 51))
+                n_frame = preamble_len + n_sym * (n_sc + cp)
+                eta_f = n_sc * n_sym / n_frame if n_frame > 0 else 0.0
+            return float(rs) * float(nbps) * n_streams * eta_c * eta_f
+        except Exception:
+            return None
+
+    @staticmethod
     def _save_metrics_json(result, project_path):
         """将单次仿真关键指标输出到 metrics.json。"""
         import json
@@ -1425,6 +1510,11 @@ class BackendService(QObject):
                         'spectral_efficiency_bps_per_hz'):
                 if payload[key] is None:
                     payload[key] = _sanitize(result.get(key))
+
+        # 理论净有效速率（帧结构推导，与参数配置页同一定义）
+        payload['theoretical_net_rate_bps'] = _sanitize(
+            BackendService._compute_theoretical_net_rate(params)
+        )
 
         with open(project_path / 'metrics.json', 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)

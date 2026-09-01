@@ -150,7 +150,7 @@ def test_ui_spatial_mode_maps_to_real_mimo_parameters():
     from thz_sim_ui.services.backend import BackendService
 
     mapped = BackendService.map_ui_params_to_phy_params(
-        {"空间模式分区": "2×2 MIMO", "波形类型": "OFDM"}
+        {"链路模式": "MIMO-OFDM"}
     )
     assert mapped["enable_mimo"] is True
     assert mapped["num_tx"] == mapped["num_rx"] == 2
@@ -162,7 +162,7 @@ def test_ui_mimo_parameters_are_applied_atomically_to_default_params():
     from thz_sim_ui.services.backend import BackendService
 
     mapped = BackendService.map_ui_params_to_phy_params(
-        {"空间模式分区": "2×2 MIMO", "波形类型": "OFDM"}
+        {"链路模式": "MIMO-OFDM"}
     )
     params = PHYParams()
     manager = SimulationManager(base_params=params, save_plots=False)
@@ -179,7 +179,7 @@ def test_ui_mimo_controls_run_from_default_simulation_manager():
     from thz_sim_ui.services.backend import BackendService
 
     controls = BackendService.map_ui_params_to_phy_params(
-        {"空间模式分区": "2×2 MIMO", "波形类型": "OFDM"}
+        {"链路模式": "MIMO-OFDM"}
     )
     controls.update(
         subwave_num=30,
@@ -282,8 +282,7 @@ def test_ui_measured_channel_mapping_applies_scene_rate_gi_and_mode():
 
     mapped = BackendService.map_ui_params_to_phy_params(
         {
-            "空间模式分区": "2×2 MIMO",
-            "波形类型": "多载波OFDM",
+            "链路模式": "MIMO-OFDM",
             "CP长度": 8,
             "过采样率": "4x",
             "_channel_params": {
@@ -304,8 +303,7 @@ def test_ui_measured_channel_mapping_applies_scene_rate_gi_and_mode():
 
     mapped_siso = BackendService.map_ui_params_to_phy_params(
         {
-            "空间模式分区": "非 MIMO",
-            "波形类型": "单载波SC-FDE",
+            "链路模式": "SISO-OFDM",
             "过采样率": "4x",
             "_channel_params": {
                 "enable_multipath": True,

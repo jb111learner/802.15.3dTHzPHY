@@ -19,6 +19,11 @@ class TxOFDMProcesser:
         self.subwave_num = params.get("subwave_num")                   # 子载波数 (N_fft = 512)
         self.subframe_ofdm_num = params.get("subframe_ofdm_num")       # 每个子帧的OFDM符号总数 (48)
         self.pilot_block_indexes = params.get("pilot_block_indexes")   # 块状导频索引 [0, 16, 32]
+        # 频域补零过采样：OFDM 符号时域样点数 = subwave_num × oversampling
+        self.link_mode = str(params.get("link_mode", "ofdm")).lower()
+        self.oversampling = (
+            int(params.get("oversampling", 4)) if self.link_mode == "ofdm" else 1
+        )
 
         # 每个子帧中数据OFDM符号个数 = 总数 - 导频数
         self.num_data_ofdm_per_subframe = self.subframe_ofdm_num - len(self.pilot_block_indexes)  # 45
@@ -81,15 +86,17 @@ class TxOFDMProcesser:
         if data_dict["frame_num"] != data_dict["signal_length"] // data_dict["frame_symbol_num"]:
             raise ValueError("输入数据字典中的帧数与符号长度不匹配")
         
-        #  校验输入字典参数是否与物理层参数一致
+        # 输入侧校验仍为符号率（Modulator 输出符号率信号）
         if data_dict["frame_symbol_num"] != self.num_data_ofdm_per_subframe * self.subwave_num:
             raise ValueError("输入数据字典中的每帧符号数与物理层参数不匹配")
 
-        self.symbol_length = (data_dict["frame_symbol_num"] + len(self.pilot_block_indexes) * self.subwave_num) * data_dict["frame_num"]
-        self.sample_rate = data_dict["sample_rate_Hz"]
+        # 输出侧 bookkeeping：补零 IFFT 后每个 OFDM 符号变为 subwave_num×oversampling 个样点
+        sps = self.oversampling
+        self.symbol_length = (data_dict["frame_symbol_num"] + len(self.pilot_block_indexes) * self.subwave_num) * data_dict["frame_num"] * sps
+        self.sample_rate = data_dict["sample_rate_Hz"] * sps
         self.duration = self.symbol_length / self.sample_rate
         self.padding_bit_num = data_dict["padding_bit_num"]
-        self.frame_symbol_num = data_dict["frame_symbol_num"] + len(self.pilot_block_indexes) * self.subwave_num
+        self.frame_symbol_num = (data_dict["frame_symbol_num"] + len(self.pilot_block_indexes) * self.subwave_num) * sps
         self.frame_num = data_dict["frame_num"]
 
     def ofdm_process(self, signal_dict):
@@ -131,17 +138,27 @@ class TxOFDMProcesser:
         data_col_indices = np.setdiff1d(np.arange(N_SYM), self.pilot_block_indexes)
         ofdm_grid[:, data_col_indices, :] = data_3d
 
-        # ==================== 3. 串并转换 + IFFT ====================
+        # ==================== 3. 串并转换 + 补零 IFFT ====================
         # 按 frame → symbol 的顺序排列，和后续 GI/前导码逐帧处理保持一致。
         # 每列仍是一个 OFDM 符号的全部 N_SC 个子载波。
         ofdm_2d = ofdm_grid.reshape(N_SUB * N_SYM, N_SC).T
-        # 每列是一个OFDM符号（频域），512点IFFT（正交归一化，功率守恒）
-        ifft_out = np.fft.ifft(ofdm_2d, axis=0, norm='ortho')  # (512, total_ofdm_symbols)
+        # 频域补零过采样（业界标准做法）：子载波 DC 居中放入 N_FFT 点频域向量，
+        # 其余频点补零，再做 N_FFT 点 IFFT 直接得到 oversampling 倍过采样的
+        # 时域 OFDM 符号，无需后续插零+低通插值滤波。
+        # 不额外缩放：AWGN 模块按实测接收功率校准噪声方差，SNRdB 语义不变。
+        N_FFT = N_SC * self.oversampling
+        padded = np.zeros((N_FFT, ofdm_2d.shape[1]), dtype=np.complex128)
+        half = N_SC // 2
+        padded[:half] = ofdm_2d[:half]            # 正频率段 [0, N_SC/2)
+        padded[N_FFT - half:] = ofdm_2d[half:]    # 负频率段 [N_SC/2, N_SC)
+        # 每列是一个OFDM符号（频域补零到 N_FFT），正交归一化 IFFT
+        ifft_out = np.fft.ifft(padded, axis=0, norm='ortho')  # (N_FFT, total_ofdm_symbols)
 
         # ==================== 4. 并串转换 (列优先) ====================
         tx_signal = ifft_out.ravel(order='F')
 
-        # ortho模式下IFFT功率守恒：输入功率=输出功率（≈1.0），无需额外归一化
+        # ortho 模式能量守恒：总能量不变但散布到 N_FFT 个样点，
+        # 每样点平均功率降为 1/oversampling（PAPR 等比值统计不受影响）。
 
         # ==================== 校验输出长度 ====================
         if len(tx_signal) != self.symbol_length:
@@ -180,17 +197,17 @@ if __name__ == "__main__":
     symbols_ofdm_dict = ofdm_processer.ofdm_process(symbols_dict)
 
     tx_signal = symbols_ofdm_dict["signal_stream"]
-    N_fft = ofdm_processer.subwave_num
-    gi_len = ofdm_processer.gi_length
-    base_len = N_fft + gi_len            # 544
-    num_blocks = len(tx_signal) // base_len
-    num_subframes = ofdm_processer.num_subframes
+    N_SC = ofdm_processer.subwave_num
+    sps = ofdm_processer.oversampling
+    N_fft = N_SC * sps                  # 补零 IFFT 后的每符号样点数
+    half = N_SC // 2
+    num_blocks = len(tx_signal) // N_fft
 
     print(f"\n===== OFDM 发射处理结果 =====")
-    print(f"子帧数量: {num_subframes}")
-    print(f"OFDM符号总数: {num_blocks} (= {num_subframes}子帧 × 48符号/子帧)")
-    print(f"OFDM输出信号长度: {len(tx_signal)} (= {num_blocks} × {base_len})")
-    print(f"输出采样率: {symbols_ofdm_dict['sample_rate_Hz']} Hz")
+    print(f"帧数: {ofdm_processer.frame_num}")
+    print(f"OFDM符号总数: {num_blocks} (= {ofdm_processer.frame_num}帧 × {ofdm_processer.subframe_ofdm_num}符号/子帧)")
+    print(f"OFDM输出信号长度: {len(tx_signal)} (= {num_blocks} × {N_fft})")
+    print(f"输出采样率: {symbols_ofdm_dict['sample_rate_Hz']} Hz (过采样率 {sps}x)")
     print(f"输出时长: {symbols_ofdm_dict['duration_seconds']:.6e} s")
 
     # ==================== 1. 理想解调测试 ====================
@@ -203,10 +220,13 @@ if __name__ == "__main__":
 
     for b in range(num_blocks):
         block_idx_in_subframe = b % ofdm_processer.subframe_ofdm_num
-        start = b * base_len
-        # 取 CP 后的 N_fft 个样点 → FFT 回频域
-        block = tx_signal[start + gi_len : start + gi_len + N_fft]
-        rx_block_freq = np.fft.fft(block, norm='ortho')
+        start = b * N_fft
+        # 每符号取 N_fft 个样点 → FFT 回频域，取回 DC 居中的 N_SC 个子载波
+        block = tx_signal[start : start + N_fft]
+        rx_block_freq_full = np.fft.fft(block, norm='ortho')
+        rx_block_freq = np.concatenate(
+            [rx_block_freq_full[:half], rx_block_freq_full[N_fft - half:]]
+        )
 
         if block_idx_in_subframe in pilot_block_set:
             pilot_order = ofdm_processer.pilot_block_indexes.index(
@@ -248,7 +268,7 @@ if __name__ == "__main__":
     print(f"\n===== 3. PAPR CCDF =====")
     papr_vals = []
     for b in range(num_blocks):
-        blk = tx_signal[b * base_len : b * base_len + base_len]
+        blk = tx_signal[b * N_fft : b * N_fft + N_fft]
         power = np.abs(blk) ** 2
         papr = np.max(power) / np.mean(power)
         papr_vals.append(10 * np.log10(papr))

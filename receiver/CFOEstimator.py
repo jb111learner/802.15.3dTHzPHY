@@ -82,9 +82,14 @@ class CFOEstimator:
         return self._estimate_cfo_from_sync(sync_field, fs, self.L_oversample)
 
     def estimate_cfo_fine(self, rx_signal, fs=None):
-        """细估计：使用符号率信号（定时后）"""
+        """细估计：使用符号率信号（定时后）；OFDM 补零 IFFT 后全程高采样率"""
         if fs is None:
             fs = self.sample_rate
+        if self.link_mode == "ofdm":
+            # 补零 IFFT 后信号不再下采样，细估计仍在高采样率域进行
+            # （fs 与 L 同乘 oversampling，估计结果与符号率域数学等价）
+            sync_field = rx_signal[:self.sync_len_oversample]
+            return self._estimate_cfo_from_sync(sync_field, fs, self.L_oversample)
         sync_field = rx_signal[:self.sync_len]
         return self._estimate_cfo_from_sync(sync_field, fs, self.L)
 
@@ -191,14 +196,24 @@ class CFOEstimator:
         rx_signal = rx_signal_dict["signal_stream"]
         fs = self.sample_rate
 
-        frames, num_frames, _ = self._split_into_frames(rx_signal, self.frame_symbol_num, tail_mode)
+        # OFDM 补零 IFFT 后信号全程高采样率，帧长与 SYNC 段长需用高采样率值
+        if self.link_mode == "ofdm":
+            frame_len = self.frame_sample_num
+            sync_len_local = self.sync_len_oversample
+            L_local = self.L_oversample
+        else:
+            frame_len = self.frame_symbol_num
+            sync_len_local = self.sync_len
+            L_local = self.L
+
+        frames, num_frames, _ = self._split_into_frames(rx_signal, frame_len, tail_mode)
         cfo_list = []
         compensated_frames = []
         global_idx = 0  # 全局采样索引
 
         for frame in frames:
-            sync_field = frame[:self.sync_len]
-            cfo_est = self._estimate_cfo_from_sync(sync_field, fs, self.L)
+            sync_field = frame[:sync_len_local]
+            cfo_est = self._estimate_cfo_from_sync(sync_field, fs, L_local)
             cfo_list.append(cfo_est)
             # 传入全局起始索引
             comp_frame = self.compensate_cfo(frame, fs, cfo_est, start_idx=global_idx)

@@ -39,6 +39,8 @@ class RxOFDMProcesser:
         self.N_SYM = self.params.get("subframe_ofdm_num")      # 48 OFDM符号/子帧
         self.pilot_indexes = self.params.get("pilot_block_indexes")  # [0, 16, 32]
         self.gi_len = self.params.get("gi_length")             # 32
+        # 发射端补零 IFFT 过采样率：每个 OFDM 符号 = (gi_len+N_SC)×sps 个时域样点
+        self.sps = int(self.params.get("oversampling", 1))
         self.channel_estimation_taps = int(self.gi_len)
         if str(self.params.get("multipath_source", "simulated")).lower() == "measured":
             scenario = str(self.params.get("measured_channel_scenario", "8cm")).lower()
@@ -121,8 +123,11 @@ class RxOFDMProcesser:
         if round(base_rate * base_dur) != total_len:
             raise ValueError("采样率与时长不匹配")
 
-        # 每帧 = 前导码 + N_SYM个OFDM符号块（每块=GI+子载波）
-        frame_symbol_num = self.preamble_len + self.N_SYM * (self.gi_len + self.N_SC)
+        # 每帧 = 前导码 + N_SYM个OFDM符号块（每块=GI+子载波），全部按高采样率计数
+        sps = self.sps
+        frame_symbol_num = (
+            self.preamble_len + self.N_SYM * (self.gi_len + self.N_SC)
+        ) * sps
         if total_len % frame_symbol_num != 0:
             raise ValueError(
                 f"信号总长度({total_len})不是帧长({frame_symbol_num})的整数倍"
@@ -132,8 +137,9 @@ class RxOFDMProcesser:
         self.total_ofdm_blocks = self.frame_num * self.N_SYM  # 总OFDM符号数
 
         self.symbol_length = self.total_ofdm_blocks * self.N_SC
-        self.sample_rate = base_rate
-        self.duration = self.symbol_length / base_rate
+        # 输出回到符号率（子载波网格），供解调/解码 bookkeeping 使用
+        self.sample_rate = base_rate / sps
+        self.duration = self.symbol_length / self.sample_rate
         self.padding_bit_num = data_dict["padding_bit_num"]
 
     # ==================== 逐帧去前导码 + 去GI ====================
@@ -141,11 +147,14 @@ class RxOFDMProcesser:
         """
         多帧信号：逐帧去除前导码和GI，返回时域OFDM符号矩阵
 
-        :param rx_signal: 1D 符号率接收信号（含多帧，每帧=前导码+GI数据）
-        :return: (N_SC, total_ofdm_blocks) 时域OFDM符号矩阵
+        :param rx_signal: 1D 高采样率接收信号（含多帧，每帧=前导码+GI数据）
+        :return: (N_SC*sps, total_ofdm_blocks) 时域OFDM符号矩阵
         """
-        frame_symbol_num = self.preamble_len + self.N_SYM * (self.gi_len + self.N_SC)
-        block_len = self.gi_len + self.N_SC
+        sps = self.sps
+        frame_symbol_num = (
+            self.preamble_len + self.N_SYM * (self.gi_len + self.N_SC)
+        ) * sps
+        block_len = (self.gi_len + self.N_SC) * sps
 
         # 按帧切分
         frames = rx_signal.reshape(self.frame_num, frame_symbol_num)
@@ -153,12 +162,12 @@ class RxOFDMProcesser:
         all_blocks = []
         for s in range(self.frame_num):
             frame = frames[s]
-            # 去除前导码
-            data_with_gi = frame[self.preamble_len:]  # length = N_SYM * block_len
+            # 去除前导码（高采样率长度）
+            data_with_gi = frame[self.preamble_len * sps:]  # length = N_SYM * block_len
             # 重塑为 (N_SYM, block_len)，每行一个OFDM符号块
             blocks_with_gi = data_with_gi.reshape(self.N_SYM, block_len)
-            # 去除每块前 gi_len 个CP样本
-            blocks_no_gi = blocks_with_gi[:, self.gi_len:]  # (N_SYM, N_SC)
+            # 去除每块前 gi_len*sps 个CP样本
+            blocks_no_gi = blocks_with_gi[:, self.gi_len * sps:]  # (N_SYM, N_SC*sps)
             all_blocks.append(blocks_no_gi)
 
         # 堆叠所有帧的OFDM符号 → (total_blocks, N_SC)
@@ -170,11 +179,15 @@ class RxOFDMProcesser:
     def _fft_demodulate(self, time_grid):
         """
         OFDM 解调：时域 → 频域
-        :param time_grid: (N_SC, num_blocks) 时域OFDM符号矩阵
-        :return: (N_SC, num_blocks) 频域OFDM符号矩阵
+        :param time_grid: (N_SC*sps, num_blocks) 高采样率时域OFDM符号矩阵
+        :return: (N_SC, num_blocks) 频域OFDM符号矩阵（取回 DC 居中的子载波）
         """
         # ortho模式：与发射端 ifft(norm='ortho') 匹配，完美还原
-        return np.fft.fft(time_grid, axis=0, norm='ortho')
+        fft_out = np.fft.fft(time_grid, axis=0, norm='ortho')  # size N_SC*sps
+        half = self.N_SC // 2
+        return np.concatenate(
+            [fft_out[:half], fft_out[self.N_SC * self.sps - half:]], axis=0
+        )
 
     # ==================== 导频LS + 全局线性相位 + 残余CFO补偿 ====================
     def _ls_track_and_equalize(self, freq_grid, H_init_list=None):
@@ -420,7 +433,7 @@ if __name__ == "__main__":
 
     sps = params.get("oversampling")
     Lh = params.get("gi_length")
-    nfft = params.get("subframe_length")
+    nfft = params.get("subwave_num")
 
     # ---- Channel ----
     ch = THzChannel(params)
@@ -452,20 +465,18 @@ if __name__ == "__main__":
     fine_out = fsync.fine_sync(coarse_out)
     print(f"[4] FineSync: SFD offset={fine_out['sync_offset']}")
 
-    # ---- 5. Manual downsample from index 0 (CoarseSync already aligned) ----
-    sym_raw = fine_out["signal_stream"][::sps]
-    sym_fs = fine_out["sample_rate_Hz"] / sps
-    fl_sym = len(tx.preamble) + 48 * (512 + 32)
+    # ---- 5. 高采样率直通（补零 IFFT 后无需时域抽取）----
+    fl_sym = (len(tx.preamble) + 48 * (512 + 32)) * sps
     N_SUB = tx.ofdm_processer.frame_num
-    sym = sym_raw[:N_SUB * fl_sym]
+    sym = fine_out["signal_stream"][:N_SUB * fl_sym]
     sym_dict = {
         "signal_stream": sym,
-        "sample_rate_Hz": sym_fs,
+        "sample_rate_Hz": fine_out["sample_rate_Hz"],
         "signal_length": len(sym),
-        "duration_seconds": len(sym) / sym_fs,
+        "duration_seconds": len(sym) / fine_out["sample_rate_Hz"],
         "padding_bit_num": fine_out["padding_bit_num"],
     }
-    print(f"[5] Downsample (manual): sym_len={len(sym)} (={N_SUB}x{fl_sym})")
+    print(f"[5] High-rate pass-through: sym_len={len(sym)} (={N_SUB}x{fl_sym})")
 
     # ---- 6. CFO fine: per-frame (exclude padded frames from avg) ----
     fine_cfo_out = cfo.estimate_and_compensate_cfo_fine(sym_dict)
@@ -486,14 +497,14 @@ if __name__ == "__main__":
     H_est = ofdm_result["channel_freq_response"][0]
     h_est = ofdm_result["channel_time_response"][0]
 
-    # ---- 9. True equivalent symbol-rate channel ----
+    # ---- 9. True channel at subcarrier frequencies (补零 IFFT 下无需等效基带) ----
     h_phys = np.zeros(Lh * sps, dtype=np.complex128)
     h_phys[:len(ch.chan_true)] = ch.chan_true
-    pt, pr = tx.pulse_shaper.filter_coeffs, mf.h_rx
-    heq = np.convolve(np.convolve(h_phys, pt), pr)
-    gd = (len(pt)-1)//2 + (len(pr)-1)//2
-    h_true = heq[gd::sps][:Lh]
-    H_true = np.fft.fft(h_true, nfft)
+    # 子载波位于 N_FFT 点频域的 DC 居中两段，与 TX/RX 补零放置一致
+    N_FFT = nfft * sps
+    H_phys = np.fft.fft(h_phys, N_FFT)
+    half = nfft // 2
+    H_true = np.concatenate([H_phys[:half], H_phys[N_FFT - half:]])
     nmse = (np.linalg.norm(H_true-H_est)**2
             / (np.linalg.norm(H_true)**2 + np.finfo(float).eps))
     cfo_residual = abs(cfo_total - cfo_true)

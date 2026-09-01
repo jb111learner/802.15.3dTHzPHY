@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.signal import resample_poly
 from params.PHYParams import PHYParams
 from utils.Seq_gen import Generator
 # 设置中文字体（避免绘图中文乱码）
@@ -14,12 +15,23 @@ class PreambleInsertor:
         self.params = params
         self.generator = Generator(params)
         self.preamble_type = self.params.get("Preamble_type")  # 默认long类型
+        self.link_mode = str(self.params.get("link_mode", "sc-fde")).lower()
+        # OFDM 模式：数据段经补零 IFFT 后已是 oversampling 倍过采样，
+        # 前导码用 polyphase 插值到同一采样率后再拼接（线性相位，无群时延）。
+        # self.preamble/sync/sfd/ces 保持符号级，供下游长度计算使用。
+        self.oversampling = (
+            int(self.params.get("oversampling", 4)) if self.link_mode == "ofdm" else 1
+        )
         self._init_preamble_config()
         # 预生成基础序列（复数类型，带相位旋转）
         self.a128, self.b128 = self.generator.generate_base_sequences()
         self.a256, self.b256 = self.generator.generate_256_sequences()
         self.a512, self.b512 = self.generator.generate_512_sequences()
         self.preamble = self._generate_preamble()
+        self.preamble_upsampled = (
+            self.preamble if self.oversampling == 1
+            else resample_poly(self.preamble, self.oversampling, 1)
+        )
 
         # 输出参数 
         self.sample_rate = None  # 采样率
@@ -55,15 +67,16 @@ class PreambleInsertor:
             raise ValueError("输入数据字典中的采样率与时长不匹配")  
         if data_dict["frame_symbol_num"] * data_dict["frame_num"] != data_dict["signal_length"]:
             raise ValueError("输入数据字典中的分帧信息不匹配")
-        preamble_len = len(self.preamble)
+        preamble = self.preamble_upsampled if self.link_mode == "ofdm" else self.preamble
+        preamble_len = len(preamble)
         # 计算符号长度(每帧插入前导码)
         self.signal_length = (data_dict["frame_symbol_num"] + preamble_len) * data_dict["frame_num"]
         self.sample_rate = data_dict["sample_rate_Hz"]
         self.duration = self.signal_length / self.sample_rate
-        self.padding_bit_num = data_dict["padding_bit_num"]  
+        self.padding_bit_num = data_dict["padding_bit_num"]
         self.frame_symbol_num = data_dict["frame_symbol_num"] + preamble_len
         self.frame_valid_symbol_num = data_dict["frame_symbol_num"]
-        self.frame_num = data_dict["frame_num"]         
+        self.frame_num = data_dict["frame_num"]
 
     def _init_preamble_config(self):
         """初始化前导码长度配置"""
@@ -106,7 +119,8 @@ class PreambleInsertor:
         if num_frames != self.frame_num:
             return ValueError("输入数据字典中的分帧信息不匹配")
         # 将 preamble 扩展到每帧一行
-        preamble_rows = np.tile(self.preamble, (num_frames, 1))  # shape (num_frames, len(preamble))
+        preamble = self.preamble_upsampled if self.link_mode == "ofdm" else self.preamble
+        preamble_rows = np.tile(preamble, (num_frames, 1))  # shape (num_frames, len(preamble))
         # 沿列拼接
         frame_symbols = np.concatenate([preamble_rows, frame_symbols], axis=1)
         # 展平回一维

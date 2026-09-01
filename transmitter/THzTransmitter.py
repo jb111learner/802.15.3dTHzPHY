@@ -232,7 +232,8 @@ if __name__ == "__main__":
                          "fs": tx.tx_signal_dict.get("sample_rate_Hz"),
                          "n_sc": params.get("subwave_num")}
         # PAPR per OFDM-symbol-equivalent block (N_SC × sps = 2048 samples)
-        blk_len = params.get("subframe_length") * sps  # 512 × 4 = 2048
+        blk_len = (params.get("subwave_num") if mode == "ofdm"
+                   else params.get("subframe_length")) * sps  # OFDM: 512×4
         pv = []
         for b in range(0, len(payload) - blk_len, blk_len):
             blk = payload[b:b+blk_len]

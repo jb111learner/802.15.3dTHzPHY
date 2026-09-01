@@ -42,8 +42,7 @@ def test_measured_cir_resampling_preserves_delay_grid_and_power(factor):
 @pytest.mark.parametrize("factor", [2, 4])
 def test_frontend_preserves_oversampling_for_measured_channel(factor):
     mapped = BackendService.map_ui_params_to_phy_params({
-        "链路模式分区": "多载波模式",
-        "波形类型": "多载波OFDM",
+        "链路模式": "SISO-OFDM",
         "过采样率": f"{factor}x",
         "采样率": 30000.0,
         "_channel_params": {

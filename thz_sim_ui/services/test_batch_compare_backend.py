@@ -40,10 +40,9 @@ def test_ofdm_unit_oversampling_uses_identity_filter():
     assert np.array_equal(pulse_shaper._design_lowpass_filter(), np.array([1.0]))
 
 
-def test_link_design_mode_has_priority_and_measured_channel_does_not_override_it():
+def test_link_mode_has_priority_and_measured_channel_does_not_override_it():
     mapped = backend.BackendService.map_ui_params_to_phy_params({
-        '链路模式分区': '单载波模式',
-        '波形类型': '多载波OFDM',
+        '链路模式': 'SC',
         '_channel_params': {
             'enable_multipath': True,
             'multipath_source': 'measured',
@@ -52,6 +51,7 @@ def test_link_design_mode_has_priority_and_measured_channel_does_not_override_it
     })
 
     assert mapped['link_mode'] == 'sc-fde'
+    assert mapped['enable_mimo'] is False
     assert mapped['sample_rate'] == 30e9
 
 

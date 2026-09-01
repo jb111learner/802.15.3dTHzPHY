@@ -2,7 +2,6 @@ from .batch_compare_page import BatchComparePage
 from .channel_integration_page import ChannelIntegrationPage
 from .functional_test_page import FunctionalTestPage
 from .home_page import HomePage
-from .link_design_page import LinkDesignPage
 from .parameter_config_page import ParameterConfigPage
 from .result_analysis_page import ResultAnalysisPage
 from .resume_recovery_page import ResumeRecoveryPage
@@ -16,7 +15,6 @@ __all__ = [
     'ChannelIntegrationPage',
     'FunctionalTestPage',
     'HomePage',
-    'LinkDesignPage',
     'ParameterConfigPage',
     'ResultAnalysisPage',
     'ResumeRecoveryPage',

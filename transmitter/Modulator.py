@@ -337,7 +337,7 @@ class THzModulator:
         plt.axis('equal')
         
         if MCS == 1:
-            mod_name = {1:"BPSK",2:"QPSK",3:"8PSK",4:"16QAM",6:"64QAM"}.get(self.NCBPS)
+            mod_name = {1:"BPSK",2:"QPSK",3:"8PSK",4:"16QAM",6:"64QAM",8:"256QAM"}.get(self.NCBPS)
             plt.title(f'pi/2-{mod_name} Constellation')
             plt.xlabel('In-phase Component')
             plt.ylabel('Quadrature Component')
