@@ -132,6 +132,7 @@ class FunctionalTestPage(WorkbenchPage):
         self.codec_editor = QPlainTextEdit()
         self.codec_editor.setStyleSheet(_MONO_STYLE)
         self.codec_editor.setMinimumHeight(180)
+        self.codec_type_combo.currentTextChanged.connect(self._on_codec_type_changed)
 
         load_file_btn = QPushButton("选择文件")
         load_file_btn.clicked.connect(self._on_load_file)
@@ -321,6 +322,10 @@ class FunctionalTestPage(WorkbenchPage):
                 f"// 示例文件读取失败：{exc}\n// 可点击「选择文件」手动加载用例")
             return
         self.codec_editor.setPlainText(text)
+
+    def _on_codec_type_changed(self, _text: str) -> None:
+        """切换编码类型时同步加载对应示例，避免界面选择与实际 JSON 用例不一致。"""
+        self._on_load_demo()
 
     def _on_run_clicked(self) -> None:
         if self._worker is not None and self._worker.isRunning():

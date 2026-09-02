@@ -731,6 +731,13 @@ def _trunc_hex(hex_str: str, max_len: int = 48) -> str:
     return hex_str[:max_len] + f"…(共{len(hex_str)}字符)"
 
 
+def _head_tail_hex(hex_str: str, edge_len: int = 24) -> str:
+    """同时显示长十六进制数据的头尾，便于观察系统码末尾的校验位。"""
+    if len(hex_str) <= 2 * edge_len:
+        return hex_str
+    return f"{hex_str[:edge_len]} … {hex_str[-edge_len:]} (共{len(hex_str) // 2}字节)"
+
+
 def _run_rs_test(config: dict, result: Dict[str, Any]) -> None:
     from params.PHYParams import PHYParams
     from utils.Coder import RSCoder
@@ -859,8 +866,19 @@ def _run_ldpc_test(config: dict, result: Dict[str, Any]) -> None:
         if ok:
             n_pass += 1
 
+        codeword_hex = _bits_to_hex(cw)
+        codeword_blocks = cw.reshape(-1, coder.n)
+        parity_hexes = [
+            _bits_to_hex(block[coder.parity_positions])
+            for block in codeword_blocks
+        ]
+        parity_display = "；".join(
+            f"块{idx + 1}: {_head_tail_hex(value, edge_len=16)}"
+            for idx, value in enumerate(parity_hexes)
+        )
+
         rows.append([
-            name, _trunc_hex(hex_in), _trunc_hex(_bits_to_hex(cw)),
+            name, _trunc_hex(hex_in), _head_tail_hex(codeword_hex), parity_display,
             "；".join(f"bit #{p}" for p in err_pos) or "无",
             _trunc_hex(_bits_to_hex(dec_bits)),
             "通过" if ok else "失败",
@@ -869,6 +887,7 @@ def _run_ldpc_test(config: dict, result: Dict[str, Any]) -> None:
             f"LDPC({coder.n},{coder.k}) 码率 {rate}；输入 {len(in_bits)} bit"
             f"（{len(in_bits) // 8} 字节）→ 编码 {len(cw)} bit"
             f"（{debug['num_blocks']} 个码字块）；注入错误 {len(err_pos)} bit；"
+            f"校验位：{parity_display}；"
             f"迭代次数 {debug['iterations']}；校验子权重 {debug['syndrome_weights']}；"
             f"硬判 fallback={debug['used_hard_fallback']}；"
             f"译码{'成功' if ok else '失败'}。"
@@ -886,7 +905,10 @@ def _run_ldpc_test(config: dict, result: Dict[str, Any]) -> None:
         {"label": "失败", "value": str(len(cases) - n_pass)},
     ]
     result["table"] = {
-        "columns": ["算例", "输入(hex)", "编码结果(hex)", "注入错误", "译码结果(hex)", "判定"],
+        "columns": [
+            "算例", "输入(hex)", "编码结果(头…尾)", "LDPC校验位(hex)",
+            "注入错误", "译码结果(hex)", "判定",
+        ],
         "rows": rows,
     }
     result["detail_lines"] = details
