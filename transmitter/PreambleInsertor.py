@@ -32,6 +32,21 @@ class PreambleInsertor:
             self.preamble if self.oversampling == 1
             else resample_poly(self.preamble, self.oversampling, 1)
         )
+        self.preamble_power_scale = 1.0
+        if self.link_mode == "ofdm" and self.oversampling > 1:
+            # TxOFDMProcesser uses an orthonormal, zero-padded IFFT.  With
+            # N_SC occupied bins in an N_SC * oversampling transform, its
+            # time-domain power is 1 / oversampling for unit-power bins.
+            # resample_poly preserves the preamble power, so align it to the
+            # OFDM payload before frame-wide AWGN power is measured.
+            preamble_power = float(np.mean(np.abs(self.preamble_upsampled) ** 2))
+            target_power = 1.0 / self.oversampling
+            if not np.isfinite(preamble_power) or preamble_power <= 0.0:
+                raise ValueError("preamble_upsampled power must be finite and positive")
+            self.preamble_power_scale = np.sqrt(target_power / preamble_power)
+            self.preamble_upsampled = (
+                self.preamble_upsampled * self.preamble_power_scale
+            )
 
         # 输出参数 
         self.sample_rate = None  # 采样率
