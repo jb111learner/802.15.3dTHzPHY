@@ -170,8 +170,23 @@ class ResultAnalysisPage(WorkbenchPage):
                 return str(v)
             return f"{fv:{spec}}"
 
+        eb_n0_db = data.get("EbN0_dB")
+        if eb_n0_db is None:
+            # 兼容旧任务生成的 metrics.json：由实际谱效和 BER 还原
+            # 不含误码修正的名义谱效，再由 SNR 换算 Eb/N0。
+            try:
+                snr = float(data.get("SNRdB"))
+                ber = float(data.get("ber"))
+                actual_se = float(data.get("spectral_efficiency_bps_per_hz"))
+                nominal_se = actual_se / (1.0 - ber)
+                if np.isfinite(nominal_se) and nominal_se > 0:
+                    eb_n0_db = snr - 10.0 * np.log10(nominal_se)
+            except (TypeError, ValueError, ZeroDivisionError):
+                eb_n0_db = None
+
         rows = [
             ("SNR", f"{_fmt(data.get('SNRdB'))} dB"),
+            ("Eb/N0", f"{_fmt(eb_n0_db)} dB"),
             ("BER", _fmt(data.get("ber"), ".3e")),
             ("理论净有效速率",
              f"{_fmt(_th / 1e9 if (_th := data.get('theoretical_net_rate_bps')) else None, '.2f')} Gbps"),
@@ -192,6 +207,7 @@ class ResultAnalysisPage(WorkbenchPage):
         grid = TwoColumnMetricGrid(rows)
         notes = TextSummaryCard("统计计算过程说明", [
             "BER = 错误比特数 / 比较比特总数（发端信息比特 vs 收端译码比特）",
+            "Eb/N0 = SNR − 10log₁₀(名义谱效)，名义谱效 = 原始吞吐率 / 标称带宽",
             "原始吞吐率（实测）= 传输信息比特总数（含帧补零）/ 波形实测总时长",
             "实际有效速率（实测）= 原始吞吐率 × (1 − BER)",
             "实际谱效（实测）= 实际有效速率 / 标称带宽",

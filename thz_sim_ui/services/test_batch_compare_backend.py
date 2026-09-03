@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 
 import numpy as np
+import pytest
 
 from thz_sim_ui.services import backend
 from thz_sim_ui.data.mock_data import TaskItem
@@ -29,6 +30,25 @@ def test_batch_point_requires_minimum_independent_runs_before_error_stop():
     assert not should_continue(5000, 20, 5000, 20, 500)
     assert should_continue(4999, 20, 5000, 20, 500)
     assert not should_continue(4999, 500, 5000, 20, 500)
+
+
+def test_single_run_metrics_persist_ebn0_using_nominal_spectral_efficiency(tmp_path):
+    backend.BackendService._save_metrics_json(
+        {
+            'params': {'SNRdB': 24.0, 'bandwidth': 30e9},
+            'metrics': {
+                'ber': 0.1,
+                'raw_throughput_bps': 120e9,
+                'effective_throughput_bps': 108e9,
+                'spectral_efficiency_bps_per_hz': 3.6,
+            },
+        },
+        tmp_path,
+    )
+
+    metrics = json.loads((tmp_path / 'metrics.json').read_text(encoding='utf-8'))
+
+    assert metrics['EbN0_dB'] == pytest.approx(24.0 - 10.0 * np.log10(4.0))
 
 
 def test_ofdm_unit_oversampling_uses_identity_filter():

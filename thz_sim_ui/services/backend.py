@@ -1499,6 +1499,7 @@ class BackendService(QObject):
         for key in (
             'ber', 'raw_throughput_bps', 'effective_throughput_bps',
             'spectral_efficiency_bps_per_hz',
+            'EbN0_dB',
             'mimo_channel_nmse', 'mimo_mean_condition_number',
         ):
             payload[key] = _sanitize(metrics.get(key))
@@ -1507,9 +1508,19 @@ class BackendService(QObject):
         if payload['ber'] is None:
             payload['ber'] = _sanitize(result.get('ber'))
             for key in ('raw_throughput_bps', 'effective_throughput_bps',
-                        'spectral_efficiency_bps_per_hz'):
+                        'spectral_efficiency_bps_per_hz', 'EbN0_dB'):
                 if payload[key] is None:
                     payload[key] = _sanitize(result.get(key))
+
+        # 兼容尚未直接返回 Eb/N0 的结果：按名义谱效 Rb/B 换算。
+        # 名义谱效不包含 BER 修正，与批量对比页的 Eb/N0 定义一致。
+        if payload['EbN0_dB'] is None and params is not None:
+            bandwidth = _sanitize(params.get('bandwidth'))
+            raw_rate = payload['raw_throughput_bps']
+            snr_value = _sanitize(snr)
+            if bandwidth and bandwidth > 0 and raw_rate and raw_rate > 0 and snr_value is not None:
+                nominal_se = raw_rate / bandwidth
+                payload['EbN0_dB'] = snr_value - 10.0 * np.log10(nominal_se)
 
         # 理论净有效速率（帧结构推导，与参数配置页同一定义）
         payload['theoretical_net_rate_bps'] = _sanitize(

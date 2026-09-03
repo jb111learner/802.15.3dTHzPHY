@@ -137,6 +137,21 @@ class SimulationManager:
             if np.isfinite(effective_throughput_bps) and bandwidth > 0
             else np.nan
         )
+        # Eb/N0 使用不含 BER 修正的名义谱效，确保该指标不会随本次
+        # 随机误码结果波动，并与批量对比页面保持同一计算口径。
+        nominal_spectral_efficiency = (
+            raw_throughput_bps / bandwidth
+            if np.isfinite(raw_throughput_bps) and bandwidth > 0
+            else np.nan
+        )
+        eb_n0_db = (
+            float(params.get("SNRdB"))
+            - 10.0 * np.log10(nominal_spectral_efficiency)
+            if params.get("SNRdB") is not None
+            and np.isfinite(nominal_spectral_efficiency)
+            and nominal_spectral_efficiency > 0
+            else np.nan
+        )
         mimo_nmse = None
         mimo_condition_number = None
         if getattr(receiver, "rx_equalized", None):
@@ -158,6 +173,7 @@ class SimulationManager:
             "raw_throughput_bps": raw_throughput_bps,
             "effective_throughput_bps": effective_throughput_bps,
             "spectral_efficiency_bps_per_hz": spectral_efficiency_bps_per_hz,
+            "EbN0_dB": eb_n0_db,
             "mimo_channel_nmse": mimo_nmse,
             "mimo_mean_condition_number": mimo_condition_number,
             "tx_modulated": transmitter.modulated_data_dict if hasattr(transmitter, 'modulated_data_dict') else None,
@@ -193,6 +209,7 @@ class SimulationManager:
                 "raw_throughput_bps": result.get("raw_throughput_bps"),
                 "effective_throughput_bps": result.get("effective_throughput_bps"),
                 "spectral_efficiency_bps_per_hz": result.get("spectral_efficiency_bps_per_hz"),
+                "EbN0_dB": result.get("EbN0_dB"),
                 "mimo_channel_nmse": result.get("mimo_channel_nmse"),
                 "mimo_mean_condition_number": result.get("mimo_mean_condition_number"),
             },
