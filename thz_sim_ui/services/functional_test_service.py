@@ -35,6 +35,7 @@ PLOT_STYLE = {
     "grid.linewidth": 0.4,
 }
 PLOT_COLORS = ["#2C68B4", "#D95F02", "#3A9D3A", "#9467BD", "#E54B4F", "#8C6B4F"]
+FIGURE_DPI = 320
 
 plt.rcParams["font.sans-serif"] = PLOT_STYLE["font.sans-serif"]
 plt.rcParams["axes.unicode_minus"] = False
@@ -45,9 +46,12 @@ def _apply_plot_style() -> None:
     plt.rcParams.update(PLOT_STYLE)
 
 
-def _figure_to_png(fig, dpi: int = 200) -> bytes:
+def _figure_to_png(fig, dpi: int = FIGURE_DPI) -> bytes:
+    """以高分辨率 PNG 输出，保证桌面端缩放及截图后的文字和细线清晰。"""
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+    fig.savefig(
+        buf, format="png", dpi=dpi, bbox_inches="tight",
+        facecolor="white", edgecolor="none")
     plt.close(fig)
     return buf.getvalue()
 
@@ -183,48 +187,36 @@ def _make_signal_dict(stream: np.ndarray, rate: float, extra: Optional[dict] = N
     return data
 
 
-def _run_sc_waveform_test(params, num_symbols: int, show_points: int,
+def _run_sc_waveform_test(params, symbol_pattern: str, pulse_count: int,
                           checks: list, plots: list, summary: list) -> None:
-    from transmitter.Modulator import THzModulator
+    """绘制单载波 I/Q 脉冲成型波形，并与理论脉冲叠加比较。"""
     from transmitter.Pulseshaper import TxPulseShaper
 
     L = int(params.get("filter_length"))
     sps = int(params.get("oversampling"))
     beta = float(params.get("rolloff"))
-    if num_symbols <= 2 * L:
-        raise ValueError(f"符号数({num_symbols})必须大于 2×滤波器长度({2 * L})，"
-                         f"才能容纳相隔 2L 的两个脉冲点")
+    pulse_count = int(pulse_count)
+    if pulse_count not in (2, 3):
+        raise ValueError(f"完整脉冲数仅支持 2 或 3，当前值：{pulse_count}")
 
-    # 1) 经真实调制器生成 ±1 脉冲（pi/2-BPSK：bit 1→+1，bit 0→−1，再乘 exp(jπn/2)）
-    bits = np.array([1, 0], dtype=np.uint8)
-    mod = THzModulator(params)
-    mod_dict = mod.modulate({
-        "signal_stream": bits,
-        "sample_rate_Hz": 30e9,
-        "duration_seconds": len(bits) / 30e9,
-        "signal_length": len(bits),
-        "padding_bit_num": 0,
-        "frame_bit_num": len(bits),
-        "frame_num": 1,
-    })
-    syms = np.asarray(mod_dict["signal_stream"])
-    derot = syms * np.exp(-1j * np.pi * np.arange(len(syms)) / 2)
-    ok_mod = (abs(derot[0] - 1.0) < 1e-12) and (abs(derot[1] + 1.0) < 1e-12)
-    checks.append({
-        "name": "BPSK 调制输出（去旋转后应为 +1/-1）",
-        "ok": bool(ok_mod),
-        "detail": f"去旋转符号 = [{derot[0]:.6g}, {derot[1]:.6g}]",
-    })
+    # 每个有限长脉冲前后各保留半个滤波器长度，保证显示窗口内没有截断。
+    half_span = L // 2
+    spacing = L + 4
+    centers = half_span + 2 + np.arange(pulse_count) * spacing
+    num_symbols = int(centers[-1] + half_span + 3)
+    signs = np.where(np.arange(pulse_count) % 2 == 0, 1.0, -1.0)
+    if symbol_pattern == "同号复符号":
+        signs = np.ones(pulse_count, dtype=float)
+    elif symbol_pattern != "典型复符号":
+        raise ValueError(f"不支持的时域测试符号：{symbol_pattern}")
 
-    # 2) 测试信号：相隔 2L 的正负脉冲点，其余为 0
-    imp = np.zeros(num_symbols, dtype=np.complex128)
-    imp[0] = float(derot[0].real)
-    imp[2 * L] = float(derot[1].real)
+    impulses = np.zeros(num_symbols, dtype=np.complex128)
+    impulses[centers] = signs * (1.0 + 1.0j)
 
-    # 3) 成型滤波
+    # 实际波形走项目真实的发送端成型模块。
     shaper = TxPulseShaper(params)
     shaped = shaper.shape_pulse({
-        "signal_stream": imp,
+        "signal_stream": impulses,
         "sample_rate_Hz": 30e9,
         "duration_seconds": num_symbols / 30e9,
         "signal_length": num_symbols,
@@ -239,63 +231,59 @@ def _run_sc_waveform_test(params, num_symbols: int, show_points: int,
         "detail": f"dtype={y.dtype}，长度={len(y)}（期望 complex128 / {num_symbols * sps}）",
     })
 
-    # 4) 峰值位置与符号
-    i1 = int(np.argmax(np.abs(y[:L * sps])))
-    seg2 = y[2 * L * sps - L * sps: 2 * L * sps + L * sps]
-    i2 = int(2 * L * sps - L * sps + np.argmax(np.abs(seg2)))
-    ok_sign = (float(np.real(y[i1])) > 0) and (float(np.real(y[i2])) < 0)
+    # 理想波形按有限长理论脉冲的平移叠加独立构造。
+    h = np.asarray(shaper.filter_coeffs, dtype=float)
+    delay = len(h) // 2
+    ideal_full = np.convolve(shaper.upsample_symbols(impulses), h, mode="full")
+    ideal = ideal_full[delay:delay + len(y)]
+    max_error = float(np.max(np.abs(y - ideal)))
     checks.append({
-        "name": "正负交替脉冲（正脉冲在前，负脉冲在后）",
-        "ok": bool(ok_sign),
-        "detail": f"正脉冲峰值样本 {i1}（实部 {np.real(y[i1]):.4g}），"
-                  f"负脉冲峰值样本 {i2}（实部 {np.real(y[i2]):.4g}）",
+        "name": "实际波形与理想脉冲响应一致",
+        "ok": bool(max_error < 1e-12),
+        "detail": f"最大复幅度误差 {max_error:.2e}（期望 < 1e-12）",
     })
 
-    peak = max(abs(y[i1]), abs(y[i2]))
-    ok_amp = abs(abs(y[i1]) - abs(y[i2])) < 0.05 * peak
+    # 分别确认 I/Q 均包含指定数量的完整主脉冲。
+    peak = float(np.max(np.abs(np.real(y))))
+    n_i = _count_contiguous_regions(np.abs(np.real(y)) > 0.5 * peak)
+    n_q = _count_contiguous_regions(np.abs(np.imag(y)) > 0.5 * peak)
     checks.append({
-        "name": "两脉冲幅度一致",
-        "ok": bool(ok_amp),
-        "detail": f"|y[{i1}]|={abs(y[i1]):.4g}，|y[{i2}]|={abs(y[i2]):.4g}",
+        "name": "实部和虚部均包含完整脉冲",
+        "ok": bool(n_i == pulse_count and n_q == pulse_count),
+        "detail": f"实部 {n_i} 个、虚部 {n_q} 个（期望各 {pulse_count} 个）",
     })
 
-    # RRC 旁瓣随 β 减小而增大（β=0 时第一旁瓣约为主峰 22%），主瓣始终远高于
-    # 峰值 50%，故取 50% 阈值统计主瓣区域数，对 β∈[0,1] 均稳健。
-    thr = 0.5 * peak
-    n_regions = _count_contiguous_regions(np.abs(y) > thr)
-    ok_two = n_regions == 2
-    checks.append({
-        "name": "时域波形呈现两个独立的滚降脉冲",
-        "ok": bool(ok_two),
-        "detail": f"超过峰值 50% 的连续区域数 = {n_regions}（期望 2）",
-    })
-
-    # 5) 图 (a)：时域波形
+    # 横坐标采用输出采样率换算的真实时间，并以 ns 展示。
+    fs_out = float(shaped["sample_rate_Hz"])
+    time_ns = np.arange(len(y), dtype=float) / fs_out * 1e9
     _apply_plot_style()
-    n = min(int(show_points), len(y))
-    fig, ax = plt.subplots(figsize=(7.5, 3.2))
-    ax.plot(np.arange(n), np.real(y[:n]), color="#2C68B4", lw=0.8, label="实部")
-    ax.plot(np.arange(n), np.abs(y[:n]), color="#D95F02", lw=0.7, ls="--", label="包络")
-    ax.axvline(0, color="gray", lw=0.5, ls=":")
-    ax.axvline(2 * L * sps, color="gray", lw=0.5, ls=":")
-    ax.set_xlabel("采样点（过采样 {}×）".format(sps))
-    ax.set_ylabel("幅度")
-    ax.set_title(f"SC-FDE 脉冲成型时域波形（滚降滤波器长度 L={L}，β={beta}）")
-    ax.grid(True)
-    ax.legend(fontsize=8)
+    fig, axes = plt.subplots(2, 1, figsize=(7.5, 5.2), sharex=True)
+    components = ((np.real(y), np.real(ideal), "实部 I"),
+                  (np.imag(y), np.imag(ideal), "虚部 Q"))
+    for ax, (actual_part, ideal_part, label) in zip(axes, components):
+        # 理想线稍宽并先绘制，实际线覆盖其上，两种颜色均能辨认。
+        ax.plot(time_ns, ideal_part, color="#D95F02", lw=1.8, ls="--",
+                label="理想波形")
+        ax.plot(time_ns, actual_part, color="#2C68B4", lw=0.9,
+                label="实际波形")
+        ax.set_ylabel(f"{label}幅度")
+        ax.grid(True)
+        ax.legend(fontsize=8, loc="upper right")
+    axes[-1].set_xlabel("时间 (ns)")
+    fig.suptitle(f"单载波时域波形（{pulse_count} 个完整脉冲，L={L}，β={beta}）")
     fig.tight_layout()
-    plots.append({"title": "SC-FDE 时域波形", "png": _figure_to_png(fig)})
+    plots.append({"title": "单载波时域波形", "png": _figure_to_png(fig)})
 
     summary.extend([
-        {"label": "滤波器", "value": f"RRC L={L}，{sps}×，β={beta}"},
-        {"label": "脉冲间距", "value": f"{2 * L} 符号"},
-        {"label": "输出长度", "value": f"{len(y)} 采样"},
-        {"label": "输出采样率", "value": f"{shaped['sample_rate_Hz'] / 1e9:.1f} GHz"},
+        {"label": "时域测试符号", "value": f"{symbol_pattern}（I/Q 各 {pulse_count} 个脉冲）"},
+        {"label": "时域滤波器", "value": f"{params.get('filter_type').upper()} L={L}，{sps}×，β={beta}"},
+        {"label": "时域范围", "value": f"{time_ns[-1]:.3f} ns"},
+        {"label": "时域采样率", "value": f"{fs_out / 1e9:.1f} GHz"},
     ])
 
 
-def _run_ofdm_waveform_test(params, include_optional_pipeline: bool,
-                            checks: list, plots: list, summary: list) -> None:
+def _run_ofdm_waveform_test_legacy(params, include_optional_pipeline: bool,
+                                   checks: list, plots: list, summary: list) -> None:
     N_SC = int(params.get("subwave_num"))          # 512
     S = int(params.get("subframe_ofdm_num"))       # 48
     sps = int(params.get("oversampling"))
@@ -458,6 +446,438 @@ def _run_ofdm_waveform_test(params, include_optional_pipeline: bool,
         })
 
 
+def _typical_16qam_symbols(count: int) -> np.ndarray:
+    """返回确定、平均功率归一化的典型 16QAM 符号序列。"""
+    levels = np.array([-3.0, -1.0, 3.0, 1.0])
+    constellation = np.array(
+        [i + 1j * q for q in levels for i in levels], dtype=np.complex128
+    ) / np.sqrt(10.0)
+    return np.resize(constellation, int(count))
+
+
+def _validate_signed_subcarriers(indices: np.ndarray, n_sc: int) -> None:
+    lo, hi = -n_sc // 2, n_sc // 2 - 1
+    if np.any(indices < lo) or np.any(indices > hi):
+        raise ValueError(f"有符号子载波索引必须位于 [{lo}, {hi}]")
+
+
+def _make_ofdm_single_tone_scan(n_sc: int, sps: int, cp_len: int,
+                                signed_indices: np.ndarray) -> dict:
+    """直接构造确定性 16QAM 单音扫描、解析理论波形及 CP。"""
+    n_sc = int(n_sc)
+    sps = int(sps)
+    cp_len = int(cp_len)
+    if n_sc < 8 or n_sc % 2:
+        raise ValueError("OFDM 子载波数必须是不小于 8 的偶数")
+    if sps < 1:
+        raise ValueError("OFDM 过采样率必须大于等于 1")
+    if not 0 <= cp_len < n_sc:
+        raise ValueError("CP 长度必须满足 0 <= CP < 子载波数")
+
+    signed_indices = np.asarray(signed_indices, dtype=int).ravel()
+    if len(signed_indices) == 0:
+        raise ValueError("单音扫描至少需要一个 OFDM 符号")
+    _validate_signed_subcarriers(signed_indices, n_sc)
+
+    n_fft = n_sc * sps
+    cp_samples = cp_len * sps
+    values = _typical_16qam_symbols(len(signed_indices))
+    fft_bins = np.where(signed_indices >= 0, signed_indices, n_fft + signed_indices)
+    grid = np.zeros((len(signed_indices), n_fft), dtype=np.complex128)
+    grid[np.arange(len(signed_indices)), fft_bins] = values
+    sampled_body = np.fft.ifft(grid, axis=1, norm="ortho")
+
+    n = np.arange(n_fft, dtype=float)[None, :]
+    theoretical_body = (
+        values[:, None] / np.sqrt(n_fft)
+        * np.exp(2j * np.pi * signed_indices[:, None] * n / n_fft)
+    )
+    if cp_samples:
+        sampled = np.concatenate([sampled_body[:, -cp_samples:], sampled_body], axis=1)
+        theoretical = np.concatenate(
+            [theoretical_body[:, -cp_samples:], theoretical_body], axis=1)
+    else:
+        sampled = sampled_body.copy()
+        theoretical = theoretical_body.copy()
+    return {
+        "signed_indices": signed_indices,
+        "values": values,
+        "n_fft": n_fft,
+        "cp_samples": cp_samples,
+        "sampled_body": sampled_body,
+        "theoretical_body": theoretical_body,
+        "sampled_blocks": sampled,
+        "theoretical_blocks": theoretical,
+        "sampled_stream": sampled.ravel(),
+        "theoretical_stream": theoretical.ravel(),
+    }
+
+
+def _nice_tick_step(span: int, target_ticks: int = 9) -> int:
+    """为离散索引轴选择易读的主刻度间隔。"""
+    raw = max(1.0, float(span) / max(1, int(target_ticks)))
+    magnitude = 10 ** np.floor(np.log10(raw))
+    for factor in (1, 2, 4, 5, 8, 10):
+        candidate = int(max(1, factor * magnitude))
+        if candidate >= raw:
+            return candidate
+    return int(max(1, 10 * magnitude))
+
+
+def _run_ofdm_time_test(n_sc: int, sps: int, cp_len: int, symbol_count: int,
+                        start_subcarrier: int, subcarrier_step: int,
+                        checks: list, plots: list, summary: list) -> None:
+    symbol_count = int(symbol_count)
+    indices = int(start_subcarrier) + np.arange(symbol_count) * int(subcarrier_step)
+    scan = _make_ofdm_single_tone_scan(n_sc, sps, cp_len, indices)
+    actual = scan["sampled_stream"]
+    theory = scan["theoretical_stream"]
+    max_error = float(np.max(np.abs(actual - theory)))
+    checks.append({
+        "name": "OFDM 单音 IFFT 与解析理论波形一致",
+        "ok": bool(max_error < 1e-12),
+        "detail": f"最大复幅度误差 {max_error:.2e}（期望 < 1e-12）",
+    })
+
+    cp_samples = scan["cp_samples"]
+    if cp_samples:
+        cp_ok = bool(np.allclose(
+            scan["sampled_blocks"][:, :cp_samples],
+            scan["sampled_body"][:, -cp_samples:], atol=1e-12, rtol=0.0))
+    else:
+        cp_ok = True
+    checks.append({
+        "name": "OFDM 循环前缀复制正确",
+        "ok": cp_ok,
+        "detail": f"CP={cp_len} 基带样点 / {cp_samples} 个过采样点",
+    })
+    varying = np.std(actual.real) > 1e-6 and np.std(actual.imag) > 1e-6
+    checks.append({
+        "name": "16QAM 单音实部和虚部均有起伏",
+        "ok": bool(varying),
+        "detail": f"std(I)={np.std(actual.real):.3e}，std(Q)={np.std(actual.imag):.3e}",
+    })
+
+    fs_base = 30e9
+    fs_out = fs_base * sps
+    time_ns = np.arange(len(actual), dtype=float) / fs_out * 1e9
+    block_len = scan["n_fft"] + cp_samples
+    _apply_plot_style()
+    fig, axes = plt.subplots(2, 1, figsize=(8.2, 5.6), sharex=True)
+    parts = ((actual.real, theory.real, "实部 I"),
+             (actual.imag, theory.imag, "虚部 Q"))
+    for ax, (actual_part, theory_part, ylabel) in zip(axes, parts):
+        ax.plot(time_ns, theory_part, color="#D95F02", lw=1.35, ls="--",
+                label="理论连续波形", zorder=2)
+        marker_step = max(1, len(time_ns) // 90)
+        ax.plot(time_ns, actual_part, color="#2C68B4", lw=0.55,
+                marker="o", ms=2.1, markevery=marker_step,
+                label="IFFT 采样点", zorder=3)
+        for idx in range(symbol_count):
+            start = idx * block_len
+            cp_end = start + cp_samples
+            end = (idx + 1) * block_len
+            start_ns = start / fs_out * 1e9
+            cp_end_ns = cp_end / fs_out * 1e9
+            end_ns = end / fs_out * 1e9
+            ax.axvline(start_ns, color="#344054", lw=1.25, ls="-.",
+                       label="完整 OFDM symbol 边界" if idx == 0 else None)
+            ax.axvline(start_ns, color="#E5484D", lw=0.9, ls="--",
+                       label="CP 起点" if idx == 0 else None)
+            if cp_samples:
+                ax.axvspan(start_ns, cp_end_ns, color="#E5484D", alpha=0.14)
+                ax.axvline(cp_end_ns, color="#E5484D", lw=1.15, ls="--",
+                           label="CP 结束" if idx == 0 else None)
+                cp_mid = (start_ns + cp_end_ns) / 2
+                ax.text(cp_mid, 0.94, "CP", color="#B42318", fontsize=7,
+                        ha="center", va="top", transform=ax.get_xaxis_transform())
+            ax.axvline(end_ns, color="#344054", lw=1.25, ls="-.")
+        ax.set_ylabel(f"{ylabel}幅度")
+        ax.grid(True, alpha=0.28)
+        ax.legend(fontsize=7.5, loc="upper right", ncol=2)
+        ax.margins(x=0.005)
+
+    # 在第一幅子图中明确展示 CP 来自对应有效符号尾部，并标出三种长度。
+    if cp_samples:
+        from matplotlib.transforms import blended_transform_factory
+
+        ax = axes[0]
+        transform = blended_transform_factory(ax.transData, ax.transAxes)
+        first_start = 0.0
+        first_cp_end = cp_samples / fs_out * 1e9
+        first_end = block_len / fs_out * 1e9
+        tail_start = (block_len - cp_samples) / fs_out * 1e9
+        ax.axvspan(tail_start, first_end, color="#F79009", alpha=0.12,
+                   label="CP 复制来源（有效符号尾部）")
+
+        def _length_bracket(x0, x1, y, label, color):
+            ax.annotate("", xy=(x1, y), xytext=(x0, y),
+                        xycoords=transform, textcoords=transform,
+                        arrowprops=dict(arrowstyle="<->", color=color, lw=1.0))
+            ax.text((x0 + x1) / 2, y + 0.015, label, transform=transform,
+                    ha="center", va="bottom", fontsize=7, color=color,
+                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.82, pad=1.0))
+
+        _length_bracket(
+            first_start, first_cp_end, 0.88,
+            f"CP：{cp_samples} 点 / {first_cp_end - first_start:.3f} ns", "#B42318")
+        _length_bracket(
+            first_cp_end, first_end, 0.78,
+            f"有效符号：{scan['n_fft']} 点 / {first_end - first_cp_end:.3f} ns", "#175CD3")
+        _length_bracket(
+            first_start, first_end, 0.68,
+            f"完整 OFDM symbol：{block_len} 点 / {first_end:.3f} ns", "#344054")
+        ax.annotate(
+            "尾部复制为 CP",
+            xy=((first_start + first_cp_end) / 2, 0.48),
+            xytext=((tail_start + first_end) / 2, 0.58),
+            xycoords=transform, textcoords=transform,
+            ha="center", va="center", fontsize=7, color="#B54708",
+            arrowprops=dict(arrowstyle="->", color="#F79009", lw=1.1,
+                            connectionstyle="arc3,rad=0.22"),
+            bbox=dict(facecolor="white", edgecolor="#F79009", alpha=0.86, pad=1.5))
+    axes[-1].set_xlabel("时间 (ns)")
+    fig.suptitle(f"OFDM 16QAM 单音扫描时域波形（含 CP；子载波 {indices.tolist()}）")
+    fig.tight_layout()
+    plots.append({"title": "OFDM 时域波形（含 CP）", "png": _figure_to_png(fig)})
+    summary.extend([
+        {"label": "OFDM 时域符号", "value": f"典型 16QAM，{symbol_count} 个单音符号"},
+        {"label": "时域扫描子载波", "value": str(indices.tolist())},
+        {"label": "时域 CP", "value": f"{cp_len} 点（过采样后 {cp_samples} 点）"},
+        {"label": "OFDM 有效符号长度", "value": f"{scan['n_fft']} 采样点 / {scan['n_fft'] / fs_out * 1e9:.3f} ns"},
+        {"label": "完整 OFDM symbol 长度", "value": f"{block_len} 采样点 / {block_len / fs_out * 1e9:.3f} ns"},
+        {"label": "时域采样率", "value": f"{fs_out / 1e9:.1f} GHz"},
+    ])
+
+
+def _run_ofdm_heatmap_test(n_sc: int, sps: int, cp_len: int, symbol_count: int,
+                           start_subcarrier: int, subcarrier_step: int,
+                           axis_margin: int, floor_db: float,
+                           checks: list, plots: list, summary: list) -> None:
+    indices = int(start_subcarrier) + np.arange(int(symbol_count)) * int(subcarrier_step)
+    scan = _make_ofdm_single_tone_scan(n_sc, sps, cp_len, indices)
+    active_signed = np.arange(-n_sc // 2, n_sc // 2)
+    active_bins = np.where(active_signed >= 0, active_signed,
+                           scan["n_fft"] + active_signed)
+    recovered = np.fft.fft(scan["sampled_body"], axis=1, norm="ortho")[:, active_bins]
+    magnitude = np.abs(recovered)
+    global_peak = float(np.max(magnitude))
+    spec_db = 20 * np.log10(magnitude / (global_peak + 1e-15) + 1e-15)
+    spec_db = np.maximum(spec_db, float(floor_db))
+    peak_positions = active_signed[np.argmax(magnitude, axis=1)]
+    peak_ok = bool(np.array_equal(peak_positions, indices))
+    residual = magnitude.copy()
+    residual[np.arange(len(indices)), np.argmax(magnitude, axis=1)] = 0.0
+    quiet_max = float(np.max(residual))
+    checks.append({
+        "name": "逐符号单音峰值沿指定子载波扫描",
+        "ok": bool(peak_ok and quiet_max < 1e-12),
+        "detail": f"{len(indices)}/{len(indices)} 个目标峰值；其余频点最大 {quiet_max:.2e}",
+    })
+
+    x_lo = int(np.min(indices) - int(axis_margin))
+    x_hi = int(np.max(indices) + int(axis_margin))
+    x_lo = max(x_lo, -n_sc // 2)
+    x_hi = min(x_hi, n_sc // 2 - 1)
+    tick_step = _nice_tick_step(x_hi - x_lo + 1)
+    y_step = _nice_tick_step(len(indices), target_ticks=7)
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(8.2, 5.0))
+    im = ax.imshow(spec_db, aspect="auto", origin="lower", cmap="viridis",
+                   interpolation="nearest",
+                   vmin=float(floor_db), vmax=0.0,
+                   extent=[-n_sc / 2 - 0.5, n_sc / 2 - 0.5,
+                           -0.5, len(indices) - 0.5])
+    fig.colorbar(im, ax=ax, label="相对幅度 (dB)")
+    scan_rows = np.arange(len(indices))
+    ax.plot(indices, scan_rows, color="white", lw=1.0, ls="--",
+            alpha=0.9, label="理论扫描轨迹")
+    ax.scatter(peak_positions, scan_rows, s=10, facecolors="none",
+               edgecolors="#FF4D4F", linewidths=0.7, label="实测峰值")
+    ax.axvline(0, color="white", lw=1.1, ls=":", alpha=0.95, label="DC")
+    ax.set_xlim(x_lo - 0.5, x_hi + 0.5)
+    ax.set_ylim(-0.5, len(indices) - 0.5)
+    x_ticks = np.arange(x_lo, x_hi + 1, tick_step)
+    x_ticks = np.unique(np.concatenate([x_ticks, [0, x_lo, x_hi]]))
+    x_ticks = x_ticks[(x_ticks >= x_lo) & (x_ticks <= x_hi)]
+    y_ticks = np.unique(np.concatenate([
+        np.arange(0, len(indices), y_step), [0, len(indices) - 1]]))
+    ax.set_xticks(x_ticks)
+    ax.set_yticks(y_ticks)
+    ax.set_xlabel("有符号子载波索引 k")
+    ax.set_ylabel("OFDM 扫描符号索引")
+    ax.set_title("OFDM 逐符号单音扫描频谱（典型 16QAM 幅相）")
+    ax.legend(fontsize=7.5, loc="upper left")
+    fig.tight_layout()
+    plots.append({"title": "OFDM 逐符号频谱热图", "png": _figure_to_png(fig)})
+    summary.append({
+        "label": "热图扫描范围",
+        "value": f"k={indices[0]}…{indices[-1]}，显示 [{x_lo}, {x_hi}]",
+    })
+
+
+def _run_ofdm_random_spectrum_test(n_sc: int, sps: int, cp_len: int,
+                                   scale: str, num_symbols: int,
+                                   random_seed: int, checks: list,
+                                   plots: list, summary: list) -> None:
+    """由随机 16QAM-OFDM 连续时域流通过分段 FFT 平均计算实际 PSD。"""
+    n_sc = int(n_sc)
+    sps = int(sps)
+    cp_len = int(cp_len)
+    num_symbols = int(num_symbols)
+    random_seed = int(random_seed)
+    if num_symbols < 16:
+        raise ValueError("OFDM 功率谱至少需要 16 个随机符号")
+    if random_seed < 0:
+        raise ValueError("OFDM 功率谱随机种子不能小于 0")
+    _validate_signed_subcarriers(np.array([-n_sc // 2, n_sc // 2 - 1]), n_sc)
+
+    fs_base = 30e9
+    fs_out = fs_base * sps
+    n_fft = n_sc * sps
+    cp_samples = cp_len * sps
+    rng = np.random.default_rng(random_seed)
+    levels = np.array([-3.0, -1.0, 1.0, 3.0])
+    qam = (
+        rng.choice(levels, size=(num_symbols, n_sc))
+        + 1j * rng.choice(levels, size=(num_symbols, n_sc))
+    ) / np.sqrt(10.0)
+    signed_indices = np.arange(-n_sc // 2, n_sc // 2)
+    fft_bins = np.where(signed_indices >= 0, signed_indices, n_fft + signed_indices)
+    frequency_grid = np.zeros((num_symbols, n_fft), dtype=np.complex128)
+    frequency_grid[:, fft_bins] = qam
+    useful = np.fft.ifft(frequency_grid, axis=1, norm="ortho")
+    blocks = (
+        np.concatenate([useful[:, -cp_samples:], useful], axis=1)
+        if cp_samples else useful
+    )
+    continuous = blocks.ravel()
+
+    # 手工分段 FFT 平均。窗口允许跨越相邻 OFDM symbol，保留 CP、符号边界
+    # 和随机 16QAM 幅相变化造成的真实带内起伏及带外泄漏。
+    block_len = blocks.shape[1]
+    segment_len = min(len(continuous), block_len * 4)
+    fft_length = 1 << int(np.ceil(np.log2(segment_len)))
+    step = max(1, segment_len // 2)
+    window = np.hanning(segment_len)
+    window_energy = float(np.sum(window ** 2)) + 1e-30
+    measured = np.zeros(fft_length, dtype=float)
+    segment_count = 0
+    for start in range(0, len(continuous) - segment_len + 1, step):
+        spectrum = np.fft.fft(
+            continuous[start:start + segment_len] * window, n=fft_length)
+        measured += np.abs(spectrum) ** 2 / window_energy
+        segment_count += 1
+    if segment_count == 0:
+        raise ValueError("随机 OFDM 连续波形不足以完成分段 FFT")
+    measured /= segment_count
+    f = np.fft.fftfreq(fft_length, d=1 / fs_out)
+    order = np.argsort(f)
+    f, measured = f[order], measured[order]
+
+    inband_ref = np.abs(f) < 0.45 * fs_base
+    measured /= float(np.median(measured[inband_ref])) + 1e-30
+    measured_db = 10 * np.log10(measured + 1e-15)
+    inside = np.abs(f) < 0.45 * fs_base
+    outside = (np.abs(f) > 0.55 * fs_base) & (np.abs(f) < 0.75 * fs_base)
+    in_level = float(np.median(measured_db[inside]))
+    out_level = float(np.median(measured_db[outside]))
+    checks.append({
+        "name": "红色带宽边界外开始带外滚降",
+        "ok": bool(out_level < in_level - 3.0),
+        "detail": f"带内中位数 {in_level:.1f} dB，红线外频段 {out_level:.1f} dB",
+    })
+    checks.append({
+        "name": "随机 16QAM-OFDM 连续时域数据 FFT 有效",
+        "ok": bool(segment_count >= 4 and np.all(np.isfinite(measured_db))),
+        "detail": (
+            f"{num_symbols} 个 OFDM symbols，{segment_count} 个 FFT 分段，"
+            f"FFT={fft_length}"
+        ),
+    })
+
+    scale_key = str(scale).lower()
+    is_db = scale_key in ("db", "对数功率 db", "对数")
+    if not is_db and scale_key not in ("linear", "线性归一化功率", "线性"):
+        raise ValueError(f"不支持的功率谱纵坐标：{scale}")
+    y_measured = measured_db if is_db else measured
+    ylabel = "归一化功率谱 (dB)" if is_db else "归一化功率谱"
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(8.2, 4.8))
+    ax.plot(
+        f / 1e9, y_measured, color="#2C68B4", lw=0.95, alpha=0.95,
+        label="随机 16QAM-OFDM 实测 PSD（分段 FFT）")
+    edge_ghz = fs_base / 2e9
+    ax.axvline(
+        edge_ghz, color="#E5484D", lw=1.35, ls="--",
+        label="理论占用带宽边界 ±Rs/2")
+    ax.axvline(-edge_ghz, color="#E5484D", lw=1.35, ls="--")
+    view_half_ghz = min(fs_out / 2e9, edge_ghz * 2.0)
+    ax.set_xlim(-view_half_ghz, view_half_ghz)
+    if is_db:
+        ax.set_ylim(-60, 5)
+    else:
+        upper = max(1.2, float(np.percentile(y_measured[inband_ref], 99)) * 1.1)
+        ax.set_ylim(0, upper)
+    ax.set_xlabel("频率 (GHz)")
+    ax.set_ylabel(ylabel)
+    ax.set_title("随机 16QAM-OFDM 连续时域信号功率谱")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    plots.append({"title": "OFDM 随机 16QAM 功率谱", "png": _figure_to_png(fig)})
+    summary.extend([
+        {"label": "功率谱纵坐标", "value": "对数功率 dB" if is_db else "线性归一化功率"},
+        {"label": "理论占用带宽边界", "value": f"±{edge_ghz:.1f} GHz（红色虚线）"},
+        {"label": "功率谱数据", "value": (
+            f"随机 16QAM，{num_symbols} 个连续 OFDM symbols，seed={random_seed}")},
+        {"label": "功率谱计算", "value": (
+            f"分段 FFT 平均：{segment_count} 段，FFT={fft_length}（含 CP）")},
+        {"label": "输出采样范围", "value": f"±{fs_out / 2e9:.1f} GHz"},
+    ])
+
+
+def _run_ofdm_waveform_test(params, include_optional_pipeline: bool,
+                            checks: list, plots: list, summary: list,
+                            time_symbol_count: int = 2,
+                            time_start_subcarrier: int = -6,
+                            time_subcarrier_step: int = 11,
+                            heatmap_symbol_count: int = 48,
+                            heatmap_start_subcarrier: int = -24,
+                            heatmap_subcarrier_step: int = 1,
+                            heatmap_axis_margin: int = 4,
+                            heatmap_floor_db: float = -45.0,
+                            spectrum_scale: str = "db",
+                            spectrum_n_sc: Optional[int] = None,
+                            spectrum_sps: Optional[int] = None,
+                            spectrum_cp_len: Optional[int] = None,
+                            spectrum_num_symbols: int = 128,
+                            spectrum_random_seed: int = 2026) -> None:
+    """确定性 16QAM 单音扫描的 OFDM 时域、热图与功率谱测试。"""
+    del include_optional_pipeline  # 保留旧调用签名；新测试不进入真实模块链路。
+    n_sc = int(params.get("subwave_num"))
+    sps = int(params.get("oversampling"))
+    cp_len = int(params.get("gi_length"))
+    _run_ofdm_time_test(
+        n_sc, sps, cp_len, time_symbol_count, time_start_subcarrier,
+        time_subcarrier_step, checks, plots, summary)
+    _run_ofdm_heatmap_test(
+        n_sc, sps, cp_len, heatmap_symbol_count, heatmap_start_subcarrier,
+        heatmap_subcarrier_step, heatmap_axis_margin, heatmap_floor_db,
+        checks, plots, summary)
+    _run_ofdm_random_spectrum_test(
+        n_sc if spectrum_n_sc is None else int(spectrum_n_sc),
+        sps if spectrum_sps is None else int(spectrum_sps),
+        cp_len if spectrum_cp_len is None else int(spectrum_cp_len),
+        spectrum_scale, int(spectrum_num_symbols), int(spectrum_random_seed),
+        checks, plots, summary)
+    summary.insert(0, {
+        "label": "OFDM 时域/热图测试信号",
+        "value": "确定性典型 16QAM 单音扫描",
+    })
+
+
 def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
                         checks: list, plots: list, summary: list) -> None:
     """多调制 PAPR CCDF：BPSK/QPSK/16QAM/64QAM/256QAM 经调制与成型滤波后叠加一张图。
@@ -586,7 +1006,7 @@ def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
         (f"1e{int(round(np.log10(v)))}" if v > 0 else "0")))
     ax.set_xlabel("PAPR (dB)")
     ax.set_ylabel("CCDF  P(PAPR > x)")
-    ax.set_title(f"{mode.upper()} 多调制 PAPR CCDF（每调制 {symbols_per_mod} 符号，成型滤波后）")
+    ax.set_title(f"{mode.upper()} 多调制 PAPR CCDF（每调制 {symbols_per_mod} 符号）")
     ax.set_xlim(x_lo, x_hi)
     ax.set_ylim(max(min_y / 2, 1e-5), 2.0)
     ax.grid(True, which="both")
@@ -596,11 +1016,12 @@ def _run_papr_ccdf_test(params, mode: str, symbols_per_mod: int,
     summary.append({"label": "PAPR 测试", "value": f"{len(mods)} 种调制 × {symbols_per_mod} 符号"})
 
 
-def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: list) -> None:
+def _run_spectrum_test(params, mode: str, modulation: str, num_symbols: int,
+                       checks: list, plots: list, summary: list) -> None:
     """经过成型滤波器后的功率谱（Welch），叠加理论滤波器响应并标注截止频率。
 
-    采样方式：成型输出为基带复数信号，采样率 fs_base×sps；Welch 分 8192 点段
-    平均（hann 窗）以压低方差；频率轴归一化为 f/fs_base，便于标注通带/截止。
+    采样方式：成型输出为基带复数信号，采样率 fs_base×sps；Welch 使用较短分段
+    保留可见统计波动；频率轴归一化为 f/fs_base，便于标注通带/截止。
     """
     from params.PHYParams import PHYParams
     from transmitter.Modulator import THzModulator
@@ -611,15 +1032,24 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
     sps = int(params.get("oversampling"))
     rolloff = float(params.get("rolloff"))
     fs_base = 30e9
+    modulation_map = {"BPSK": 1, "QPSK": 2, "16QAM": 4, "64QAM": 6, "256QAM": 8}
+    modulation = str(modulation).upper()
+    if modulation not in modulation_map:
+        raise ValueError(f"不支持的功率谱调制符号：{modulation}")
+    ncbps = modulation_map[modulation]
+    num_symbols = int(num_symbols)
+    if num_symbols < 2048:
+        raise ValueError("功率谱符号数不能少于 2048")
+
     p = PHYParams()
     p.update(link_mode=mode, filter_length=L, oversampling=sps, rolloff=rolloff,
-             NCBPS=2, MCS=1, scramble=False)
+             filter_type=params.get("filter_type"), NCBPS=ncbps, MCS=1, scramble=False)
     mod = THzModulator(p)
     rng = np.random.default_rng(20260829)
 
     if mode == "sc-fde":
-        n_syms = 32768
-        bits = rng.integers(0, 2, n_syms * 2).astype(np.uint8)
+        n_syms = num_symbols
+        bits = rng.integers(0, 2, n_syms * ncbps).astype(np.uint8)
         syms_raw = mod.modulate(_make_signal_dict(
             bits, fs_base, {"frame_bit_num": len(bits), "frame_num": 1}))["signal_stream"]
         # 去 pi/2 旋转：旋转使频谱整体搬移 Rs/4（双峰），会遮住成型滤波器
@@ -629,16 +1059,27 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
         shaped = shaper.shape_pulse(_make_signal_dict(syms, fs_base))
         sig = np.asarray(shaped["signal_stream"])
         fs_out = float(shaped["sample_rate_Hz"])
-        cut_lines = [0.5]                 # RRC 半功率点（-3dB）±Rs/2
-        band_edges = [(1 - rolloff) / 2, (1 + rolloff) / 2]
-        cut_text = f"±Rs/2 处 -3dB；通带边缘 ±{band_edges[0]:.3f}；理论带宽 ±{band_edges[1]:.3f}"
-        passband = 0.30                   # 平坦度检查区间（通带内）
-        stopband = band_edges[1] + 0.05   # 阻带检查起点
-        title_note = "调制：QPSK（测试信号已去除符号相位旋转）"
+        filter_type = str(p.get("filter_type")).lower()
+        if filter_type in ("rrc", "rc"):
+            cut_lines = [0.5]
+            band_edges = [(1 - rolloff) / 2, (1 + rolloff) / 2]
+            cut_level = "-3 dB" if filter_type == "rrc" else "-6 dB"
+            cut_text = (f"±Rs/2 处 {cut_level}；通带边缘 ±{band_edges[0]:.3f}；"
+                        f"理论带宽 ±{band_edges[1]:.3f}")
+            passband = max(0.05, min(0.30, band_edges[0] * 0.8))
+            stopband = band_edges[1] + 0.05
+        else:
+            # 矩形脉冲对应 sinc 型谱，不存在 RRC/RC 意义下的滚降截止点。
+            cut_lines = []
+            band_edges = []
+            cut_text = "矩形脉冲的理论 sinc 型响应"
+            passband = 0.15
+            stopband = 0.70
+        title_note = f"调制：{modulation}（测试信号已去除符号相位旋转）"
     else:
         from transmitter.TxOFDMProcesser import TxOFDMProcesser
         data_syms = 45 * 512
-        bits = rng.integers(0, 2, data_syms * 2).astype(np.uint8)
+        bits = rng.integers(0, 2, data_syms * ncbps).astype(np.uint8)
         syms = mod.modulate(_make_signal_dict(
             bits, fs_base, {"frame_bit_num": len(bits), "frame_num": 1}))["signal_stream"]
         ofdm = TxOFDMProcesser(p).ofdm_process(_make_signal_dict(
@@ -651,12 +1092,12 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
         fs_out = float(shaped["sample_rate_Hz"])
         cut_lines = [0.5]                 # 带限边界 ±fs_base/2
         band_edges = []
-        cut_text = "理想带限 ±fs_base/2（补零 IFFT，无成型滤波）"
+        cut_text = "理想带限 ±fs_base/2（补零 IFFT）"
         passband = 0.40
         # 0.6 处仍处于砖墙边缘的 hann 泄漏裙内（实测约 -21 dB），
         # 阻带检查从 0.7 起算（实测 < -35 dB），阈值 -20 dB 稳健。
         stopband = 0.70
-        title_note = "调制：QPSK（符号相位旋转不改变 OFDM 频谱形状）"
+        title_note = f"调制：{modulation}（符号相位旋转不改变 OFDM 频谱形状）"
 
     # 理论滤波器响应（成型滤波器的形状）
     f_h = np.fft.fftfreq(4096, 1 / fs_out) / fs_base
@@ -671,7 +1112,10 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
     order_h = np.argsort(f_h)
 
     # Welch 功率谱（分段平均，双边谱）
-    f, psd = welch(sig, fs=fs_out, nperseg=8192, window="hann", return_onesided=False)
+    # 较短分段保留适量统计起伏；校验另用平滑副本，避免展示效果影响判定。
+    nperseg = min(2048, len(sig))
+    f, psd = welch(sig, fs=fs_out, nperseg=nperseg, window="hann",
+                   return_onesided=False)
     f_n = f / fs_base
     order = np.argsort(f_n)
     f_n, psd_db = f_n[order], 10 * np.log10(psd[order] / (np.max(psd) + 1e-15))
@@ -684,18 +1128,25 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
     # 归一化到通带中位数：周期图 max 虚高会把整条谱面压低，中位数参照
     # 是无偏的，使实测与理论曲线可直接对齐、绝对值校验有意义。
     mask_ref = np.abs(f_n) < 0.35
-    psd_db_s = psd_db_s - float(np.median(psd_db_s[mask_ref]))
+    plot_ref = float(np.median(psd_db[mask_ref]))
+    psd_db = psd_db - plot_ref
+    psd_db_s = psd_db_s - plot_ref
     h_db = h_db - float(np.median(h_db[np.abs(f_h) < 0.35]))
 
-    # 校验（用平滑谱）：通带平坦、截止点、阻带衰减
+    # 校验使用平滑谱；绘图仍使用未平滑谱，以保留用户要求的可见波动。
+    theory_on_measured = np.interp(
+        f_n, f_h[order_h], h_db[order_h], left=-120.0, right=-120.0)
     mask_pass = np.abs(f_n) < passband
     flat_min = float(np.min(psd_db_s[mask_pass]))
-    ok_flat = flat_min > -1.5
+    flat_expected = float(np.min(theory_on_measured[mask_pass]))
+    ok_flat = flat_min > flat_expected - 2.0
     if mode == "sc-fde":
         mask_cut = np.abs(np.abs(f_n) - 0.5) < 0.01
         cut_db = float(np.mean(psd_db_s[mask_cut]))
-        ok_cut = -4.5 < cut_db < -1.5
-        cut_detail = f"±Rs/2 处实测 {cut_db:.1f} dB（期望约 -3 dB）"
+        cut_expected = float(np.mean(theory_on_measured[mask_cut]))
+        ok_cut = abs(cut_db - cut_expected) < 2.0
+        cut_detail = (f"±Rs/2 处实测 {cut_db:.1f} dB，"
+                      f"理论 {cut_expected:.1f} dB（偏差 < 2 dB）")
     else:
         mask_cut = np.abs(np.abs(f_n) - 0.5) < 0.01
         cut_db = float(np.mean(psd_db_s[mask_cut]))
@@ -703,11 +1154,21 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
         cut_detail = f"截止 ±fs_base/2 处实测 {cut_db:.1f} dB"
     mask_stop = np.abs(f_n) > stopband
     stop_max = float(np.max(psd_db_s[mask_stop]))
-    ok_stop = stop_max < -20.0
+    if mode == "sc-fde":
+        stop_expected = float(np.max(theory_on_measured[mask_stop]))
+        # Welch 窗泄漏会抬高深阻带，尤其 RC/有限长 RRC；允许 20 dB 的阻带
+        # 估计余量，同时仍可捕获明显偏离理论形状的实现错误。
+        ok_stop = stop_max < stop_expected + 20.0
+        stop_detail = (f"|f|>{stopband}·fs_base 外实测最大 {stop_max:.1f} dB，"
+                       f"理论最大 {stop_expected:.1f} dB（含 Welch 泄漏余量）")
+    else:
+        ok_stop = stop_max < -20.0
+        stop_detail = f"|f|>{stopband}·fs_base 外最大 {stop_max:.1f} dB（期望 < -20 dB）"
     checks.append({
         "name": "频谱通带平坦",
         "ok": bool(ok_flat),
-        "detail": f"|f|<{passband}·fs_base 内最小值 {flat_min:.1f} dB（期望 > -1.5 dB）",
+        "detail": (f"|f|<{passband}·fs_base 内实测最小 {flat_min:.1f} dB，"
+                   f"理论最小 {flat_expected:.1f} dB"),
     })
     checks.append({
         "name": "截止频率位置正确",
@@ -715,17 +1176,18 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
         "detail": cut_detail,
     })
     checks.append({
-        "name": "阻带衰减充分",
+        "name": "带外响应符合理论",
         "ok": bool(ok_stop),
-        "detail": f"|f|>{stopband}·fs_base 外最大 {stop_max:.1f} dB（期望 < -20 dB）",
+        "detail": stop_detail,
     })
 
     _apply_plot_style()
     fig, ax = plt.subplots(figsize=(7.5, 4.0))
     ax.set_facecolor("white")
     fig.patch.set_facecolor("white")
-    ax.plot(f_n, psd_db_s, color="#2C68B4", lw=1.0, label="实测功率谱（Welch 平滑）")
-    ax.plot(f_h[order_h], h_db[order_h], color="#D95F02", lw=1.0, ls="--",
+    ax.plot(f_n, psd_db, color="#2C68B4", lw=0.85, alpha=0.9,
+            label="实测功率谱（Welch）")
+    ax.plot(f_h[order_h], h_db[order_h], color="#D95F02", lw=1.8, ls="--",
             label=h_label)
     for cf in cut_lines:
         ax.axvline(cf, color="#E5484D", lw=1.0, ls="-.")
@@ -735,28 +1197,62 @@ def _run_spectrum_test(params, mode: str, checks: list, plots: list, summary: li
         ax.axvline(-be, color="gray", lw=0.6, ls=":")
     ax.set_xlabel("归一化频率 f / fs_base")
     ax.set_ylabel("功率谱 (dB)")
-    ax.set_title(f"{mode.upper()} 成型滤波后功率谱（{title_note}；{cut_text}）")
+    visible_mode = "单载波" if mode == "sc-fde" else "OFDM"
+    ax.set_title(f"{visible_mode}功率谱（{title_note}；{cut_text}）")
     ax.set_xlim(-1.2, 1.2)
     ax.set_ylim(-60, 5)
     ax.grid(True)
     ax.legend(fontsize=8)
     fig.tight_layout()
-    plots.append({"title": "功率谱（经成型滤波）", "png": _figure_to_png(fig)})
-    summary.append({"label": "频谱测试", "value": f"Welch 8192 点分段平均，采样率 {fs_out / 1e9:.0f} GHz"})
+    plots.append({"title": "功率谱", "png": _figure_to_png(fig)})
+    summary.extend([
+        {"label": "功率谱符号", "value": f"{modulation}，{num_symbols} 个符号"},
+        {"label": "功率谱滤波器", "value": f"{params.get('filter_type').upper()} L={L}，{sps}×，β={rolloff}"},
+        {"label": "频谱测试", "value": f"Welch {nperseg} 点分段平均，采样率 {fs_out / 1e9:.0f} GHz"},
+    ])
 
 
 def run_waveform_test(link_mode: str = "sc-fde", filter_length: int = 32,
                       oversampling: int = 4, rolloff: float = 0.22,
                       num_symbols: int = 128, show_points: int = 600,
                       include_optional_pipeline: bool = True,
-                      papr_symbols_per_mod: int = 262144) -> Dict[str, Any]:
+                      papr_symbols_per_mod: int = 262144,
+                      time_symbol_pattern: str = "典型复符号",
+                      time_pulse_count: int = 2,
+                      time_filter_type: str = "rrc",
+                      time_filter_length: Optional[int] = None,
+                      time_oversampling: Optional[int] = None,
+                      time_rolloff: Optional[float] = None,
+                      spectrum_modulation: str = "QPSK",
+                      spectrum_filter_type: str = "rrc",
+                      spectrum_filter_length: Optional[int] = None,
+                      spectrum_oversampling: Optional[int] = None,
+                      spectrum_rolloff: Optional[float] = None,
+                      spectrum_num_symbols: int = 8192,
+                      ofdm_subcarriers: int = 512,
+                      ofdm_cp_length: int = 32,
+                      ofdm_time_symbol_count: int = 2,
+                      ofdm_time_start_subcarrier: int = -6,
+                      ofdm_time_subcarrier_step: int = 11,
+                      ofdm_heatmap_symbol_count: int = 48,
+                      ofdm_heatmap_start_subcarrier: int = -24,
+                      ofdm_heatmap_subcarrier_step: int = 1,
+                      ofdm_heatmap_axis_margin: int = 4,
+                      ofdm_heatmap_floor_db: float = -45.0,
+                      ofdm_spectrum_scale: str = "db",
+                      ofdm_spectrum_subcarriers: Optional[int] = None,
+                      ofdm_spectrum_oversampling: Optional[int] = None,
+                      ofdm_spectrum_cp_length: Optional[int] = None,
+                      ofdm_spectrum_num_symbols: int = 128,
+                      ofdm_spectrum_random_seed: int = 2026) -> Dict[str, Any]:
     """发射端波形调制与成型滤波测试。
 
-    SC-FDE：±1 脉冲点相隔 2×滚降滤波器长度，期望正负交替的滚降波形；
+    单载波：分别绘制 I/Q 完整脉冲的实际与理想时域波形，以及带可见统计
+    起伏的实测功率谱；时域和功率谱使用彼此独立的符号及成型参数；
     OFDM：每符号仅单个子载波有值且索引逐符号递增，期望频率渐升正弦
     （过采样由频域补零 IFFT 完成，成型级为直通）。
-    另含：多调制（BPSK/QPSK/16QAM/64QAM/256QAM）PAPR CCDF 叠加曲线、
-    经成型滤波后的功率谱（Welch，叠加理论滤波器/带限响应并标注截止频率）。
+    OFDM 时域图和热图使用确定性典型 16QAM 单音扫描；功率谱使用随机
+    16QAM-OFDM 连续时域数据经分段 FFT 计算；不生成 PAPR。
     """
     from params.PHYParams import PHYParams
 
@@ -766,26 +1262,56 @@ def run_waveform_test(link_mode: str = "sc-fde", filter_length: int = 32,
     if mode not in ("sc-fde", "ofdm"):
         raise ValueError(f"不支持的链路模式：{link_mode}，仅支持 sc-fde / ofdm")
 
-    params = PHYParams()
-    params.update(
-        link_mode=mode,
-        filter_length=int(filter_length),
-        oversampling=int(oversampling),
-        rolloff=float(rolloff),
-    )
-
     if mode == "sc-fde":
-        params.update(NCBPS=1, MCS=1, scramble=False)
-        _run_sc_waveform_test(params, int(num_symbols), int(show_points),
+        # 旧的公共参数仍作为新参数未传入时的回退值，兼容既有调用方。
+        time_params = PHYParams()
+        time_params.update(
+            link_mode=mode,
+            filter_type=str(time_filter_type).lower(),
+            filter_length=int(filter_length if time_filter_length is None else time_filter_length),
+            oversampling=int(oversampling if time_oversampling is None else time_oversampling),
+            rolloff=float(rolloff if time_rolloff is None else time_rolloff),
+            NCBPS=2, MCS=1, scramble=False,
+        )
+        spectrum_params = PHYParams()
+        spectrum_params.update(
+            link_mode=mode,
+            filter_type=str(spectrum_filter_type).lower(),
+            filter_length=int(filter_length if spectrum_filter_length is None else spectrum_filter_length),
+            oversampling=int(oversampling if spectrum_oversampling is None else spectrum_oversampling),
+            rolloff=float(rolloff if spectrum_rolloff is None else spectrum_rolloff),
+        )
+        _run_sc_waveform_test(time_params, str(time_symbol_pattern), int(time_pulse_count),
                               result["checks"], result["plots"], result["summary"])
+        _run_spectrum_test(spectrum_params, mode, str(spectrum_modulation),
+                           int(spectrum_num_symbols), result["checks"],
+                           result["plots"], result["summary"])
     else:
+        params = PHYParams()
+        params.update(
+            link_mode=mode,
+            filter_length=int(filter_length),
+            oversampling=int(oversampling),
+            rolloff=float(rolloff),
+            subwave_num=int(ofdm_subcarriers),
+            gi_length=int(ofdm_cp_length),
+        )
         _run_ofdm_waveform_test(params, bool(include_optional_pipeline),
-                                result["checks"], result["plots"], result["summary"])
-
-    _run_papr_ccdf_test(params, mode, int(papr_symbols_per_mod),
-                        result["checks"], result["plots"], result["summary"])
-    _run_spectrum_test(params, mode,
-                       result["checks"], result["plots"], result["summary"])
+                                result["checks"], result["plots"], result["summary"],
+                                time_symbol_count=int(ofdm_time_symbol_count),
+                                time_start_subcarrier=int(ofdm_time_start_subcarrier),
+                                time_subcarrier_step=int(ofdm_time_subcarrier_step),
+                                heatmap_symbol_count=int(ofdm_heatmap_symbol_count),
+                                heatmap_start_subcarrier=int(ofdm_heatmap_start_subcarrier),
+                                heatmap_subcarrier_step=int(ofdm_heatmap_subcarrier_step),
+                                heatmap_axis_margin=int(ofdm_heatmap_axis_margin),
+                                heatmap_floor_db=float(ofdm_heatmap_floor_db),
+                                spectrum_scale=str(ofdm_spectrum_scale),
+                                spectrum_n_sc=ofdm_spectrum_subcarriers,
+                                spectrum_sps=ofdm_spectrum_oversampling,
+                                spectrum_cp_len=ofdm_spectrum_cp_length,
+                                spectrum_num_symbols=int(ofdm_spectrum_num_symbols),
+                                spectrum_random_seed=int(ofdm_spectrum_random_seed))
 
     result["ok"] = all(c["ok"] for c in result["checks"])
     result["elapsed_ms"] = (time.perf_counter() - t0) * 1e3
@@ -802,6 +1328,60 @@ def _gf_str(arr: np.ndarray, max_show: int = 40) -> str:
     if len(arr) > max_show:
         text += f", …共{len(arr)}项"
     return f"[{text}]"
+
+
+def _gf_full_str(arr: np.ndarray) -> str:
+    return "[" + ", ".join(str(int(value)) for value in arr) + "]"
+
+
+def _matlab_reference_comparison(case: dict, local_encoded: str,
+                                 local_decoded: str, data_kind: str) -> Dict[str, str]:
+    """读取离线 MATLAB 参考结果并与本地编译码结果比较。"""
+    reference = case.get("matlab_reference")
+    if not isinstance(reference, dict):
+        return {
+            "matlab_encoded": "未提供",
+            "matlab_decoded": "未提供",
+            "matlab_comparison": "未提供 MATLAB 参考结果",
+        }
+
+    def normalize(value: Any) -> str:
+        if value is None:
+            return "未提供"
+        if data_kind == "gf":
+            if not isinstance(value, list):
+                return "格式错误：应为 GF 符号数组"
+            try:
+                return _gf_full_str(np.asarray([int(item) for item in value], dtype=np.int64))
+            except (TypeError, ValueError):
+                return "格式错误：应为 GF 符号数组"
+        if not isinstance(value, str):
+            return "格式错误：应为十六进制字符串"
+        text = "".join(value.split()).upper()
+        if not text or len(text) % 2 or any(ch not in "0123456789ABCDEF" for ch in text):
+            return "格式错误：应为十六进制字符串"
+        return text
+
+    matlab_encoded = normalize(reference.get("encoded"))
+    matlab_decoded = normalize(reference.get("decoded"))
+    comparisons: List[str] = []
+    if matlab_encoded == "未提供":
+        comparisons.append("编码结果未提供")
+    elif matlab_encoded.startswith("格式错误"):
+        comparisons.append("编码参考格式错误")
+    else:
+        comparisons.append(f"编码{'一致' if matlab_encoded == local_encoded else '不一致'}")
+    if matlab_decoded == "未提供":
+        comparisons.append("译码结果未提供")
+    elif matlab_decoded.startswith("格式错误"):
+        comparisons.append("译码参考格式错误")
+    else:
+        comparisons.append(f"译码{'一致' if matlab_decoded == local_decoded else '不一致'}")
+    return {
+        "matlab_encoded": matlab_encoded,
+        "matlab_decoded": matlab_decoded,
+        "matlab_comparison": "；".join(comparisons),
+    }
 
 
 def _hex_to_bits(hex_str: str) -> np.ndarray:
@@ -897,6 +1477,34 @@ def _run_rs_test(config: dict, result: Dict[str, Any]) -> None:
             f"译码{'正确' if ok else '与输入不一致'}。"
             f"注：错误位置 pos 为编码后码字流中的符号下标。"
         )
+        local_encoded = _gf_full_str(enc_syms)
+        local_decoded = _gf_full_str(dec_syms)
+        matlab_reference = _matlab_reference_comparison(
+            case, local_encoded, local_decoded, "gf")
+        case_result = {
+            "name": name,
+            "input_size": f"{len(vals)} 符号",
+            "encoded_size": f"{len(enc_syms)} 符号",
+            "block_count": packets,
+            "error_count": len(err_desc),
+            "status": "通过" if ok else "失败",
+            "overview": (
+                f"{name}\nRS({n},{k}) GF(2^{m})\n"
+                f"输入 {len(vals)} 符号，经 {packets} 个 RS 包编码为 {len(enc_syms)} 符号。\n"
+                f"注入 {len(err_desc)} 个符号错误，译码{'恢复原始输入' if ok else '未能恢复原始输入'}。"
+            ),
+            "input_data": _gf_full_str(vals),
+            "encoded_data": local_encoded,
+            "received_data": _gf_full_str(rx_syms),
+            "decoded_data": local_decoded,
+            "errors": "；".join(err_desc) or "无",
+            "diagnostics": (
+                f"单包理论纠错能力 t={(n - k) // 2} 个符号；"
+                f"本算例注入 {len(err_desc)} 个符号错误；结果：{'一致' if ok else '不一致'}。"
+            ),
+        }
+        case_result.update(matlab_reference)
+        result.setdefault("case_results", []).append(case_result)
         result["checks"].append({
             "name": name, "ok": ok,
             "detail": f"注入 {len(err_desc)} 个符号错误，译码{'正确' if ok else '失败'}",
@@ -983,6 +1591,36 @@ def _run_ldpc_test(config: dict, result: Dict[str, Any]) -> None:
             f"译码{'成功' if ok else '失败'}。"
             f"注：error_bits 为编码后码字流中的 bit 下标。"
         )
+        received_hex = _bits_to_hex(rx)
+        decoded_hex = _bits_to_hex(dec_bits)
+        matlab_reference = _matlab_reference_comparison(
+            case, codeword_hex, decoded_hex, "hex")
+        case_result = {
+            "name": name,
+            "input_size": f"{len(in_bits)} bit",
+            "encoded_size": f"{len(cw)} bit",
+            "block_count": debug["num_blocks"],
+            "error_count": len(err_pos),
+            "status": "通过" if ok else "失败",
+            "overview": (
+                f"{name}\nLDPC({coder.n},{coder.k})，码率 {rate}\n"
+                f"输入 {len(in_bits)} bit，经 {debug['num_blocks']} 个码字块编码为 {len(cw)} bit。\n"
+                f"注入 {len(err_pos)} 个 bit 错误，译码{'恢复原始输入' if ok else '未能恢复原始输入'}。"
+            ),
+            "input_data": hex_in.upper(),
+            "encoded_data": codeword_hex,
+            "received_data": received_hex,
+            "decoded_data": decoded_hex,
+            "errors": "；".join(f"bit #{p}" for p in err_pos) or "无",
+            "diagnostics": (
+                f"迭代次数：{debug['iterations']}\n"
+                f"校验子权重：{debug['syndrome_weights']}\n"
+                f"硬判 fallback：{debug['used_hard_fallback']}\n"
+                f"解码器成功标志：{debug.get('decode_success')}"
+            ),
+        }
+        case_result.update(matlab_reference)
+        result.setdefault("case_results", []).append(case_result)
         result["checks"].append({
             "name": name, "ok": ok,
             "detail": f"注入 {len(err_pos)} bit 错误，译码{'正确' if ok else '失败'}",

@@ -7,19 +7,24 @@ FunctionalTestWorker(QThread) 中执行，结果经 Qt 信号回传并渲染到�
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from typing import List, Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QStackedWidget,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -58,6 +63,7 @@ class FunctionalTestPage(WorkbenchPage):
         super().__init__("功能测试", "链路模块功能验证：调制 / 波形 / 编码 / 浮点精度。", parent)
         self._worker: Optional[FunctionalTestWorker] = None
         self._codec_detail_lines: List[str] = []
+        self._codec_case_results: List[dict] = []
         self._modulation_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
         self._wave_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
 
@@ -70,7 +76,7 @@ class FunctionalTestPage(WorkbenchPage):
     def _build_left_panel(self) -> None:
         radio_box = make_radio_group("测试项目选择", [
             "调制方式测试 (QPSK/16QAM/64QAM)",
-            "波形测试 (SC/OFDM)",
+            "波形测试 (单载波/OFDM)",
             "编码技术测试 (RS/LDPC)",
             "浮点精度验证",
         ])
@@ -120,40 +126,153 @@ class FunctionalTestPage(WorkbenchPage):
         return self._wrap_with_hint(box, hint)
 
     def _build_waveform_params(self) -> QWidget:
-        self.wave_mode = combo(["SC", "OFDM"])
-        self.wave_filter_len = spin(8, 128, 32)
-        self.wave_sps = spin(1, 16, 4)
-        self.wave_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
-        self.wave_symbols = spin(64, 1024, 128)
-        self.wave_show = spin(64, 4096, 600)
-        self.wave_papr_syms = spin(16384, 1048576, 262144)
-        self.wave_papr_syms.setSingleStep(16384)
-        box = make_form_group("波形测试参数", [
-            ("链路模式", self.wave_mode),
-            ("滚降滤波器长度", self.wave_filter_len),
-            ("过采样率", self.wave_sps),
-            ("滚降系数", self.wave_rolloff),
-            ("符号数", self.wave_symbols),
-            ("显示点数", self.wave_show),
-            ("PAPR 符号数/调制", self.wave_papr_syms),
+        self.wave_mode = combo(["单载波", "OFDM"])
+
+        self.wave_time_symbol = combo(["典型复符号", "同号复符号"])
+        self.wave_time_filter_type = combo(["RRC", "RC", "RECT"])
+        self.wave_time_filter_len = spin(8, 128, 32)
+        self.wave_time_sps = spin(1, 16, 4)
+        self.wave_time_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
+        self.wave_time_pulses = spin(2, 3, 2)
+
+        self.wave_spectrum_modulation = combo(["QPSK", "BPSK", "16QAM", "64QAM", "256QAM"])
+        self.wave_spectrum_filter_type = combo(["RRC", "RC", "RECT"])
+        self.wave_spectrum_filter_len = spin(8, 128, 32)
+        self.wave_spectrum_sps = spin(1, 16, 4)
+        self.wave_spectrum_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
+        self.wave_spectrum_symbols = spin(2048, 131072, 8192)
+        self.wave_spectrum_symbols.setSingleStep(2048)
+
+        self.wave_ofdm_time_modulation = combo(["16QAM"])
+        self.wave_ofdm_time_symbols = spin(2, 3, 2)
+        self.wave_ofdm_time_start = spin(-1024, 1023, -6)
+        self.wave_ofdm_time_step = spin(1, 1024, 11)
+        self.wave_ofdm_time_nsc = spin(64, 2048, 512)
+        self.wave_ofdm_time_nsc.setSingleStep(64)
+        self.wave_ofdm_time_sps = spin(1, 16, 4)
+        self.wave_ofdm_time_cp = spin(0, 1024, 32)
+
+        self.wave_ofdm_heat_modulation = combo(["16QAM"])
+        self.wave_ofdm_heat_symbols = spin(8, 512, 48)
+        self.wave_ofdm_heat_start = spin(-1024, 1023, -24)
+        self.wave_ofdm_heat_step = spin(1, 128, 1)
+        self.wave_ofdm_heat_margin = spin(0, 64, 4)
+        self.wave_ofdm_heat_floor = dspin(-120.0, -20.0, -45.0, decimals=1, suffix="dB")
+
+        self.wave_ofdm_spectrum_modulation = combo(["16QAM"])
+        self.wave_ofdm_spectrum_scale = combo(["对数功率 dB", "线性归一化功率"])
+        self.wave_ofdm_spectrum_nsc = spin(64, 2048, 512)
+        self.wave_ofdm_spectrum_nsc.setSingleStep(64)
+        self.wave_ofdm_spectrum_sps = spin(1, 16, 4)
+        self.wave_ofdm_spectrum_cp = spin(0, 1024, 32)
+        self.wave_ofdm_spectrum_symbols = spin(16, 2048, 128)
+        self.wave_ofdm_spectrum_symbols.setSingleStep(16)
+        self.wave_ofdm_spectrum_seed = spin(0, 2147483647, 2026)
+
+        mode_box = make_form_group("波形测试模式", [("链路模式", self.wave_mode)])
+        self.wave_sc_time_box = make_form_group("单载波时域波形参数", [
+            ("测试符号", self.wave_time_symbol),
+            ("滤波器类型", self.wave_time_filter_type),
+            ("滤波器长度", self.wave_time_filter_len),
+            ("过采样率", self.wave_time_sps),
+            ("滚降系数", self.wave_time_rolloff),
+            ("完整脉冲数", self.wave_time_pulses),
+        ])
+        self.wave_sc_spectrum_box = make_form_group("单载波功率谱参数", [
+            ("调制符号", self.wave_spectrum_modulation),
+            ("滤波器类型", self.wave_spectrum_filter_type),
+            ("滤波器长度", self.wave_spectrum_filter_len),
+            ("过采样率", self.wave_spectrum_sps),
+            ("滚降系数", self.wave_spectrum_rolloff),
+            ("频谱符号数", self.wave_spectrum_symbols),
+        ])
+        self.wave_ofdm_time_box = make_form_group("OFDM 时域波形参数", [
+            ("典型符号", self.wave_ofdm_time_modulation),
+            ("显示 OFDM 符号数", self.wave_ofdm_time_symbols),
+            ("起始子载波 k", self.wave_ofdm_time_start),
+            ("子载波步长", self.wave_ofdm_time_step),
+            ("子载波数", self.wave_ofdm_time_nsc),
+            ("过采样率", self.wave_ofdm_time_sps),
+            ("CP 长度", self.wave_ofdm_time_cp),
+        ])
+        self.wave_ofdm_heat_box = make_form_group("OFDM 逐符号频谱热图参数", [
+            ("典型符号", self.wave_ofdm_heat_modulation),
+            ("扫描符号数", self.wave_ofdm_heat_symbols),
+            ("起始子载波 k", self.wave_ofdm_heat_start),
+            ("扫描步长", self.wave_ofdm_heat_step),
+            ("横轴边距", self.wave_ofdm_heat_margin),
+            ("色阶下限", self.wave_ofdm_heat_floor),
+        ])
+        self.wave_ofdm_spectrum_box = make_form_group("OFDM 功率谱参数", [
+            ("典型符号", self.wave_ofdm_spectrum_modulation),
+            ("纵坐标", self.wave_ofdm_spectrum_scale),
+            ("子载波数", self.wave_ofdm_spectrum_nsc),
+            ("过采样率", self.wave_ofdm_spectrum_sps),
+            ("CP 长度", self.wave_ofdm_spectrum_cp),
+            ("随机 OFDM 符号数", self.wave_ofdm_spectrum_symbols),
+            ("随机种子", self.wave_ofdm_spectrum_seed),
         ])
         hint = QLabel(
-            "SC：±1 脉冲点相隔 2×滤波器长度，期望正负交替的滚降波形；"
-            "OFDM：每个符号仅单个子载波有值且索引逐符号递增，期望频率渐升正弦"
-            "（过采样由频域补零 IFFT 完成）。"
-            "另生成多调制 PAPR CCDF 曲线（BPSK/QPSK/16QAM/64QAM/256QAM 叠加，"
-            "符号数越多曲线越精确但越耗时）与成型后功率谱（SC 标滤波器截止频率，"
-            "OFDM 验证补零 IFFT 理想带限）。"
+            "单载波默认采用典型复符号与典型成型参数：时域图分别显示 I/Q 完整脉冲，"
+            "并叠加理想波形。OFDM 使用确定性典型 16QAM 单音扫描，显示含 CP 时域图、"
+            "逐符号频谱热图；功率谱单独使用随机 16QAM-OFDM 连续时域数据经 FFT 计算。"
+            "两种模式均不生成 PAPR。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
-        return self._wrap_with_hint(box, hint)
+
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        for widget in (mode_box, self.wave_sc_time_box, self.wave_sc_spectrum_box,
+                       self.wave_ofdm_time_box, self.wave_ofdm_heat_box,
+                       self.wave_ofdm_spectrum_box, hint):
+            layout.addWidget(widget)
+        self.wave_mode.currentTextChanged.connect(self._on_wave_mode_changed)
+        self._on_wave_mode_changed(self.wave_mode.currentText())
+        return wrap
+
+    def _on_wave_mode_changed(self, text: str) -> None:
+        is_ofdm = text == "OFDM"
+        self.wave_sc_time_box.setVisible(not is_ofdm)
+        self.wave_sc_spectrum_box.setVisible(not is_ofdm)
+        self.wave_ofdm_time_box.setVisible(is_ofdm)
+        self.wave_ofdm_heat_box.setVisible(is_ofdm)
+        self.wave_ofdm_spectrum_box.setVisible(is_ofdm)
 
     def _build_codec_params(self) -> QWidget:
         self.codec_type_combo = combo(["RS (GF符号)", "LDPC (十六进制)"])
+        self.codec_preset_combo = combo([
+            "示例用例集", "无错误闭环", "单点错误", "纠错边界 / 压力测试", "自定义"
+        ])
+
+        self.codec_rs_n = spin(3, 255, 15)
+        self.codec_rs_k = spin(1, 254, 11)
+        self.codec_rs_m = combo(["4", "8"])
+        self.codec_ldpc_rate = combo(["14/15", "11/15"])
+        self.codec_param_stack = QStackedWidget()
+        self.codec_param_stack.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.codec_param_stack.setMaximumHeight(190)
+        self.codec_param_stack.addWidget(make_form_group("RS 编码参数", [
+            ("码长 n", self.codec_rs_n),
+            ("信息符号 k", self.codec_rs_k),
+            ("有限域 GF(2^m)", self.codec_rs_m),
+        ]))
+        self.codec_param_stack.addWidget(make_form_group("LDPC 编码参数", [
+            ("标准码率", self.codec_ldpc_rate),
+        ]))
+
+        self.codec_input_editor = QPlainTextEdit()
+        self.codec_input_editor.setMaximumHeight(92)
+        self.codec_input_editor.setPlaceholderText("RS：输入逗号分隔的 GF 符号；LDPC：输入十六进制串")
+        self.codec_input_editor.setStyleSheet(_MONO_STYLE)
+        self.codec_error_positions = QLineEdit()
+        self.codec_error_positions.setPlaceholderText("例如：0, 3, 12；留空表示不注入错误")
+
         self.codec_editor = QPlainTextEdit()
         self.codec_editor.setStyleSheet(_MONO_STYLE)
-        self.codec_editor.setMinimumHeight(180)
+        self.codec_editor.setMinimumHeight(170)
         self.codec_type_combo.currentTextChanged.connect(self._on_codec_type_changed)
 
         load_file_btn = QPushButton("选择文件")
@@ -161,27 +280,52 @@ class FunctionalTestPage(WorkbenchPage):
         demo_btn = QPushButton("加载示例")
         demo_btn.clicked.connect(self._on_load_demo)
 
+        self.codec_advanced_box = QGroupBox("高级配置：JSON 导入与编辑")
+        self.codec_advanced_box.setCheckable(True)
+        self.codec_advanced_box.setChecked(False)
+        self.codec_advanced_box.setMaximumHeight(42)
+        advanced_layout = QVBoxLayout(self.codec_advanced_box)
+        advanced_buttons = QHBoxLayout()
+        advanced_buttons.addWidget(load_file_btn)
+        advanced_buttons.addWidget(demo_btn)
+        advanced_buttons.addStretch(1)
+        advanced_layout.addLayout(advanced_buttons)
+        advanced_layout.addWidget(self.codec_editor)
+        for widget in (load_file_btn, demo_btn, self.codec_editor):
+            widget.setVisible(False)
+            self.codec_advanced_box.toggled.connect(widget.setVisible)
+        self.codec_advanced_box.toggled.connect(
+            lambda checked: self.codec_advanced_box.setMaximumHeight(320 if checked else 42)
+        )
+        self.codec_advanced_box.toggled.connect(self._on_codec_advanced_toggled)
+
         wrap = QWidget()
         layout = QVBoxLayout(wrap)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        layout.addWidget(make_form_group(
-            "编码技术测试 (测试用例文件)", [("编码类型", self.codec_type_combo)]))
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(load_file_btn)
-        btn_row.addWidget(demo_btn)
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
-        layout.addWidget(self.codec_editor)
+        layout.addWidget(make_form_group("测试方案", [
+            ("编码类型", self.codec_type_combo),
+            ("测试预设", self.codec_preset_combo),
+        ]))
+        layout.addWidget(self.codec_param_stack)
+        self.codec_case_box = make_form_group("自定义算例", [
+            ("输入数据", self.codec_input_editor),
+            ("错误位置", self.codec_error_positions),
+        ])
+        layout.addWidget(self.codec_case_box)
+        layout.addWidget(self.codec_advanced_box)
         hint = QLabel(
-            "用例为 JSON 文件：RS 输入为 GF 符号数组（可带 errors 注入符号错误），"
-            "LDPC 输入为 input_hex 十六进制串（可带 error_bits 注入比特错误）。"
-            "每组算例的输入 / 编码结果 / 译码结果显示在右侧。"
+            "推荐先使用预设观察纠错过程；选择“自定义”后可填写输入和错误位置。"
+            "原始 JSON 文件仍可在高级配置中导入、编辑并直接运行。"
+            "MATLAB 离线结果可写入每个算例的 matlab_reference.encoded / decoded 字段。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
         layout.addWidget(hint)
+        wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self._on_load_demo()
+        self.codec_preset_combo.currentTextChanged.connect(self._on_codec_preset_changed)
+        self._on_codec_preset_changed(self.codec_preset_combo.currentText())
         return wrap
 
     def _build_precision_params(self) -> QWidget:
@@ -278,23 +422,58 @@ class FunctionalTestPage(WorkbenchPage):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        self.codec_placeholder = self._make_placeholder("点击左侧「运行测试」执行编译码用例")
+        self.codec_placeholder = self._make_placeholder(
+            "选择编码方案和测试预设，然后点击左侧「运行测试」\n"
+            "结果将按 输入 → 编码 → 注错 → 译码 → 比对 展示"
+        )
+        self.codec_placeholder.setMaximumHeight(260)
         layout.addWidget(self.codec_placeholder)
 
-        self.codec_table = self._make_table(["算例", "输入", "编码结果", "注入错误", "译码结果", "判定"])
+        self.codec_overview_card = _UpdatableSummaryCard("本次测试概览", ["尚未运行"])
+        self.codec_overview_card.hide()
+        layout.addWidget(self.codec_overview_card)
+
+        self.codec_flow_card = CardWidget("编译码流程")
+        self.codec_flow_label = QLabel("输入  →  分包 / 分块  →  编码  →  注入错误  →  译码  →  一致性比对")
+        self.codec_flow_label.setAlignment(Qt.AlignCenter)
+        self.codec_flow_label.setWordWrap(True)
+        self.codec_flow_label.setStyleSheet(
+            "padding: 14px; border-radius: 8px; background: #F5F8FF; color: #41516B; font-weight: 600;"
+        )
+        self.codec_flow_card.layout.addWidget(self.codec_flow_label)
+        self.codec_flow_card.hide()
+        layout.addWidget(self.codec_flow_card)
+
+        self.codec_table = self._make_table([
+            "算例", "输入长度", "编码长度", "包 / 块", "错误数", "MATLAB 对比", "判定"
+        ])
+        self.codec_table.hide()
         layout.addWidget(self.codec_table, 1)
 
-        self.codec_detail = QPlainTextEdit()
-        self.codec_detail.setReadOnly(True)
-        self.codec_detail.setPlaceholderText("选中某行查看算例详情（含完整数据）")
-        self.codec_detail.setStyleSheet(_MONO_STYLE)
-        self.codec_detail.setMaximumHeight(140)
+        self.codec_detail_tabs = QTabWidget()
+        self.codec_detail_overview = self._readonly_codec_detail("选中算例后查看执行摘要")
+        self.codec_detail_data = self._readonly_codec_detail("选中算例后查看输入、编码流和译码结果")
+        self.codec_detail_diagnostics = self._readonly_codec_detail("选中算例后查看错误与译码诊断")
+        self.codec_detail_tabs.addTab(self.codec_detail_overview, "概览")
+        self.codec_detail_tabs.addTab(self.codec_detail_data, "数据对比")
+        self.codec_detail_tabs.addTab(self.codec_detail_diagnostics, "错误与诊断")
+        self.codec_detail_tabs.setMaximumHeight(230)
+        self.codec_detail_tabs.hide()
         self.codec_table.itemSelectionChanged.connect(self._on_codec_row_selected)
-        layout.addWidget(self.codec_detail)
+        layout.addWidget(self.codec_detail_tabs)
 
         self.codec_summary_card = _UpdatableSummaryCard("用例统计", ["尚未运行"])
+        self.codec_summary_card.hide()
         layout.addWidget(self.codec_summary_card)
         return page
+
+    @staticmethod
+    def _readonly_codec_detail(placeholder: str) -> QPlainTextEdit:
+        editor = QPlainTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlaceholderText(placeholder)
+        editor.setStyleSheet(_MONO_STYLE)
+        return editor
 
     def _build_precision_results(self) -> QWidget:
         page = QWidget()
@@ -342,6 +521,10 @@ class FunctionalTestPage(WorkbenchPage):
         idx = self._selected_index()
         self.param_stack.setCurrentIndex(idx)
         self.result_stack.setCurrentIndex(idx)
+        if idx == 2:
+            self.param_stack.setMaximumHeight(760 if self.codec_advanced_box.isChecked() else 440)
+        else:
+            self.param_stack.setMaximumHeight(16777215)
 
     def _demo_path(self) -> Path:
         name = "rs_demo.json" if "RS" in self.codec_type_combo.currentText() else "ldpc_demo.json"
@@ -359,6 +542,7 @@ class FunctionalTestPage(WorkbenchPage):
             self.codec_placeholder.show()
             return
         self.codec_editor.setPlainText(text)
+        self.codec_advanced_box.setChecked(True)
 
     def _on_load_demo(self) -> None:
         try:
@@ -368,16 +552,123 @@ class FunctionalTestPage(WorkbenchPage):
                 f"// 示例文件读取失败：{exc}\n// 可点击「选择文件」手动加载用例")
             return
         self.codec_editor.setPlainText(text)
+        if hasattr(self, "codec_preset_combo"):
+            self.codec_preset_combo.setCurrentIndex(0)
 
     def _on_codec_type_changed(self, _text: str) -> None:
         """切换编码类型时同步加载对应示例，避免界面选择与实际 JSON 用例不一致。"""
+        self.codec_param_stack.setCurrentIndex(0 if "RS" in _text else 1)
         self._on_load_demo()
+
+    def _on_codec_advanced_toggled(self, checked: bool) -> None:
+        if self._selected_test() == "codec":
+            self.param_stack.setMaximumHeight(760 if checked else 440)
+
+    def _on_codec_preset_changed(self, text: str) -> None:
+        is_custom = text == "自定义"
+        self.codec_case_box.setVisible(is_custom)
+        if not is_custom:
+            return
+        if "RS" in self.codec_type_combo.currentText():
+            m = int(self.codec_rs_m.currentText())
+            values = [str(i % (2 ** m)) for i in range(self.codec_rs_k.value())]
+            self.codec_input_editor.setPlainText(", ".join(values))
+        else:
+            rate = self.codec_ldpc_rate.currentText()
+            byte_count = 168 if rate == "14/15" else 132
+            seed = b"THz-802.15.3d|"
+            raw = (seed * ((byte_count + len(seed) - 1) // len(seed)))[:byte_count]
+            self.codec_input_editor.setPlainText(raw.hex().upper())
+        self.codec_error_positions.clear()
+
+    @staticmethod
+    def _parse_codec_positions(text: str) -> List[int]:
+        clean = text.replace("，", ",").strip()
+        if not clean:
+            return []
+        try:
+            values = [int(part.strip()) for part in clean.split(",") if part.strip()]
+        except ValueError as exc:
+            raise ValueError("错误位置必须是以逗号分隔的整数，例如：0, 3, 12") from exc
+        if any(value < 0 for value in values):
+            raise ValueError("错误位置不能为负数")
+        return values
+
+    def _codec_config_from_form(self) -> dict:
+        preset = self.codec_preset_combo.currentText()
+        is_rs = "RS" in self.codec_type_combo.currentText()
+        if preset == "示例用例集":
+            # 每次运行都重新读取磁盘示例，避免已打开页面仍持有旧版示例内容。
+            return json.loads(self._demo_path().read_text(encoding="utf-8"))
+
+        if is_rs:
+            n, k, m = self.codec_rs_n.value(), self.codec_rs_k.value(), int(self.codec_rs_m.currentText())
+            if n <= k:
+                raise ValueError(f"RS 参数需满足 n > k，当前 n={n}、k={k}")
+            if n > 2 ** m - 1:
+                raise ValueError(f"GF(2^{m}) 下 RS 码长 n 不能超过 {2 ** m - 1}")
+            if preset == "自定义":
+                raw = self.codec_input_editor.toPlainText().replace("，", ",")
+                try:
+                    values = [int(part.strip()) for part in raw.split(",") if part.strip()]
+                except ValueError as exc:
+                    raise ValueError("RS 输入必须是以逗号分隔的 GF 符号整数") from exc
+                positions = self._parse_codec_positions(self.codec_error_positions.text())
+            else:
+                values = [i % (2 ** m) for i in range(k)]
+                positions = [] if preset == "无错误闭环" else [0]
+                if preset == "纠错边界 / 压力测试":
+                    positions = list(range(max(1, (n - k) // 2)))
+            if not values:
+                raise ValueError("RS 输入不能为空")
+            if any(value < 0 or value >= 2 ** m for value in values):
+                raise ValueError(f"RS 输入符号必须位于 0～{2 ** m - 1}")
+            encoded_len = ((len(values) + k - 1) // k) * n
+            if any(pos >= encoded_len for pos in positions):
+                raise ValueError(f"错误位置必须小于编码流长度 {encoded_len}")
+            errors = [{"pos": pos, "value": (pos + 1) % (2 ** m)} for pos in positions]
+            return {
+                "code_type": "RS",
+                "rs_params": {"n": n, "k": k, "m": m},
+                "cases": [{"name": preset, "input": values, "errors": errors}],
+            }
+
+        rate = self.codec_ldpc_rate.currentText()
+        k_bits = 1344 if rate == "14/15" else 1056
+        if preset == "自定义":
+            hex_in = "".join(self.codec_input_editor.toPlainText().split()).upper()
+            positions = self._parse_codec_positions(self.codec_error_positions.text())
+        else:
+            byte_count = k_bits // 8
+            seed = b"THz-802.15.3d|"
+            raw = (seed * ((byte_count + len(seed) - 1) // len(seed)))[:byte_count]
+            hex_in = raw.hex().upper()
+            positions = [] if preset == "无错误闭环" else [0]
+            if preset == "纠错边界 / 压力测试":
+                positions = list(range(0, 128, 8))
+        if not hex_in or len(hex_in) % 2 or any(ch not in "0123456789ABCDEF" for ch in hex_in):
+            raise ValueError("LDPC 输入必须是非空、偶数长度的十六进制串")
+        encoded_len = ((len(hex_in) * 4 + k_bits - 1) // k_bits) * 1440
+        if any(pos >= encoded_len for pos in positions):
+            raise ValueError(f"错误位置必须小于编码流长度 {encoded_len}")
+        return {
+            "code_type": "LDPC",
+            "ldpc_params": {"rate": rate},
+            "cases": [{"name": preset, "input_hex": hex_in, "error_bits": positions}],
+        }
 
     def _on_run_clicked(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
         test_type = self._selected_test()
-        payload = self._build_payload(test_type)
+        try:
+            payload = self._build_payload(test_type)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._set_badge("已失败")
+            if test_type == "codec":
+                self.codec_placeholder.setText(f"配置有误：{exc}")
+                self.codec_placeholder.show()
+            return
         self._reset_results(test_type)
         self._set_badge("运行中")
         self.run_button.setEnabled(False)
@@ -396,17 +687,50 @@ class FunctionalTestPage(WorkbenchPage):
                 "random_seed": self.modulation_seed.value(),
             }
         if test_type == "waveform":
-            return {
-                "link_mode": "sc-fde" if self.wave_mode.currentText() == "SC" else "ofdm",
-                "filter_length": self.wave_filter_len.value(),
-                "oversampling": self.wave_sps.value(),
-                "rolloff": self.wave_rolloff.value(),
-                "num_symbols": self.wave_symbols.value(),
-                "show_points": self.wave_show.value(),
-                "papr_symbols_per_mod": self.wave_papr_syms.value(),
+            payload = {
+                "link_mode": "sc-fde" if self.wave_mode.currentText() == "单载波" else "ofdm",
+                "time_symbol_pattern": self.wave_time_symbol.currentText(),
+                "time_pulse_count": self.wave_time_pulses.value(),
+                "time_filter_type": self.wave_time_filter_type.currentText().lower(),
+                "time_filter_length": self.wave_time_filter_len.value(),
+                "time_oversampling": self.wave_time_sps.value(),
+                "time_rolloff": self.wave_time_rolloff.value(),
+                "spectrum_modulation": self.wave_spectrum_modulation.currentText(),
+                "spectrum_filter_type": self.wave_spectrum_filter_type.currentText().lower(),
+                "spectrum_filter_length": self.wave_spectrum_filter_len.value(),
+                "spectrum_oversampling": self.wave_spectrum_sps.value(),
+                "spectrum_rolloff": self.wave_spectrum_rolloff.value(),
+                "spectrum_num_symbols": self.wave_spectrum_symbols.value(),
             }
+            if payload["link_mode"] == "ofdm":
+                payload.update({
+                    "ofdm_subcarriers": self.wave_ofdm_time_nsc.value(),
+                    "oversampling": self.wave_ofdm_time_sps.value(),
+                    "ofdm_cp_length": self.wave_ofdm_time_cp.value(),
+                    "ofdm_time_symbol_count": self.wave_ofdm_time_symbols.value(),
+                    "ofdm_time_start_subcarrier": self.wave_ofdm_time_start.value(),
+                    "ofdm_time_subcarrier_step": self.wave_ofdm_time_step.value(),
+                    "ofdm_heatmap_symbol_count": self.wave_ofdm_heat_symbols.value(),
+                    "ofdm_heatmap_start_subcarrier": self.wave_ofdm_heat_start.value(),
+                    "ofdm_heatmap_subcarrier_step": self.wave_ofdm_heat_step.value(),
+                    "ofdm_heatmap_axis_margin": self.wave_ofdm_heat_margin.value(),
+                    "ofdm_heatmap_floor_db": self.wave_ofdm_heat_floor.value(),
+                    "ofdm_spectrum_scale": self.wave_ofdm_spectrum_scale.currentText(),
+                    "ofdm_spectrum_subcarriers": self.wave_ofdm_spectrum_nsc.value(),
+                    "ofdm_spectrum_oversampling": self.wave_ofdm_spectrum_sps.value(),
+                    "ofdm_spectrum_cp_length": self.wave_ofdm_spectrum_cp.value(),
+                    "ofdm_spectrum_num_symbols": self.wave_ofdm_spectrum_symbols.value(),
+                    "ofdm_spectrum_random_seed": self.wave_ofdm_spectrum_seed.value(),
+                })
+            return payload
         if test_type == "codec":
-            return {"config_text": self.codec_editor.toPlainText()}
+            if self.codec_advanced_box.isChecked():
+                config_text = self.codec_editor.toPlainText()
+            else:
+                config = self._codec_config_from_form()
+                config_text = json.dumps(config, ensure_ascii=False, indent=2)
+                self.codec_editor.setPlainText(config_text)
+            return {"config_text": config_text}
         return {
             "link_mode": "sc-fde" if self.prec_mode.currentText() == "SC" else "ofdm",
             "duration": self.prec_duration.value(),
@@ -420,8 +744,7 @@ class FunctionalTestPage(WorkbenchPage):
         elif test_type == "waveform":
             self._render_waveform(result)
         elif test_type == "codec":
-            self._render_table_result(result, self.codec_table,
-                                      self.codec_placeholder, self.codec_summary_card)
+            self._render_codec(result)
         else:
             self._render_table_result(result, self.prec_table,
                                       self.prec_placeholder, self.prec_summary_card)
@@ -470,8 +793,17 @@ class FunctionalTestPage(WorkbenchPage):
             self.codec_placeholder.setText("运行中，请稍候…")
             self.codec_placeholder.show()
             self.codec_table.setRowCount(0)
-            self.codec_detail.clear()
+            self.codec_detail_overview.clear()
+            self.codec_detail_data.clear()
+            self.codec_detail_diagnostics.clear()
             self._codec_detail_lines = []
+            self._codec_case_results = []
+            self.codec_overview_card.set_lines(["运行中…"])
+            self.codec_overview_card.show()
+            self.codec_flow_card.show()
+            self.codec_table.hide()
+            self.codec_detail_tabs.hide()
+            self.codec_flow_label.setText("输入  →  分包 / 分块  →  编码  →  注入错误  →  译码  →  一致性比对")
             self.codec_summary_card.set_lines(["运行中…"])
         else:
             self.prec_placeholder.setText("运行中，请稍候…")
@@ -507,7 +839,9 @@ class FunctionalTestPage(WorkbenchPage):
             card = CardWidget(plot.get("title", ""))
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
-            label.setMinimumHeight(240)
+            # 高分辨率源图按控件尺寸平滑缩小；较高的展示区避免密集波形与标注
+            # 在纵向被过度压缩。
+            label.setMinimumHeight(320)
             card.layout.addWidget(label)
             self.wave_cards_layout.addWidget(card)
             pm = QPixmap()
@@ -549,10 +883,73 @@ class FunctionalTestPage(WorkbenchPage):
         lines = [f"{item['label']}：{item['value']}" for item in result.get("summary", [])]
         summary_card.set_lines(lines or ["-"])
 
+    def _render_codec(self, result: dict) -> None:
+        self.codec_placeholder.hide()
+        self.codec_overview_card.show()
+        self.codec_flow_card.show()
+        self.codec_table.show()
+        self.codec_detail_tabs.show()
+        self._codec_detail_lines = result.get("detail_lines", [])
+        self._codec_case_results = result.get("case_results", [])
+        summary = {item.get("label", ""): item.get("value", "") for item in result.get("summary", [])}
+        elapsed = result.get("elapsed_ms", 0.0)
+        self.codec_overview_card.set_lines([
+            f"方案：{summary.get('编码方案', '-')}    用例：{summary.get('算例总数', '0')}",
+            f"通过：{summary.get('通过', '0')}    失败：{summary.get('失败', '0')}    用时：{elapsed:.1f} ms",
+        ])
+
+        if self._codec_case_results:
+            columns = ["算例", "输入长度", "编码长度", "包 / 块", "错误数", "MATLAB 对比", "判定"]
+            rows = [[
+                case.get("name", ""), case.get("input_size", ""), case.get("encoded_size", ""),
+                case.get("block_count", ""), case.get("error_count", ""),
+                case.get("matlab_comparison", "未提供 MATLAB 参考结果"), case.get("status", ""),
+            ] for case in self._codec_case_results]
+        else:
+            columns = result.get("table", {}).get("columns", [])
+            rows = result.get("table", {}).get("rows", [])
+
+        self.codec_table.setColumnCount(len(columns))
+        self.codec_table.setHorizontalHeaderLabels(columns)
+        self.codec_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            for column_index, value in enumerate(row):
+                self.codec_table.setItem(row_index, column_index, QTableWidgetItem(str(value)))
+        self.codec_table.resizeColumnsToContents()
+        self.codec_table.horizontalHeader().setStretchLastSection(True)
+        if rows:
+            self.codec_table.selectRow(0)
+
+    def _show_codec_case(self, case: dict) -> None:
+        status = case.get("status", "未知")
+        mark = "✓" if status == "通过" else "✕"
+        self.codec_flow_label.setText(
+            f"输入 {case.get('input_size', '-')}  →  "
+            f"{case.get('block_count', '-')} 包 / 块  →  "
+            f"编码 {case.get('encoded_size', '-')}  →  "
+            f"注错 {case.get('error_count', 0)}  →  译码  →  {mark} {status}"
+        )
+        self.codec_detail_overview.setPlainText(case.get("overview", ""))
+        self.codec_detail_data.setPlainText(
+            f"原始输入\n{case.get('input_data', '-')}\n\n"
+            f"本地 Python 编码结果\n{case.get('encoded_data', '-')}\n\n"
+            f"MATLAB 编码结果\n{case.get('matlab_encoded', '未提供')}\n\n"
+            f"接收数据（注错后）\n{case.get('received_data', '-')}\n\n"
+            f"本地 Python 译码结果\n{case.get('decoded_data', '-')}\n\n"
+            f"MATLAB 译码结果\n{case.get('matlab_decoded', '未提供')}\n\n"
+            f"对比结论\n{case.get('matlab_comparison', '未提供 MATLAB 参考结果')}"
+        )
+        self.codec_detail_diagnostics.setPlainText(
+            f"错误注入\n{case.get('errors', '无')}\n\n"
+            f"译码诊断\n{case.get('diagnostics', '-')}"
+        )
+
     def _on_codec_row_selected(self) -> None:
         row = self.codec_table.currentRow()
-        if 0 <= row < len(self._codec_detail_lines):
-            self.codec_detail.setPlainText(self._codec_detail_lines[row])
+        if 0 <= row < len(self._codec_case_results):
+            self._show_codec_case(self._codec_case_results[row])
+        elif 0 <= row < len(self._codec_detail_lines):
+            self.codec_detail_overview.setPlainText(self._codec_detail_lines[row])
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -572,12 +969,48 @@ class FunctionalTestPage(WorkbenchPage):
             },
             "波形测试": {
                 "链路模式": self.wave_mode.currentText(),
-                "滚降滤波器长度": self.wave_filter_len.value(),
-                "过采样率": self.wave_sps.value(),
-                "滚降系数": self.wave_rolloff.value(),
-                "符号数": self.wave_symbols.value(),
-                "显示点数": self.wave_show.value(),
-                "PAPR符号数": self.wave_papr_syms.value(),
+                "时域波形": {
+                    "测试符号": self.wave_time_symbol.currentText(),
+                    "滤波器类型": self.wave_time_filter_type.currentText(),
+                    "滤波器长度": self.wave_time_filter_len.value(),
+                    "过采样率": self.wave_time_sps.value(),
+                    "滚降系数": self.wave_time_rolloff.value(),
+                    "完整脉冲数": self.wave_time_pulses.value(),
+                },
+                "功率谱": {
+                    "调制符号": self.wave_spectrum_modulation.currentText(),
+                    "滤波器类型": self.wave_spectrum_filter_type.currentText(),
+                    "滤波器长度": self.wave_spectrum_filter_len.value(),
+                    "过采样率": self.wave_spectrum_sps.value(),
+                    "滚降系数": self.wave_spectrum_rolloff.value(),
+                    "频谱符号数": self.wave_spectrum_symbols.value(),
+                },
+                "OFDM时域": {
+                    "典型符号": self.wave_ofdm_time_modulation.currentText(),
+                    "显示符号数": self.wave_ofdm_time_symbols.value(),
+                    "起始子载波": self.wave_ofdm_time_start.value(),
+                    "子载波步长": self.wave_ofdm_time_step.value(),
+                    "子载波数": self.wave_ofdm_time_nsc.value(),
+                    "过采样率": self.wave_ofdm_time_sps.value(),
+                    "CP长度": self.wave_ofdm_time_cp.value(),
+                },
+                "OFDM频谱热图": {
+                    "典型符号": self.wave_ofdm_heat_modulation.currentText(),
+                    "扫描符号数": self.wave_ofdm_heat_symbols.value(),
+                    "起始子载波": self.wave_ofdm_heat_start.value(),
+                    "扫描步长": self.wave_ofdm_heat_step.value(),
+                    "横轴边距": self.wave_ofdm_heat_margin.value(),
+                    "色阶下限dB": self.wave_ofdm_heat_floor.value(),
+                },
+                "OFDM功率谱": {
+                    "典型符号": self.wave_ofdm_spectrum_modulation.currentText(),
+                    "纵坐标": self.wave_ofdm_spectrum_scale.currentText(),
+                    "子载波数": self.wave_ofdm_spectrum_nsc.value(),
+                    "过采样率": self.wave_ofdm_spectrum_sps.value(),
+                    "CP长度": self.wave_ofdm_spectrum_cp.value(),
+                    "随机OFDM符号数": self.wave_ofdm_spectrum_symbols.value(),
+                    "随机种子": self.wave_ofdm_spectrum_seed.value(),
+                },
             },
             "编码类型": self.codec_type_combo.currentText(),
             "精度验证": {
