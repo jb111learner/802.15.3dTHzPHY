@@ -1,7 +1,7 @@
 """
-功能测试服务 — 波形测试 / 编码技术测试 / 浮点精度验证
+功能测试服务 — 调制方式测试 / 波形测试 / 编码技术测试 / 浮点精度验证
 
-三个测试函数均为纯函数（返回含 PNG 字节、校验结果与表格数据的 dict），
+四个测试函数均为纯函数（返回含 PNG 字节、校验结果与表格数据的 dict），
 由 FunctionalTestWorker(QThread) 在后台线程中执行，结果经 Qt 信号回传页面。
 PHY 模块 import 全部放在函数内部（惰性加载），galois 仅在 RSCoder 构造时导入。
 """
@@ -67,7 +67,97 @@ def _new_result(test_type: str) -> Dict[str, Any]:
 
 
 # =====================================================================
-# 1. 波形测试
+# 1. 调制方式测试
+# =====================================================================
+
+def run_modulation_test(modulation: str = "QPSK", num_symbols: int = 1024,
+                        show_points: int = 1024,
+                        random_seed: int = 2026) -> Dict[str, Any]:
+    """调用真实发射端调制器生成符号并绘制星座图，供人工检查。"""
+    from params.PHYParams import PHYParams
+    from transmitter.Modulator import THzModulator
+
+    t0 = time.perf_counter()
+    result = _new_result("modulation")
+    modulation_map = {"QPSK": 2, "16QAM": 4, "64QAM": 6}
+    mod_name = str(modulation).upper()
+    if mod_name not in modulation_map:
+        raise ValueError(f"不支持的调制方式：{modulation}，仅支持 QPSK / 16QAM / 64QAM")
+
+    n_symbols = int(num_symbols)
+    n_show = int(show_points)
+    seed = int(random_seed)
+    if n_symbols <= 0:
+        raise ValueError("调制符号数必须大于 0")
+    if n_show <= 0:
+        raise ValueError("星座图显示点数必须大于 0")
+    if seed < 0:
+        raise ValueError("随机种子不能小于 0")
+
+    ncbps = modulation_map[mod_name]
+    bit_count = n_symbols * ncbps
+    rng = np.random.default_rng(seed)
+    bits = rng.integers(0, 2, bit_count, dtype=np.uint8)
+
+    params = PHYParams()
+    params.update(MCS=1, NCBPS=ncbps, scramble=False)
+    bit_rate = 30e9
+    modulated = THzModulator(params).modulate({
+        "signal_stream": bits,
+        "sample_rate_Hz": bit_rate,
+        "duration_seconds": bit_count / bit_rate,
+        "signal_length": bit_count,
+        "padding_bit_num": 0,
+        "frame_bit_num": bit_count,
+        "frame_num": 1,
+    })
+    symbols = np.asarray(modulated["signal_stream"], dtype=np.complex128)
+    shown = symbols[:min(n_show, len(symbols))]
+    average_power = float(np.mean(np.abs(symbols) ** 2))
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(6.4, 5.2))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+    ax.scatter(shown.real, shown.imag, s=18, alpha=0.65,
+               color=PLOT_COLORS[0], edgecolors="none")
+    ax.axhline(0, color="#7C869B", lw=0.7)
+    ax.axvline(0, color="#7C869B", lw=0.7)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("同相分量 I")
+    ax.set_ylabel("正交分量 Q")
+    ax.set_title(f"{mod_name} 发射端星座图（显示 {len(shown)} 个符号）")
+    ax.grid(True)
+    fig.tight_layout()
+
+    result["plots"] = [{"title": "发射端星座图", "png": _figure_to_png(fig)}]
+    result["summary"] = [
+        {"label": "调制方式", "value": mod_name},
+        {"label": "每符号比特数", "value": str(ncbps)},
+        {"label": "输入比特数", "value": str(bit_count)},
+        {"label": "输出符号数", "value": str(len(symbols))},
+        {"label": "星座图显示点数", "value": str(len(shown))},
+        {"label": "平均符号功率", "value": f"{average_power:.6f}"},
+        {"label": "随机种子", "value": str(seed)},
+    ]
+    result["data"] = {
+        "modulation": mod_name,
+        "ncbps": ncbps,
+        "input_bit_count": bit_count,
+        "output_symbol_count": len(symbols),
+        "shown_symbol_count": len(shown),
+        "average_symbol_power": average_power,
+    }
+    # ok 仅表示任务正常生成结果，不代表星座质量的人工验收结论。
+    result["ok"] = True
+    result["elapsed_ms"] = (time.perf_counter() - t0) * 1e3
+    result["summary"].append(
+        {"label": "调制耗时", "value": f"{result['elapsed_ms']:.2f} ms"})
+    return result
+
+
+# =====================================================================
+# 2. 波形测试
 # =====================================================================
 
 def _count_contiguous_regions(mask: np.ndarray) -> int:
@@ -703,7 +793,7 @@ def run_waveform_test(link_mode: str = "sc-fde", filter_length: int = 32,
 
 
 # =====================================================================
-# 2. 编码技术测试（RS / LDPC）
+# 3. 编码技术测试（RS / LDPC）
 # =====================================================================
 
 def _gf_str(arr: np.ndarray, max_show: int = 40) -> str:
@@ -1076,7 +1166,9 @@ class FunctionalTestWorker(QThread):
 
     def run(self) -> None:
         try:
-            if self.test_type == "waveform":
+            if self.test_type == "modulation":
+                result = run_modulation_test(**self.payload)
+            elif self.test_type == "waveform":
                 result = run_waveform_test(**self.payload)
             elif self.test_type == "codec":
                 result = run_codec_test(self.payload.get("config_text", ""))

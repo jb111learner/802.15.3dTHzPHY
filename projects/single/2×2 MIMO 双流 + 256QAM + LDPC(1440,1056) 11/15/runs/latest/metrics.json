@@ -1,0 +1,11 @@
+{
+  "SNRdB": 34.0,
+  "ber": 0.0,
+  "raw_throughput_bps": 87638565440.14905,
+  "effective_throughput_bps": 87638565440.14905,
+  "spectral_efficiency_bps_per_hz": 2.9212855146716348,
+  "EbN0_dB": 29.344259947598665,
+  "mimo_channel_nmse": null,
+  "mimo_mean_condition_number": null,
+  "theoretical_net_rate_bps": 87462039045.55315
+}

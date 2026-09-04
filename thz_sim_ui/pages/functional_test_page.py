@@ -1,7 +1,7 @@
 """
-功能测试页面 — 波形测试 / 编码技术测试 / 浮点精度验证。
+功能测试页面 — 调制方式测试 / 波形测试 / 编码技术测试 / 浮点精度验证。
 
-三个功能可独立选择运行：页面自带「运行测试」按钮，测试在后台
+四个功能可独立选择运行：页面自带「运行测试」按钮，测试在后台
 FunctionalTestWorker(QThread) 中执行，结果经 Qt 信号回传并渲染到右侧结果栏。
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ _PLACEHOLDER_STYLE = (
 )
 _MONO_STYLE = "font-family: Consolas, monospace;"
 
-_TEST_KEYS = ("waveform", "codec", "precision")
+_TEST_KEYS = ("modulation", "waveform", "codec", "precision")
 
 
 class _UpdatableSummaryCard(TextSummaryCard):
@@ -55,9 +55,10 @@ class _UpdatableSummaryCard(TextSummaryCard):
 
 class FunctionalTestPage(WorkbenchPage):
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("功能测试", "链路模块功能验证：波形 / 编码 / 浮点精度。", parent)
+        super().__init__("功能测试", "链路模块功能验证：调制 / 波形 / 编码 / 浮点精度。", parent)
         self._worker: Optional[FunctionalTestWorker] = None
         self._codec_detail_lines: List[str] = []
+        self._modulation_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
         self._wave_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
 
         self._build_left_panel()
@@ -67,7 +68,8 @@ class FunctionalTestPage(WorkbenchPage):
     # ==================== 左栏 ====================
 
     def _build_left_panel(self) -> None:
-        radio_box = make_radio_group("功能选择", [
+        radio_box = make_radio_group("测试项目选择", [
+            "调制方式测试 (QPSK/16QAM/64QAM)",
             "波形测试 (SC/OFDM)",
             "编码技术测试 (RS/LDPC)",
             "浮点精度验证",
@@ -78,6 +80,7 @@ class FunctionalTestPage(WorkbenchPage):
         self.add_left_widget(radio_box)
 
         self.param_stack = QStackedWidget()
+        self.param_stack.addWidget(self._build_modulation_params())
         self.param_stack.addWidget(self._build_waveform_params())
         self.param_stack.addWidget(self._build_codec_params())
         self.param_stack.addWidget(self._build_precision_params())
@@ -96,6 +99,25 @@ class FunctionalTestPage(WorkbenchPage):
         self.add_left_widget(run_row)
 
         self.add_left_stretch()
+
+    def _build_modulation_params(self) -> QWidget:
+        self.modulation_type = combo(["QPSK", "16QAM", "64QAM"])
+        self.modulation_symbols = spin(64, 1048576, 1024)
+        self.modulation_show = spin(64, 10000, 1024)
+        self.modulation_seed = spin(0, 2147483647, 2026)
+        box = make_form_group("调制方式测试参数", [
+            ("调制方式", self.modulation_type),
+            ("调制符号数", self.modulation_symbols),
+            ("星座图显示点数", self.modulation_show),
+            ("随机种子", self.modulation_seed),
+        ])
+        hint = QLabel(
+            "调用发射端调制器生成调制符号并展示实际输出星座图；"
+            "星座图显示点数可小于调制符号数，随机种子用于生成输入比特流。"
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("CardHint")
+        return self._wrap_with_hint(box, hint)
 
     def _build_waveform_params(self) -> QWidget:
         self.wave_mode = combo(["SC", "OFDM"])
@@ -193,6 +215,7 @@ class FunctionalTestPage(WorkbenchPage):
 
     def _build_right_panel(self) -> None:
         self.result_stack = QStackedWidget()
+        self.result_stack.addWidget(self._build_modulation_results())
         self.result_stack.addWidget(self._build_waveform_results())
         self.result_stack.addWidget(self._build_codec_results())
         self.result_stack.addWidget(self._build_precision_results())
@@ -204,6 +227,29 @@ class FunctionalTestPage(WorkbenchPage):
         label.setWordWrap(True)
         label.setStyleSheet(_PLACEHOLDER_STYLE)
         return label
+
+    def _build_modulation_results(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        self.modulation_placeholder = self._make_placeholder(
+            "点击左侧「运行测试」生成发射端星座图")
+        layout.addWidget(self.modulation_placeholder)
+
+        self.modulation_card = CardWidget("发射端星座图")
+        self.modulation_plot = QLabel()
+        self.modulation_plot.setAlignment(Qt.AlignCenter)
+        self.modulation_plot.setMinimumHeight(320)
+        self.modulation_card.layout.addWidget(self.modulation_plot)
+        self.modulation_card.hide()
+        layout.addWidget(self.modulation_card)
+
+        self.modulation_summary_card = _UpdatableSummaryCard("调制信息", ["尚未运行"])
+        layout.addWidget(self.modulation_summary_card)
+        layout.addStretch(1)
+        return page
 
     def _build_waveform_results(self) -> QWidget:
         page = QWidget()
@@ -342,6 +388,13 @@ class FunctionalTestPage(WorkbenchPage):
         self._worker.start()
 
     def _build_payload(self, test_type: str) -> dict:
+        if test_type == "modulation":
+            return {
+                "modulation": self.modulation_type.currentText(),
+                "num_symbols": self.modulation_symbols.value(),
+                "show_points": self.modulation_show.value(),
+                "random_seed": self.modulation_seed.value(),
+            }
         if test_type == "waveform":
             return {
                 "link_mode": "sc-fde" if self.wave_mode.currentText() == "SC" else "ofdm",
@@ -362,7 +415,9 @@ class FunctionalTestPage(WorkbenchPage):
 
     def _on_result(self, test_type: str, result: dict) -> None:
         self._set_badge("已完成" if result.get("ok") else "已失败")
-        if test_type == "waveform":
+        if test_type == "modulation":
+            self._render_modulation(result)
+        elif test_type == "waveform":
             self._render_waveform(result)
         elif test_type == "codec":
             self._render_table_result(result, self.codec_table,
@@ -374,6 +429,7 @@ class FunctionalTestPage(WorkbenchPage):
     def _on_failed(self, test_type: str, message: str) -> None:
         self._set_badge("已失败")
         target = {
+            "modulation": self.modulation_placeholder,
             "waveform": self.wave_placeholder,
             "codec": self.codec_placeholder,
             "precision": self.prec_placeholder,
@@ -397,7 +453,14 @@ class FunctionalTestPage(WorkbenchPage):
     # ==================== 结果渲染 ====================
 
     def _reset_results(self, test_type: str) -> None:
-        if test_type == "waveform":
+        if test_type == "modulation":
+            self.modulation_placeholder.setText("运行中，请稍候…")
+            self.modulation_placeholder.show()
+            self.modulation_card.hide()
+            self.modulation_plot.clear()
+            self._modulation_pixmaps = []
+            self.modulation_summary_card.set_lines(["运行中…"])
+        elif test_type == "waveform":
             self.wave_placeholder.setText("运行中，请稍候…")
             self.wave_placeholder.show()
             self._clear_wave_cards()
@@ -415,6 +478,19 @@ class FunctionalTestPage(WorkbenchPage):
             self.prec_placeholder.show()
             self.prec_table.setRowCount(0)
             self.prec_summary_card.set_lines(["运行中…"])
+
+    def _render_modulation(self, result: dict) -> None:
+        self._modulation_pixmaps = []
+        plots = result.get("plots", [])
+        if plots:
+            pm = QPixmap()
+            if pm.loadFromData(plots[0].get("png", b""), "PNG"):
+                self._modulation_pixmaps.append((self.modulation_plot, pm))
+                self.modulation_card.show()
+        self.modulation_placeholder.hide()
+        self._apply_result_pixmaps(self._modulation_pixmaps)
+        lines = [f"{item['label']}：{item['value']}" for item in result.get("summary", [])]
+        self.modulation_summary_card.set_lines(lines or ["-"])
 
     def _clear_wave_cards(self) -> None:
         while self.wave_cards_layout.count():
@@ -446,7 +522,11 @@ class FunctionalTestPage(WorkbenchPage):
         self.wave_checks_card.set_lines(lines or ["无校验项"])
 
     def _apply_wave_pixmaps(self) -> None:
-        for label, pm in self._wave_pixmaps:
+        self._apply_result_pixmaps(self._wave_pixmaps)
+
+    @staticmethod
+    def _apply_result_pixmaps(pixmaps: List[tuple]) -> None:
+        for label, pm in pixmaps:
             size = label.size()
             if size.width() > 0 and size.height() > 0:
                 label.setPixmap(pm.scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -476,6 +556,7 @@ class FunctionalTestPage(WorkbenchPage):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._apply_result_pixmaps(self._modulation_pixmaps)
         self._apply_wave_pixmaps()
 
     # ==================== 参数收集（与其他页面对齐） ====================
@@ -483,6 +564,12 @@ class FunctionalTestPage(WorkbenchPage):
     def get_all_parameters(self) -> dict:
         return {
             "功能选择": self._selected_test(),
+            "调制方式测试": {
+                "调制方式": self.modulation_type.currentText(),
+                "调制符号数": self.modulation_symbols.value(),
+                "星座图显示点数": self.modulation_show.value(),
+                "随机种子": self.modulation_seed.value(),
+            },
             "波形测试": {
                 "链路模式": self.wave_mode.currentText(),
                 "滚降滤波器长度": self.wave_filter_len.value(),
