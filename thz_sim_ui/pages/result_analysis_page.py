@@ -188,12 +188,11 @@ class ResultAnalysisPage(WorkbenchPage):
             ("SNR", f"{_fmt(data.get('SNRdB'))} dB"),
             ("Eb/N0", f"{_fmt(eb_n0_db)} dB"),
             ("BER", _fmt(data.get("ber"), ".3e")),
-            ("理论净有效速率",
-             f"{_fmt(_th / 1e9 if (_th := data.get('theoretical_net_rate_bps')) else None, '.2f')} Gbps"),
-            ("实际有效速率",
-             f"{_fmt((data.get('effective_throughput_bps') or 0) / 1e9, '.2f')} Gbps"),
-            ("原始吞吐率",
-             f"{_fmt((data.get('raw_throughput_bps') or 0) / 1e9, '.2f')} Gbps"),
+            ("理论速率",
+             f"{_fmt(_th / 1e9 if (_th := (data.get('theoretical_rate_bps') or data.get('theoretical_net_rate_bps'))) else None, '.2f')} Gbps"),
+            ("实际速率",
+             f"{_fmt((_actual or 0) / 1e9, '.2f')} Gbps"
+             if (_actual := (data.get('actual_rate_bps') or data.get('raw_throughput_bps'))) is not None else "-"),
             ("实际谱效",
              f"{_fmt(data.get('spectral_efficiency_bps_per_hz'))} bit/s/Hz"),
         ]
@@ -207,15 +206,13 @@ class ResultAnalysisPage(WorkbenchPage):
         grid = TwoColumnMetricGrid(rows)
         notes = TextSummaryCard("统计计算过程说明", [
             "BER = 错误比特数 / 比较比特总数（发端信息比特 vs 收端译码比特）",
-            "Eb/N0 = SNR − 10log₁₀(名义谱效)，名义谱效 = 原始吞吐率 / 标称带宽",
-            "原始吞吐率（实测）= 传输信息比特总数（含帧补零）/ 波形实测总时长",
-            "实际有效速率（实测）= 原始吞吐率 × (1 − BER)",
-            "实际谱效（实测）= 实际有效速率 / 标称带宽",
-            "理论净有效速率 = Rs × log₂M × 空间流数 × ηc × ηf"
-            "（ηc=码率；ηf=净数据符号/帧总符号，按帧结构推导，与参数配置页同定义）",
+            "Eb/N0 = SNR − 10log₁₀(实际谱效)，实际谱效 = 实际速率 / 标称带宽",
+            "实际速率 = 实际发送的信息比特总数 / 波形实测总时长",
+            "理论速率 = Rs × log₂M × 空间流数 × ηc × ηf"
+            "（ηc=码率；ηf=数据符号/帧总符号，按帧结构推导，与参数配置页同定义）",
             "MIMO 帧结构：每帧 = 保护 64 + (2 SYNC + 2 训练 + 数据块) × (n_sc+cp)，"
             "逐帧均含完整前导开销（ηf 按单流时间线计算）",
-            "BER = 0 时实际有效速率 ≈ 理论净有效速率；差异来源为帧补零",
+            "实际速率与理论速率的差异主要来源于帧取整和数据补零",
             "MIMO 指标仅在启用 MIMO 仿真时显示",
         ])
         self._metrics_tab_layout.addWidget(grid, 0, 0, 1, 2)

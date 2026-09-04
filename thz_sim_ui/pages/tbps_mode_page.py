@@ -35,7 +35,7 @@ class TbpsModePage(WorkbenchPage):
             ('天线与波束参数', self.antenna_beam),
             ('信道条件选择', self.channel_condition),
         ]))
-        self.add_left_widget(PlaceholderList('专项目标', ['理论峰值速率', '净有效速率', '是否达到 1Tbps', '关键瓶颈提示']))
+        self.add_left_widget(PlaceholderList('专项目标', ['理论速率', '实际速率', '是否达到 1Tbps', '关键瓶颈提示']))
         self.add_left_stretch()
 
         tabs = QTabWidget()
@@ -43,7 +43,7 @@ class TbpsModePage(WorkbenchPage):
         tabs.addTab(self._double_chart('波形结构', '波形结构示意', '资源消耗', 'line', 'bar'), '波形结构')
         tabs.addTab(self._double_chart('链路预算', '链路预算', '可行性分析', 'bar', 'line'), '链路预算')
         tabs.addTab(self._double_chart('资源消耗', '资源消耗', '对比评估', 'bar', 'line'), '资源消耗')
-        tabs.addTab(TextSummaryCard('方案优选建议', ['当前参数下理论峰值速率可达 1.18 Tbps。', '瓶颈主要集中在相位噪声和导频开销。', '建议进一步比较新波形 A 与自定义波形在复杂信道下的净速率。']), '对比评估')
+        tabs.addTab(TextSummaryCard('方案优选建议', ['当前参数下理论速率可达 1.18 Tbps。', '瓶颈主要集中在相位噪声和导频开销。', '建议进一步比较新波形 A 与自定义波形的实际速率。']), '对比评估')
         self.add_right_widget(tabs)
 
     def _rate_tab(self) -> QWidget:
@@ -52,8 +52,8 @@ class TbpsModePage(WorkbenchPage):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
         layout.addWidget(TwoColumnMetricGrid([
-            ('理论峰值速率', '1.18 Tbps'),
-            ('净有效速率', '0.93 Tbps'),
+            ('理论速率', '1.18 Tbps'),
+            ('实际速率', '0.93 Tbps'),
             ('是否达到 1Tbps', '理论可达 / 净速率待优化'),
             ('关键瓶颈', '导频开销 + 相位噪声'),
         ]), 0, 0, 1, 2)

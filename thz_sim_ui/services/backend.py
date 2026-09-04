@@ -145,8 +145,8 @@ def _execute_batch_point(
         else float('nan')
     )
     spectral_efficiency_bps_per_hz = (
-        effective_throughput_bps / bandwidth
-        if np.isfinite(effective_throughput_bps) and bandwidth > 0
+        raw_throughput_bps / bandwidth
+        if np.isfinite(raw_throughput_bps) and bandwidth > 0
         else float('nan')
     )
     # Eb/N0 用名义谱效（raw_throughput / bandwidth），不含 BER 修正，
@@ -168,6 +168,7 @@ def _execute_batch_point(
         'total_errors': total_errors,
         'total_frames': total_frames,
         'raw_throughput_bps': raw_throughput_bps,
+        'actual_rate_bps': raw_throughput_bps,
         'effective_throughput_bps': effective_throughput_bps,
         'spectral_efficiency_bps_per_hz': spectral_efficiency_bps_per_hz,
         'EbN0_dB': eb_n0_db,
@@ -1418,7 +1419,7 @@ class BackendService(QObject):
 
     @staticmethod
     def _compute_theoretical_net_rate(params):
-        """按帧结构推导的理论净有效速率（与参数配置页同一定义）。
+        """按帧结构推导理论物理层速率（保留旧方法名以兼容调用方）。
 
         R = Rs × log₂M × 空间流数 × ηc × ηf
           ηc  = k/n（RS 或 LDPC 码率）
@@ -1429,49 +1430,8 @@ class BackendService(QObject):
         if params is None:
             return None
         try:
-            nbps = params.get("NCBPS")
-            rs = params.get("sample_rate")
-            if nbps is None or not rs:
-                return None
-            n_streams = (
-                int(params.get("num_spatial_streams", 1))
-                if params.get("enable_mimo") else 1
-            )
-            code_type = str(params.get("code_type", "")).upper()
-            if code_type == "RS":
-                k = float(params.get("rs_packet_size", 11))
-                n = k + float(params.get("rs_nsym", 4))
-            else:  # LDPC
-                from utils.LDPCMatrix import ieee802153d_1440_dimensions
-                n, k, _ = ieee802153d_1440_dimensions(
-                    str(params.get("ldpc_standard_rate", "14/15"))
-                )
-            eta_c = k / n if n > 0 else 1.0
-            cp = int(params.get("gi_length", 32))
-            preamble_len = 3328 if str(params.get("Preamble_type")) == "short" else 5120
-            link_mode = str(params.get("link_mode", "")).lower()
-            if link_mode == "ofdm":
-                n_sc = int(params.get("subwave_num", 512))
-                if params.get("enable_mimo"):
-                    # 逐帧组帧：每帧 = 保护 64 + (4 + ceil(n_data/2)) × (n_sc+cp)
-                    import math as _math
-                    n_sym = int(params.get("subframe_ofdm_num", 48))
-                    n_pilots = len(list(params.get("pilot_block_indexes", [])))
-                    n_data_sym = n_sym - n_pilots
-                    blocks_per_stream = _math.ceil(n_data_sym / 2)
-                    n_frame = 64 + (2 + 2 + blocks_per_stream) * (n_sc + cp)
-                    eta_f = (n_data_sym * n_sc / 2.0) / n_frame if n_frame > 0 else 0.0
-                else:
-                    n_sym = int(params.get("subframe_ofdm_num", 48))
-                    n_pilots = len(list(params.get("pilot_block_indexes", [])))
-                    n_frame = preamble_len + n_sym * (n_sc + cp)
-                    eta_f = (n_sym - n_pilots) * n_sc / n_frame if n_frame > 0 else 0.0
-            else:  # sc-fde
-                n_sc = int(params.get("subframe_length", 480))
-                n_sym = int(params.get("subframe_num", 51))
-                n_frame = preamble_len + n_sym * (n_sc + cp)
-                eta_f = n_sc * n_sym / n_frame if n_frame > 0 else 0.0
-            return float(rs) * float(nbps) * n_streams * eta_c * eta_f
+            from thz_sim_ui.services.result_utils import compute_theoretical_phy_rate
+            return compute_theoretical_phy_rate(params)
         except Exception:
             return None
 
@@ -1522,10 +1482,12 @@ class BackendService(QObject):
                 nominal_se = raw_rate / bandwidth
                 payload['EbN0_dB'] = snr_value - 10.0 * np.log10(nominal_se)
 
-        # 理论净有效速率（帧结构推导，与参数配置页同一定义）
-        payload['theoretical_net_rate_bps'] = _sanitize(
+        # 新字段为规范口径；旧字段保留，供历史版本读取。
+        payload['theoretical_rate_bps'] = _sanitize(
             BackendService._compute_theoretical_net_rate(params)
         )
+        payload['actual_rate_bps'] = payload['raw_throughput_bps']
+        payload['theoretical_net_rate_bps'] = payload['theoretical_rate_bps']
 
         with open(project_path / 'metrics.json', 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -1765,8 +1727,8 @@ class BackendService(QObject):
 
     def get_project_summary(self) -> Dict[str, Any]:
         return {
-            '理论峰值速率': '1.18 Tbps',
-            '净有效速率': '0.93 Tbps',
+            '理论速率': '1.18 Tbps',
+            '实际速率': '0.93 Tbps',
             '频谱占用': '38.4 GHz',
             '运算复杂度': 'High',
             '并发任务数': '8',

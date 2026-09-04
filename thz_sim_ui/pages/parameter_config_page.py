@@ -395,8 +395,8 @@ class ParameterConfigPage(WorkbenchPage):
         R = R0 * p["eta"]
 
         metrics = TwoColumnMetricGrid([
-            ("理论峰值速率", f"{R0 / 1e9:.2f} Gbps"),
-            ("净有效速率", f"{R / 1e9:.2f} Gbps"),
+            ("理论速率", f"{R / 1e9:.2f} Gbps"),
+            ("实际速率", "运行仿真后测量"),
             ("带宽设置", f"{p['bandwidth']:.1f} GHz"),
             ("理论谱效", f"{p['eta_se_theory']:.2f} bit/s/Hz"),
         ])
@@ -424,19 +424,19 @@ class ParameterConfigPage(WorkbenchPage):
 
         R0 = p["rs"] * p["nbps"] * p["n_streams"]
         R = R0 * p["eta"]
-        peak_card = TextSummaryCard("理论峰值速率 R₀", [
+        peak_card = TextSummaryCard("理论速率计算参数", [
             f"Rs = {p['rs']/1e6:.0f} MBd",
             f"log₂M = {p['nbps']} bits/sym",
             f"空间流数 = {p['n_streams']}" if p["is_mimo"] else "空间流数 = 1",
-            f"R₀ = {R0/1e9:.2f} Gbps",
+            f"调制层速率 = {R0/1e9:.2f} Gbps",
         ])
-        net_card = TextSummaryCard("净有效速率 R", [
+        net_card = TextSummaryCard("理论速率 R", [
             f"前导码: {p['preamble']} → {p['preamble_len']} symbols" if not p["is_mimo"] else "帧结构: 保护 + 2 SYNC + 2 训练 + 数据块 ×2 流",
             f"编码效率 ηc = {p['eta_c']:.4f}",
             f"帧效率 ηf = {p['eta_f']:.4f}"
             + ("（单流时间线，含逐帧 SYNC/训练开销）" if p["is_mimo"] else ""),
             f"综合效率 η = {p['eta']:.4f}",
-            f"R = {R/1e9:.2f} Gbps（≤ R₀）",
+            f"R = {R/1e9:.2f} Gbps",
         ])
         self._rate_layout.addWidget(peak_card, 0, 0)
         self._rate_layout.addWidget(net_card, 0, 1)

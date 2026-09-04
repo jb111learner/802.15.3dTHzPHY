@@ -1,7 +1,7 @@
 """
-功能测试页面 — 调制方式测试 / 波形测试 / 编码技术测试 / 浮点精度验证。
+功能测试页面 — 调制、波形、编码、浮点精度、物理层速率与功能校准。
 
-四个功能可独立选择运行：页面自带「运行测试」按钮，测试在后台
+七个功能可独立选择运行：页面自带「运行测试」按钮，测试在后台
 FunctionalTestWorker(QThread) 中执行，结果经 Qt 信号回传并渲染到右侧结果栏。
 """
 from __future__ import annotations
@@ -44,7 +44,10 @@ _PLACEHOLDER_STYLE = (
 )
 _MONO_STYLE = "font-family: Consolas, monospace;"
 
-_TEST_KEYS = ("modulation", "waveform", "codec", "precision")
+_TEST_KEYS = (
+    "modulation", "waveform", "codec", "precision",
+    "single_link_rate", "total_phy_rate", "function_calibration",
+)
 
 
 class _UpdatableSummaryCard(TextSummaryCard):
@@ -60,12 +63,13 @@ class _UpdatableSummaryCard(TextSummaryCard):
 
 class FunctionalTestPage(WorkbenchPage):
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("功能测试", "链路模块功能验证：调制 / 波形 / 编码 / 浮点精度。", parent)
+        super().__init__("功能测试", "链路模块功能验证：调制 / 波形 / 编码 / 精度 / 速率 / 校准。", parent)
         self._worker: Optional[FunctionalTestWorker] = None
         self._codec_detail_lines: List[str] = []
         self._codec_case_results: List[dict] = []
         self._modulation_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
         self._wave_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
+        self._calibration_pixmaps: List[tuple] = []
 
         self._build_left_panel()
         self._build_right_panel()
@@ -79,6 +83,9 @@ class FunctionalTestPage(WorkbenchPage):
             "波形测试 (单载波/OFDM)",
             "编码技术测试 (RS/LDPC)",
             "浮点精度验证",
+            "单链路物理层速率测试 (≥50 Gbps)",
+            "总物理层速率测试 (≥0.5 Tbps)",
+            "功能校准测试",
         ])
         self.test_radios: List[QRadioButton] = radio_box.findChildren(QRadioButton)
         for rb in self.test_radios:
@@ -90,6 +97,9 @@ class FunctionalTestPage(WorkbenchPage):
         self.param_stack.addWidget(self._build_waveform_params())
         self.param_stack.addWidget(self._build_codec_params())
         self.param_stack.addWidget(self._build_precision_params())
+        self.param_stack.addWidget(self._build_single_rate_params())
+        self.param_stack.addWidget(self._build_total_rate_params())
+        self.param_stack.addWidget(self._build_calibration_params())
         self.add_left_widget(self.param_stack)
 
         self.run_button = QPushButton("运行测试")
@@ -102,7 +112,7 @@ class FunctionalTestPage(WorkbenchPage):
         run_layout.addWidget(self.run_button)
         run_layout.addWidget(self.status_badge)
         run_layout.addStretch(1)
-        self.add_left_widget(run_row)
+        self.add_left_footer_widget(run_row)
 
         self.add_left_stretch()
 
@@ -345,6 +355,59 @@ class FunctionalTestPage(WorkbenchPage):
         hint.setObjectName("CardHint")
         return self._wrap_with_hint(box, hint)
 
+    def _build_single_rate_params(self) -> QWidget:
+        self.single_rate_mode = combo(["OFDM", "SC"])
+        self.single_rate_modulation = combo(["64QAM", "QPSK", "16QAM", "256QAM"])
+        self.single_rate_code = combo(["LDPC", "RS"])
+        self.single_rate_symbol_rate = dspin(1.0, 200.0, 30.0, decimals=1, suffix=" GHz")
+        self.single_rate_duration = dspin(1e-7, 1e-4, 1e-6, decimals=7, suffix=" s")
+        self.single_rate_threshold = dspin(1.0, 1000.0, 50.0, decimals=1, suffix=" Gbps")
+        box = make_form_group("单链路物理层速率参数", [
+            ("链路模式", self.single_rate_mode),
+            ("调制方式", self.single_rate_modulation),
+            ("编码方式", self.single_rate_code),
+            ("符号率", self.single_rate_symbol_rate),
+            ("测试时长", self.single_rate_duration),
+            ("验收门限", self.single_rate_threshold),
+        ])
+        hint = QLabel("判定口径：实际速率 = 实际发送的信息比特数 / 实际发射波形持续时间。")
+        hint.setWordWrap(True)
+        hint.setObjectName("CardHint")
+        return self._wrap_with_hint(box, hint)
+
+    def _build_total_rate_params(self) -> QWidget:
+        self.total_rate_configuration = combo([
+            "256QAM / 1024 子载波 / 2×2 MIMO / LDPC(11/15)"
+        ])
+        self.total_rate_configuration.setEnabled(False)
+        self.total_rate_threshold = dspin(0.1, 2.0, 0.5, decimals=3, suffix=" Tbps")
+        box = make_form_group("总物理层速率固定验收配置", [
+            ("PHY 配置", self.total_rate_configuration),
+            ("验收门限", self.total_rate_threshold),
+        ])
+        hint = QLabel(
+            "固定采用 60 GBd、256QAM、1024 子载波、2×2 双空间流、"
+            "LDPC(1440,1056) 11/15；同时检查 LDPC 整帧零补齐。"
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("CardHint")
+        return self._wrap_with_hint(box, hint)
+
+    def _build_calibration_params(self) -> QWidget:
+        self.calibration_bits = spin(10000, 10000000, 200000)
+        self.calibration_seed = spin(0, 2147483647, 2026)
+        box = make_form_group("功能校准参数", [
+            ("每个 BER 点比特数", self.calibration_bits),
+            ("随机种子", self.calibration_seed),
+        ])
+        hint = QLabel(
+            "QPSK、16QAM、64QAM 与 AWGN 理论 BER 曲线比较；"
+            "LDPC(14/15) 和 RS(15,11) 与工程内 MATLAB 固定参考结果比较。"
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("CardHint")
+        return self._wrap_with_hint(box, hint)
+
     @staticmethod
     def _wrap_with_hint(box: QWidget, hint: QWidget) -> QWidget:
         wrap = QWidget()
@@ -353,6 +416,7 @@ class FunctionalTestPage(WorkbenchPage):
         layout.setSpacing(8)
         layout.addWidget(box)
         layout.addWidget(hint)
+        wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         return wrap
 
     # ==================== 右栏 ====================
@@ -363,6 +427,11 @@ class FunctionalTestPage(WorkbenchPage):
         self.result_stack.addWidget(self._build_waveform_results())
         self.result_stack.addWidget(self._build_codec_results())
         self.result_stack.addWidget(self._build_precision_results())
+        self.result_stack.addWidget(self._build_table_results(
+            "single_rate", "单链路速率测试", ["指标", "测量值", "门限/参考", "判定"]))
+        self.result_stack.addWidget(self._build_table_results(
+            "total_rate", "总物理层速率测试", ["指标", "测量值", "门限/参考", "判定"]))
+        self.result_stack.addWidget(self._build_calibration_results())
         self.add_right_widget(self.result_stack)
 
     def _make_placeholder(self, text: str) -> QLabel:
@@ -492,6 +561,45 @@ class FunctionalTestPage(WorkbenchPage):
         layout.addStretch(1)
         return page
 
+    def _build_table_results(self, prefix: str, title: str, columns: List[str]) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        placeholder = self._make_placeholder(f"点击左侧「运行测试」执行{title}")
+        table = self._make_table(columns)
+        summary = _UpdatableSummaryCard(title, ["尚未运行"])
+        setattr(self, f"{prefix}_placeholder", placeholder)
+        setattr(self, f"{prefix}_table", table)
+        setattr(self, f"{prefix}_summary_card", summary)
+        layout.addWidget(placeholder)
+        layout.addWidget(table, 1)
+        layout.addWidget(summary)
+        layout.addStretch(1)
+        return page
+
+    def _build_calibration_results(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        self.calibration_placeholder = self._make_placeholder(
+            "点击左侧「运行测试」执行调制与编码功能校准")
+        self.calibration_plot_card = CardWidget("BER 校准曲线")
+        self.calibration_plot = QLabel()
+        self.calibration_plot.setAlignment(Qt.AlignCenter)
+        self.calibration_plot.setMinimumHeight(340)
+        self.calibration_plot_card.layout.addWidget(self.calibration_plot)
+        self.calibration_plot_card.hide()
+        self.calibration_table = self._make_table(
+            ["校准项目", "样本/用例数", "最大对数偏差", "单调", "判定"])
+        self.calibration_summary_card = _UpdatableSummaryCard("功能校准总览", ["尚未运行"])
+        layout.addWidget(self.calibration_placeholder)
+        layout.addWidget(self.calibration_plot_card)
+        layout.addWidget(self.calibration_table, 1)
+        layout.addWidget(self.calibration_summary_card)
+        return page
+
     @staticmethod
     def _make_table(columns: List[str]) -> QTableWidget:
         table = QTableWidget(0, len(columns))
@@ -524,7 +632,11 @@ class FunctionalTestPage(WorkbenchPage):
         if idx == 2:
             self.param_stack.setMaximumHeight(760 if self.codec_advanced_box.isChecked() else 440)
         else:
-            self.param_stack.setMaximumHeight(16777215)
+            # QStackedWidget 默认按所有页面中最大的 sizeHint 请求高度，导致
+            # 参数较少的速率页出现大片空白；这里只采用当前页的紧凑高度。
+            current = self.param_stack.currentWidget()
+            current.adjustSize()
+            self.param_stack.setMaximumHeight(max(120, current.sizeHint().height()))
 
     def _demo_path(self) -> Path:
         name = "rs_demo.json" if "RS" in self.codec_type_combo.currentText() else "ldpc_demo.json"
@@ -731,10 +843,26 @@ class FunctionalTestPage(WorkbenchPage):
                 config_text = json.dumps(config, ensure_ascii=False, indent=2)
                 self.codec_editor.setPlainText(config_text)
             return {"config_text": config_text}
+        if test_type == "precision":
+            return {
+                "link_mode": "sc-fde" if self.prec_mode.currentText() == "SC" else "ofdm",
+                "duration": self.prec_duration.value(),
+                "SNRdB": self.prec_snr.value(),
+            }
+        if test_type == "single_link_rate":
+            return {
+                "link_mode": "sc-fde" if self.single_rate_mode.currentText() == "SC" else "ofdm",
+                "modulation": self.single_rate_modulation.currentText(),
+                "code_type": self.single_rate_code.currentText(),
+                "symbol_rate_ghz": self.single_rate_symbol_rate.value(),
+                "duration": self.single_rate_duration.value(),
+                "threshold_gbps": self.single_rate_threshold.value(),
+            }
+        if test_type == "total_phy_rate":
+            return {"threshold_tbps": self.total_rate_threshold.value()}
         return {
-            "link_mode": "sc-fde" if self.prec_mode.currentText() == "SC" else "ofdm",
-            "duration": self.prec_duration.value(),
-            "SNRdB": self.prec_snr.value(),
+            "bits_per_point": self.calibration_bits.value(),
+            "random_seed": self.calibration_seed.value(),
         }
 
     def _on_result(self, test_type: str, result: dict) -> None:
@@ -745,9 +873,17 @@ class FunctionalTestPage(WorkbenchPage):
             self._render_waveform(result)
         elif test_type == "codec":
             self._render_codec(result)
-        else:
+        elif test_type == "precision":
             self._render_table_result(result, self.prec_table,
                                       self.prec_placeholder, self.prec_summary_card)
+        elif test_type == "single_link_rate":
+            self._render_table_result(result, self.single_rate_table,
+                                      self.single_rate_placeholder, self.single_rate_summary_card)
+        elif test_type == "total_phy_rate":
+            self._render_table_result(result, self.total_rate_table,
+                                      self.total_rate_placeholder, self.total_rate_summary_card)
+        else:
+            self._render_calibration(result)
 
     def _on_failed(self, test_type: str, message: str) -> None:
         self._set_badge("已失败")
@@ -756,6 +892,9 @@ class FunctionalTestPage(WorkbenchPage):
             "waveform": self.wave_placeholder,
             "codec": self.codec_placeholder,
             "precision": self.prec_placeholder,
+            "single_link_rate": self.single_rate_placeholder,
+            "total_phy_rate": self.total_rate_placeholder,
+            "function_calibration": self.calibration_placeholder,
         }[test_type]
         target.setText(f"测试失败：{message}")
         target.show()
@@ -805,11 +944,29 @@ class FunctionalTestPage(WorkbenchPage):
             self.codec_detail_tabs.hide()
             self.codec_flow_label.setText("输入  →  分包 / 分块  →  编码  →  注入错误  →  译码  →  一致性比对")
             self.codec_summary_card.set_lines(["运行中…"])
-        else:
+        elif test_type == "precision":
             self.prec_placeholder.setText("运行中，请稍候…")
             self.prec_placeholder.show()
             self.prec_table.setRowCount(0)
             self.prec_summary_card.set_lines(["运行中…"])
+        elif test_type == "single_link_rate":
+            self.single_rate_placeholder.setText("运行中，请稍候…")
+            self.single_rate_placeholder.show()
+            self.single_rate_table.setRowCount(0)
+            self.single_rate_summary_card.set_lines(["运行中…"])
+        elif test_type == "total_phy_rate":
+            self.total_rate_placeholder.setText("运行中，请稍候…")
+            self.total_rate_placeholder.show()
+            self.total_rate_table.setRowCount(0)
+            self.total_rate_summary_card.set_lines(["运行中…"])
+        else:
+            self.calibration_placeholder.setText("运行中，请稍候…")
+            self.calibration_placeholder.show()
+            self.calibration_plot_card.hide()
+            self.calibration_plot.clear()
+            self._calibration_pixmaps = []
+            self.calibration_table.setRowCount(0)
+            self.calibration_summary_card.set_lines(["运行中…"])
 
     def _render_modulation(self, result: dict) -> None:
         self._modulation_pixmaps = []
@@ -883,6 +1040,19 @@ class FunctionalTestPage(WorkbenchPage):
         lines = [f"{item['label']}：{item['value']}" for item in result.get("summary", [])]
         summary_card.set_lines(lines or ["-"])
 
+    def _render_calibration(self, result: dict) -> None:
+        self._calibration_pixmaps = []
+        plots = result.get("plots", [])
+        if plots:
+            pm = QPixmap()
+            if pm.loadFromData(plots[0].get("png", b""), "PNG"):
+                self._calibration_pixmaps.append((self.calibration_plot, pm))
+                self.calibration_plot_card.show()
+        self._render_table_result(result, self.calibration_table,
+                                  self.calibration_placeholder,
+                                  self.calibration_summary_card)
+        self._apply_result_pixmaps(self._calibration_pixmaps)
+
     def _render_codec(self, result: dict) -> None:
         self.codec_placeholder.hide()
         self.codec_overview_card.show()
@@ -955,6 +1125,7 @@ class FunctionalTestPage(WorkbenchPage):
         super().resizeEvent(event)
         self._apply_result_pixmaps(self._modulation_pixmaps)
         self._apply_wave_pixmaps()
+        self._apply_result_pixmaps(self._calibration_pixmaps)
 
     # ==================== 参数收集（与其他页面对齐） ====================
 
@@ -1018,4 +1189,7 @@ class FunctionalTestPage(WorkbenchPage):
                 "时长": self.prec_duration.value(),
                 "SNRdB": self.prec_snr.value(),
             },
+            "单链路物理层速率测试": self._build_payload("single_link_rate"),
+            "总物理层速率测试": self._build_payload("total_phy_rate"),
+            "功能校准测试": self._build_payload("function_calibration"),
         }

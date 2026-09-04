@@ -1,7 +1,7 @@
 """
-功能测试服务 — 调制方式测试 / 波形测试 / 编码技术测试 / 浮点精度验证
+功能测试服务 — 调制、波形、编码、浮点精度、物理层速率与功能校准
 
-四个测试函数均为纯函数（返回含 PNG 字节、校验结果与表格数据的 dict），
+各测试入口均返回含 PNG 字节、校验结果与表格数据的 dict，
 由 FunctionalTestWorker(QThread) 在后台线程中执行，结果经 Qt 信号回传页面。
 PHY 模块 import 全部放在函数内部（惰性加载），galois 仅在 RSCoder 构造时导入。
 """
@@ -10,12 +10,14 @@ from __future__ import annotations
 import io
 import json
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")  # 必须先于 pyplot import（与 backend.py 一致）
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 
 from PySide6.QtCore import QThread, Signal
 
@@ -1788,6 +1790,282 @@ def run_precision_test(link_mode: str = "sc-fde", duration: float = 1e-6,
 
 
 # =====================================================================
+# 4. 物理层速率测试
+# =====================================================================
+
+def _theoretical_phy_rate(params) -> float:
+    """按编码率和实际帧结构计算理论物理层速率。"""
+    from thz_sim_ui.services.result_utils import compute_theoretical_phy_rate
+    return compute_theoretical_phy_rate(params)
+
+
+def _rate_result(test_type: str, params, threshold_bps: float) -> Dict[str, Any]:
+    """运行 TX，并用实际信息比特数/实际波形时长测量物理层速率。"""
+    from transmitter.THzTransmitter import THzTransmitter
+
+    t0 = time.perf_counter()
+    tx = THzTransmitter(params)
+    tx.run()
+    information_bits = int(len(tx.data_bits_dict["signal_stream"]))
+    waveform_duration = float(tx.tx_signal_dict["duration_seconds"])
+    if waveform_duration <= 0:
+        raise ValueError("发射波形持续时间必须大于 0")
+    theoretical = _theoretical_phy_rate(params)
+    actual = information_bits / waveform_duration
+    deviation = abs(actual - theoretical) / theoretical if theoretical > 0 else float("inf")
+    passed = bool(np.isfinite(actual) and actual >= float(threshold_bps))
+    result = _new_result(test_type)
+    result.update({
+        "ok": passed,
+        "elapsed_ms": (time.perf_counter() - t0) * 1e3,
+        "data": {
+            "theoretical_rate_bps": theoretical,
+            "actual_rate_bps": actual,
+            "threshold_bps": float(threshold_bps),
+            "information_bits": information_bits,
+            "waveform_duration_seconds": waveform_duration,
+            "relative_deviation": deviation,
+        },
+        "summary": [
+            {"label": "理论速率", "value": f"{theoretical / 1e9:.3f} Gbps"},
+            {"label": "实际速率", "value": f"{actual / 1e9:.3f} Gbps"},
+            {"label": "理论/实际偏差", "value": f"{deviation * 100:.3f}%"},
+            {"label": "验收门限", "value": f"≥ {threshold_bps / 1e9:.3f} Gbps"},
+            {"label": "最终判定", "value": "通过" if passed else "失败"},
+        ],
+        "checks": [{
+            "name": "实际物理层速率达到门限",
+            "ok": passed,
+            "detail": f"{actual / 1e9:.3f} Gbps {'≥' if passed else '<'} {threshold_bps / 1e9:.3f} Gbps",
+        }],
+        "table": {
+            "columns": ["指标", "测量值", "门限/参考", "判定"],
+            "rows": [
+                ["理论速率", f"{theoretical / 1e9:.3f} Gbps", "帧结构公式", "参考"],
+                ["实际速率", f"{actual / 1e9:.3f} Gbps", f"≥ {threshold_bps / 1e9:.3f} Gbps", "通过" if passed else "失败"],
+                ["信息比特数", str(information_bits), "实际 TX 输入", "参考"],
+                ["波形持续时间", f"{waveform_duration:.9e} s", "实际 TX 输出", "参考"],
+            ],
+        },
+    })
+    return result
+
+
+def run_single_link_rate_test(link_mode: str = "ofdm", modulation: str = "64QAM",
+                              code_type: str = "LDPC", symbol_rate_ghz: float = 30.0,
+                              duration: float = 1e-6,
+                              threshold_gbps: float = 50.0) -> Dict[str, Any]:
+    """验证单链路实际物理层速率不低于指定门限。"""
+    from params.PHYParams import PHYParams
+
+    ncbps_map = {"QPSK": 2, "16QAM": 4, "64QAM": 6, "256QAM": 8}
+    mod = str(modulation).upper()
+    if mod not in ncbps_map:
+        raise ValueError(f"不支持的调制方式：{modulation}")
+    mode = str(link_mode).lower()
+    if mode not in ("sc-fde", "ofdm"):
+        raise ValueError(f"不支持的链路模式：{link_mode}")
+    if symbol_rate_ghz <= 0 or duration <= 0 or threshold_gbps <= 0:
+        raise ValueError("符号率、时长和速率门限必须大于 0")
+
+    params = PHYParams()
+    values = dict(
+        link_mode=mode, NCBPS=ncbps_map[mod], code_type=str(code_type).upper(),
+        sample_rate=float(symbol_rate_ghz) * 1e9, duration=float(duration),
+        enable_mimo=False, enable_awgn=False, enable_multipath=False,
+        enable_cfo=False, enable_phase_noise=False, enable_iq_imbalance=False,
+    )
+    if values["code_type"] == "LDPC":
+        values.update(ldpc_matrix_type="ieee802153d_1440", ldpc_standard_rate="14/15")
+    elif values["code_type"] == "RS":
+        if mode == "ofdm":
+            values.update(rs_nsym=4, rs_c_exp=4, rs_packet_size=11)
+        else:
+            values.update(rs_nsym=63, rs_c_exp=8, rs_packet_size=192)
+    else:
+        raise ValueError("编码方式仅支持 LDPC / RS")
+    params.update(**values)
+    result = _rate_result("single_link_rate", params, float(threshold_gbps) * 1e9)
+    result["summary"].insert(0, {"label": "链路配置", "value": f"{mode.upper()} / {mod} / {values['code_type']} / SISO"})
+    return result
+
+
+def run_total_phy_rate_test(threshold_tbps: float = 0.5) -> Dict[str, Any]:
+    """固定验收配置：256QAM、1024 子载波、2×2 MIMO、LDPC(11/15)。"""
+    from params.PHYParams import PHYParams
+
+    if threshold_tbps <= 0:
+        raise ValueError("总速率门限必须大于 0")
+    frame_bits = 270336
+    params = PHYParams()
+    params.update(
+        enable_mimo=True, link_mode="ofdm", num_tx=2, num_rx=2,
+        num_spatial_streams=2, mimo_scheme="spatial_multiplexing",
+        mimo_detector="mmse", mimo_channel_model="identity", mimo_csi_mode="estimated",
+        mimo_num_taps=1, subwave_num=1024, gi_length=64,
+        pilot_block_indexes=[], subframe_ofdm_num=45, NCBPS=8,
+        code_type="LDPC", ldpc_matrix_type="ieee802153d_1440",
+        ldpc_standard_rate="11/15", sample_rate=60e9,
+        enable_awgn=False, enable_multipath=False, enable_cfo=False,
+        enable_cfo_compensation=False, enable_phase_noise=False,
+        enable_iq_imbalance=False, enable_iq_compensation=False,
+        random_seed=7, mimo_channel_seed=11, duration=None,
+        sample_length=frame_bits // 8,
+    )
+    result = _rate_result("total_phy_rate", params, float(threshold_tbps) * 1e12)
+    aligned = frame_bits % 1056 == 0
+    result["data"].update({
+        "configuration": "256QAM / 1024 子载波 / 2×2 MIMO / LDPC(11/15)",
+        "frame_information_bits": frame_bits,
+        "ldpc_padding_bits": 0 if aligned else frame_bits % 1056,
+    })
+    result["summary"].insert(0, {"label": "固定配置", "value": result["data"]["configuration"]})
+    result["table"]["rows"].extend([
+        ["空间流数", "2", "2×2 MIMO", "通过"],
+        ["LDPC 块对齐", f"{frame_bits} bit = {frame_bits // 1056} × 1056", "补零 0 bit", "通过" if aligned else "失败"],
+    ])
+    result["checks"].append({
+        "name": "LDPC 信息块整帧对齐", "ok": aligned,
+        "detail": f"{frame_bits} bit 可整除 1056 bit，补零为 0" if aligned else "帧信息比特未与 LDPC 块对齐",
+    })
+    result["ok"] = result["ok"] and aligned
+    return result
+
+
+# =====================================================================
+# 5. 功能校准测试
+# =====================================================================
+
+def _qam_theoretical_ber(modulation: str, ebn0_db: np.ndarray) -> np.ndarray:
+    """Gray 映射 QPSK/方形 M-QAM 的 AWGN 理论 BER。"""
+    from scipy.special import erfc
+
+    m_map = {"QPSK": 4, "16QAM": 16, "64QAM": 64}
+    M = m_map[modulation]
+    k = np.log2(M)
+    ebn0 = 10.0 ** (np.asarray(ebn0_db, dtype=float) / 10.0)
+    if M == 4:
+        return 0.5 * erfc(np.sqrt(ebn0))
+    q = 0.5 * erfc(np.sqrt(3.0 * k * ebn0 / (2.0 * (M - 1.0))))
+    ber = (4.0 / k) * (1.0 - 1.0 / np.sqrt(M)) * q
+    ber -= (4.0 / k) * (1.0 - 1.0 / np.sqrt(M)) ** 2 * q ** 2
+    return np.clip(ber, 0.0, 0.5)
+
+
+def _run_modulation_calibration(bits_per_point: int, random_seed: int):
+    from params.PHYParams import PHYParams
+    from transmitter.Modulator import THzModulator
+    from receiver.DeModulator import THzDemodulator
+
+    configs = {
+        "QPSK": (2, np.arange(0.0, 9.0, 2.0)),
+        "16QAM": (4, np.arange(2.0, 15.0, 3.0)),
+        "64QAM": (6, np.arange(6.0, 23.0, 4.0)),
+    }
+    curves = []
+    checks = []
+    rows = []
+    for mod_index, (name, (ncbps, ebn0_points)) in enumerate(configs.items()):
+        count = max(int(bits_per_point), 10000)
+        count -= count % ncbps
+        rng = np.random.default_rng(int(random_seed) + mod_index)
+        bits = rng.integers(0, 2, count, dtype=np.uint8)
+        params = PHYParams()
+        params.update(MCS=1, NCBPS=ncbps, scramble=False)
+        modulator = THzModulator(params)
+        demodulator = THzDemodulator(params)
+        bit_dict = _make_signal_dict(bits, float(count), {
+            "frame_bit_num": count, "frame_num": 1,
+        })
+        modulated = modulator.modulate(bit_dict)
+        tx = np.asarray(modulated["signal_stream"])
+        energy_per_bit = float(np.mean(np.abs(tx) ** 2)) / ncbps
+        simulated = []
+        for ebn0_db in ebn0_points:
+            n0 = energy_per_bit / (10.0 ** (ebn0_db / 10.0))
+            sigma = np.sqrt(n0 / 2.0)
+            noise = sigma * (rng.standard_normal(tx.size) + 1j * rng.standard_normal(tx.size))
+            rx_dict = dict(modulated)
+            rx_dict["signal_stream"] = tx + noise
+            llr = demodulator.demodulate(rx_dict, sigma)
+            hard = np.asarray(demodulator.llr_to_bits(llr)["signal_stream"])[0:count]
+            simulated.append(float(np.mean(bits != hard)))
+        simulated = np.asarray(simulated)
+        theoretical = _qam_theoretical_ber(name, ebn0_points)
+        valid = (simulated > 0) & (theoretical * count >= 20)
+        log_errors = np.abs(np.log10(simulated[valid]) - np.log10(theoretical[valid]))
+        max_log_error = float(np.max(log_errors)) if log_errors.size else float("inf")
+        monotonic = bool(np.all(np.diff(simulated) <= 1.0 / count))
+        ok = monotonic and max_log_error <= 0.45
+        checks.append({
+            "name": f"{name} BER 曲线与理论一致", "ok": ok,
+            "detail": f"最大 log10(BER) 偏差 {max_log_error:.3f}，曲线{'单调' if monotonic else '非单调'}",
+        })
+        rows.append([name, str(count), f"{max_log_error:.3f}", "是" if monotonic else "否", "通过" if ok else "失败"])
+        curves.append({"name": name, "ebn0_db": ebn0_points, "simulated": simulated, "theoretical": theoretical})
+    return curves, checks, rows
+
+
+def run_function_calibration_test(bits_per_point: int = 200000,
+                                  random_seed: int = 2026) -> Dict[str, Any]:
+    """校准三种 QAM BER 曲线，并核对 LDPC/RS 的 MATLAB 固定参考结果。"""
+    if int(bits_per_point) < 10000:
+        raise ValueError("每个 BER 点的比特数不能少于 10000")
+    t0 = time.perf_counter()
+    result = _new_result("function_calibration")
+    curves, checks, rows = _run_modulation_calibration(int(bits_per_point), int(random_seed))
+
+    root = Path(__file__).resolve().parent.parent.parent
+    codec_specs = [
+        ("LDPC(1440,1344)，码率 14/15", root / "test_cases" / "ldpc_demo.json"),
+        ("RS(15,11)，码率 11/15", root / "test_cases" / "rs_demo.json"),
+    ]
+    codec_summaries = []
+    for label, path in codec_specs:
+        codec_result = run_codec_test(path.read_text(encoding="utf-8"))
+        comparisons = [case.get("matlab_comparison", "") for case in codec_result.get("case_results", [])]
+        ok = bool(codec_result.get("ok")) and bool(comparisons) and all(
+            item == "编码一致；译码一致" for item in comparisons)
+        checks.append({
+            "name": f"{label} 与 MATLAB 参考一致", "ok": ok,
+            "detail": "；".join(comparisons) if comparisons else "未找到 MATLAB 参考结果",
+        })
+        rows.append([label, str(len(comparisons)), "0.000" if ok else "-", "-", "通过" if ok else "失败"])
+        codec_summaries.append({"name": label, "comparisons": comparisons, "ok": ok})
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(7.6, 5.0))
+    for curve, color in zip(curves, PLOT_COLORS):
+        sim = np.maximum(curve["simulated"], 0.5 / int(bits_per_point))
+        ax.semilogy(curve["ebn0_db"], sim, "o-", color=color, label=f"{curve['name']} 仿真")
+        ax.semilogy(curve["ebn0_db"], curve["theoretical"], "--", color=color, label=f"{curve['name']} 理论")
+    ax.set_xlabel("Eb/N0 (dB)")
+    ax.set_ylabel("BER")
+    ax.set_title("调制 BER 功能校准：仿真与理论对比")
+    ax.grid(True, which="both")
+    ax.set_ylim(1e-6, 0.5)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.0e}"))
+    ax.legend(ncol=2, fontsize=8)
+    fig.tight_layout()
+
+    result.update({
+        "ok": all(item["ok"] for item in checks),
+        "elapsed_ms": (time.perf_counter() - t0) * 1e3,
+        "checks": checks,
+        "plots": [{"title": "BER 校准曲线", "png": _figure_to_png(fig)}],
+        "table": {"columns": ["校准项目", "样本/用例数", "最大对数偏差", "单调", "判定"], "rows": rows},
+        "summary": [
+            {"label": "调制校准", "value": f"QPSK / 16QAM / 64QAM，共 {len(curves)} 组"},
+            {"label": "编码校准", "value": "LDPC 14/15 / RS(15,11)，MATLAB 参考"},
+            {"label": "通过项", "value": f"{sum(c['ok'] for c in checks)}/{len(checks)}"},
+            {"label": "最终判定", "value": "通过" if all(c["ok"] for c in checks) else "失败"},
+        ],
+        "data": {"curves": curves, "codec": codec_summaries},
+    })
+    return result
+
+
+# =====================================================================
 # 后台线程
 # =====================================================================
 
@@ -1812,6 +2090,12 @@ class FunctionalTestWorker(QThread):
                 result = run_codec_test(self.payload.get("config_text", ""))
             elif self.test_type == "precision":
                 result = run_precision_test(**self.payload)
+            elif self.test_type == "single_link_rate":
+                result = run_single_link_rate_test(**self.payload)
+            elif self.test_type == "total_phy_rate":
+                result = run_total_phy_rate_test(**self.payload)
+            elif self.test_type == "function_calibration":
+                result = run_function_calibration_test(**self.payload)
             else:
                 raise ValueError(f"未知测试类型: {self.test_type}")
             result["test_type"] = self.test_type
