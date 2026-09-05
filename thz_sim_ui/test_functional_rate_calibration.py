@@ -57,13 +57,14 @@ def test_new_ui_tests_follow_precision_in_required_order():
     page = FunctionalTestPage()
     try:
         assert _TEST_KEYS[3:] == (
-            "precision", "single_link_rate", "total_phy_rate", "function_calibration"
+            "precision", "single_link_rate", "total_phy_rate", "function_calibration", "ber"
         )
         assert page.test_radios[4].text().startswith("单链路物理层速率测试")
         assert page.test_radios[5].text().startswith("总物理层速率测试")
         assert page.test_radios[6].text() == "功能校准测试"
-        assert page.param_stack.count() == 7
-        assert page.result_stack.count() == 7
+        assert page.test_radios[7].text().startswith("误码率测试")
+        assert page.param_stack.count() == 8
+        assert page.result_stack.count() == 8
         assert page.total_rate_configuration.currentText().startswith("256QAM / 1024")
         page.resize(1440, 900)
         page.show()

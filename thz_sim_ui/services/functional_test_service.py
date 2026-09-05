@@ -2074,6 +2074,7 @@ class FunctionalTestWorker(QThread):
 
     result_ready = Signal(str, dict)   # (test_type, result)
     failed = Signal(str, str)          # (test_type, "异常类型: 消息")
+    progress = Signal(dict)            # BER 长任务的逐帧进度
 
     def __init__(self, test_type: str, payload: Optional[dict] = None, parent=None):
         super().__init__(parent)
@@ -2096,6 +2097,13 @@ class FunctionalTestWorker(QThread):
                 result = run_total_phy_rate_test(**self.payload)
             elif self.test_type == "function_calibration":
                 result = run_function_calibration_test(**self.payload)
+            elif self.test_type == "ber":
+                from thz_sim_ui.services.ber_test_service import run_ber_test
+                result = run_ber_test(
+                    **self.payload,
+                    progress_callback=lambda value: self.progress.emit(value),
+                    should_cancel=self.isInterruptionRequested,
+                )
             else:
                 raise ValueError(f"未知测试类型: {self.test_type}")
             result["test_type"] = self.test_type

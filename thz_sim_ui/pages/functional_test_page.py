@@ -1,7 +1,7 @@
 """
 功能测试页面 — 调制、波形、编码、浮点精度、物理层速率与功能校准。
 
-七个功能可独立选择运行：页面自带「运行测试」按钮，测试在后台
+八个功能可独立选择运行：页面自带「运行测试」按钮，测试在后台
 FunctionalTestWorker(QThread) 中执行，结果经 Qt 信号回传并渲染到右侧结果栏。
 """
 from __future__ import annotations
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QSizePolicy,
@@ -46,7 +47,7 @@ _MONO_STYLE = "font-family: Consolas, monospace;"
 
 _TEST_KEYS = (
     "modulation", "waveform", "codec", "precision",
-    "single_link_rate", "total_phy_rate", "function_calibration",
+    "single_link_rate", "total_phy_rate", "function_calibration", "ber",
 )
 
 
@@ -70,6 +71,7 @@ class FunctionalTestPage(WorkbenchPage):
         self._modulation_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
         self._wave_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
         self._calibration_pixmaps: List[tuple] = []
+        self._ber_pixmaps: List[tuple] = []
 
         self._build_left_panel()
         self._build_right_panel()
@@ -86,6 +88,7 @@ class FunctionalTestPage(WorkbenchPage):
             "单链路物理层速率测试 (≥50 Gbps)",
             "总物理层速率测试 (≥0.5 Tbps)",
             "功能校准测试",
+            "误码率测试 (BER ≤ 1e-6)",
         ])
         self.test_radios: List[QRadioButton] = radio_box.findChildren(QRadioButton)
         for rb in self.test_radios:
@@ -100,16 +103,22 @@ class FunctionalTestPage(WorkbenchPage):
         self.param_stack.addWidget(self._build_single_rate_params())
         self.param_stack.addWidget(self._build_total_rate_params())
         self.param_stack.addWidget(self._build_calibration_params())
+        self.param_stack.addWidget(self._build_ber_params())
         self.add_left_widget(self.param_stack)
 
         self.run_button = QPushButton("运行测试")
         self.run_button.setProperty("role", "primary")
         self.run_button.clicked.connect(self._on_run_clicked)
+        self.stop_button = QPushButton("停止测试")
+        self.stop_button.setEnabled(False)
+        self.stop_button.hide()
+        self.stop_button.clicked.connect(self._on_stop_clicked)
         self.status_badge = StatusBadge("待运行")
         run_row = QWidget()
         run_layout = QHBoxLayout(run_row)
         run_layout.setContentsMargins(0, 0, 0, 0)
         run_layout.addWidget(self.run_button)
+        run_layout.addWidget(self.stop_button)
         run_layout.addWidget(self.status_badge)
         run_layout.addStretch(1)
         self.add_left_footer_widget(run_row)
@@ -408,6 +417,38 @@ class FunctionalTestPage(WorkbenchPage):
         hint.setObjectName("CardHint")
         return self._wrap_with_hint(box, hint)
 
+    def _build_ber_params(self) -> QWidget:
+        self.ber_seed = spin(0, 2147483647, 2026)
+        self.ber_quick_bits = spin(100000, 10000000, 300000)
+        self.ber_quick_bits.setSingleStep(100000)
+        self.ber_quick_errors = spin(10, 10000, 100)
+        self.ber_quick_errors.setSingleStep(10)
+        fixed = QLabel(
+            "64QAM OFDM   20～26 dB\n"
+            "16QAM OFDM   14～20 dB\n"
+            "64QAM SC       17～23 dB\n"
+            "16QAM SC       11～17 dB\n"
+            "64QAM OFDM RS  12～19 dB\n"
+            "64QAM SC RS      9～16 dB"
+        )
+        fixed.setStyleSheet(_MONO_STYLE)
+        box = make_form_group("BER ≤ 1e-6 验收配置", [
+            ("固定链路", QLabel("六模式 / AWGN / LDPC + RS")),
+            ("SNR 扫描范围", fixed),
+            ("目标 BER", QLabel("1e-6（95% 单侧置信）")),
+            ("预扫描每点最大比特数", self.ber_quick_bits),
+            ("预扫描每点最少误码数", self.ber_quick_errors),
+            ("随机种子", self.ber_seed),
+        ])
+        hint = QLabel(
+            "预扫描生成瀑布曲线；候选达标点至少累计 2,995,733 bit。"
+            "零误码时仅当 95% BER 上限不超过 1e-6 才判定通过。"
+            "完整运行约需十分钟，可随时停止，已完成点会保存到 simulation_results。"
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("CardHint")
+        return self._wrap_with_hint(box, hint)
+
     @staticmethod
     def _wrap_with_hint(box: QWidget, hint: QWidget) -> QWidget:
         wrap = QWidget()
@@ -432,6 +473,7 @@ class FunctionalTestPage(WorkbenchPage):
         self.result_stack.addWidget(self._build_table_results(
             "total_rate", "总物理层速率测试", ["指标", "测量值", "门限/参考", "判定"]))
         self.result_stack.addWidget(self._build_calibration_results())
+        self.result_stack.addWidget(self._build_ber_results())
         self.add_right_widget(self.result_stack)
 
     def _make_placeholder(self, text: str) -> QLabel:
@@ -600,6 +642,39 @@ class FunctionalTestPage(WorkbenchPage):
         layout.addWidget(self.calibration_summary_card)
         return page
 
+    def _build_ber_results(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        self.ber_placeholder = self._make_placeholder(
+            "点击左侧「运行测试」执行六模式全链路 BER 扫描")
+        self.ber_progress_label = QLabel("待运行")
+        self.ber_progress_label.setWordWrap(True)
+        self.ber_progress = QProgressBar()
+        self.ber_progress.setRange(0, 100)
+        self.ber_progress.setValue(0)
+        progress_card = CardWidget("运行进度")
+        progress_card.layout.addWidget(self.ber_progress_label)
+        progress_card.layout.addWidget(self.ber_progress)
+        self.ber_plot_card = CardWidget("六模式 BER 曲线")
+        self.ber_plot = QLabel()
+        self.ber_plot.setAlignment(Qt.AlignCenter)
+        self.ber_plot.setMinimumHeight(390)
+        self.ber_plot_card.layout.addWidget(self.ber_plot)
+        self.ber_plot_card.hide()
+        self.ber_table = self._make_table([
+            "模式", "SNR/dB", "Eb/N0/dB", "误码数", "比特数",
+            "实测 BER", "95% 上限", "运行次数", "判定",
+        ])
+        self.ber_summary_card = _UpdatableSummaryCard("BER 验收总览", ["尚未运行"])
+        layout.addWidget(self.ber_placeholder)
+        layout.addWidget(progress_card)
+        layout.addWidget(self.ber_plot_card)
+        layout.addWidget(self.ber_table, 1)
+        layout.addWidget(self.ber_summary_card)
+        return page
+
     @staticmethod
     def _make_table(columns: List[str]) -> QTableWidget:
         table = QTableWidget(0, len(columns))
@@ -629,6 +704,7 @@ class FunctionalTestPage(WorkbenchPage):
         idx = self._selected_index()
         self.param_stack.setCurrentIndex(idx)
         self.result_stack.setCurrentIndex(idx)
+        self.stop_button.setVisible(idx == 7)
         if idx == 2:
             self.param_stack.setMaximumHeight(760 if self.codec_advanced_box.isChecked() else 440)
         else:
@@ -787,8 +863,34 @@ class FunctionalTestPage(WorkbenchPage):
         self._worker = FunctionalTestWorker(test_type, payload, parent=self)
         self._worker.result_ready.connect(self._on_result)
         self._worker.failed.connect(self._on_failed)
+        self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_worker_finished)
+        self.stop_button.setEnabled(test_type == "ber")
         self._worker.start()
+
+    def _on_stop_clicked(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.requestInterruption()
+            self.stop_button.setEnabled(False)
+            self.ber_progress_label.setText("正在安全停止；当前帧完成后保存已有结果…")
+
+    def _on_progress(self, progress: dict) -> None:
+        if self._selected_test() != "ber":
+            return
+        config_index = int(progress.get("config_index", 0))
+        point_index = int(progress.get("point_index", 0))
+        point_count = int(progress.get("point_count", 7))
+        total_configs = max(1, int(progress.get("total_configs", 6)))
+        # 各配置等分总进度；逐点扫描显示确定进度，验证阶段保持在该配置尾部。
+        local = min(0.95, point_index / max(point_count, 1)) if point_index else 0.9
+        percent = int(100.0 * (config_index + local) / total_configs)
+        self.ber_progress.setValue(min(percent, 99))
+        self.ber_progress_label.setText(
+            f"{progress.get('config_label', '-')}｜{progress.get('phase', '-')}｜"
+            f"SNR={float(progress.get('snr_db', 0.0)):.1f} dB｜"
+            f"误码 {int(progress.get('total_errors', 0))} / "
+            f"{int(progress.get('total_bits', 0)):,} bit"
+        )
 
     def _build_payload(self, test_type: str) -> dict:
         if test_type == "modulation":
@@ -860,13 +962,20 @@ class FunctionalTestPage(WorkbenchPage):
             }
         if test_type == "total_phy_rate":
             return {"threshold_tbps": self.total_rate_threshold.value()}
+        if test_type == "ber":
+            return {
+                "random_seed": self.ber_seed.value(),
+                "quick_max_bits": self.ber_quick_bits.value(),
+                "quick_min_errors": self.ber_quick_errors.value(),
+            }
         return {
             "bits_per_point": self.calibration_bits.value(),
             "random_seed": self.calibration_seed.value(),
         }
 
     def _on_result(self, test_type: str, result: dict) -> None:
-        self._set_badge("已完成" if result.get("ok") else "已失败")
+        self._set_badge("已中断" if result.get("cancelled") else
+                        ("已完成" if result.get("ok") else "已失败"))
         if test_type == "modulation":
             self._render_modulation(result)
         elif test_type == "waveform":
@@ -882,8 +991,10 @@ class FunctionalTestPage(WorkbenchPage):
         elif test_type == "total_phy_rate":
             self._render_table_result(result, self.total_rate_table,
                                       self.total_rate_placeholder, self.total_rate_summary_card)
-        else:
+        elif test_type == "function_calibration":
             self._render_calibration(result)
+        else:
+            self._render_ber(result)
 
     def _on_failed(self, test_type: str, message: str) -> None:
         self._set_badge("已失败")
@@ -895,12 +1006,14 @@ class FunctionalTestPage(WorkbenchPage):
             "single_link_rate": self.single_rate_placeholder,
             "total_phy_rate": self.total_rate_placeholder,
             "function_calibration": self.calibration_placeholder,
+            "ber": self.ber_placeholder,
         }[test_type]
         target.setText(f"测试失败：{message}")
         target.show()
 
     def _on_worker_finished(self) -> None:
         self.run_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
         if self._worker is not None:
             self._worker.deleteLater()
         self._worker = None
@@ -959,7 +1072,7 @@ class FunctionalTestPage(WorkbenchPage):
             self.total_rate_placeholder.show()
             self.total_rate_table.setRowCount(0)
             self.total_rate_summary_card.set_lines(["运行中…"])
-        else:
+        elif test_type == "function_calibration":
             self.calibration_placeholder.setText("运行中，请稍候…")
             self.calibration_placeholder.show()
             self.calibration_plot_card.hide()
@@ -967,6 +1080,16 @@ class FunctionalTestPage(WorkbenchPage):
             self._calibration_pixmaps = []
             self.calibration_table.setRowCount(0)
             self.calibration_summary_card.set_lines(["运行中…"])
+        else:
+            self.ber_placeholder.setText("运行中，请稍候…")
+            self.ber_placeholder.show()
+            self.ber_plot_card.hide()
+            self.ber_plot.clear()
+            self._ber_pixmaps = []
+            self.ber_table.setRowCount(0)
+            self.ber_progress.setValue(0)
+            self.ber_progress_label.setText("正在初始化四模式 BER 扫描…")
+            self.ber_summary_card.set_lines(["运行中…"])
 
     def _render_modulation(self, result: dict) -> None:
         self._modulation_pixmaps = []
@@ -1053,6 +1176,23 @@ class FunctionalTestPage(WorkbenchPage):
                                   self.calibration_summary_card)
         self._apply_result_pixmaps(self._calibration_pixmaps)
 
+    def _render_ber(self, result: dict) -> None:
+        self._ber_pixmaps = []
+        plots = result.get("plots", [])
+        if plots:
+            pm = QPixmap()
+            if pm.loadFromData(plots[0].get("png", b""), "PNG"):
+                self._ber_pixmaps.append((self.ber_plot, pm))
+                self.ber_plot_card.show()
+        self._render_table_result(
+            result, self.ber_table, self.ber_placeholder, self.ber_summary_card)
+        self.ber_progress.setValue(100 if not result.get("cancelled") else self.ber_progress.value())
+        self.ber_progress_label.setText(
+            "测试已停止，已完成结果已保存" if result.get("cancelled") else
+            ("六种模式均达到 BER ≤ 1e-6" if result.get("ok") else
+             "测试结束，但存在模式未达到 BER ≤ 1e-6"))
+        self._apply_result_pixmaps(self._ber_pixmaps)
+
     def _render_codec(self, result: dict) -> None:
         self.codec_placeholder.hide()
         self.codec_overview_card.show()
@@ -1126,6 +1266,7 @@ class FunctionalTestPage(WorkbenchPage):
         self._apply_result_pixmaps(self._modulation_pixmaps)
         self._apply_wave_pixmaps()
         self._apply_result_pixmaps(self._calibration_pixmaps)
+        self._apply_result_pixmaps(self._ber_pixmaps)
 
     # ==================== 参数收集（与其他页面对齐） ====================
 
@@ -1192,4 +1333,5 @@ class FunctionalTestPage(WorkbenchPage):
             "单链路物理层速率测试": self._build_payload("single_link_rate"),
             "总物理层速率测试": self._build_payload("total_phy_rate"),
             "功能校准测试": self._build_payload("function_calibration"),
+            "误码率测试": self._build_payload("ber"),
         }
