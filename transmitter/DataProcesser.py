@@ -20,7 +20,9 @@ class BitStreamProcessor:
         self.NCBPS = self.params.get("NCBPS")  # 每符号比特数（1=BPSK,2=QPSK,3=8PSK,4=16QAM,6=64QAM）
         self.code_type = self.params.get("code_type")  # 编码类型 ("RS"或"LDPC")
         if self.code_type == "RS":
-            self.code_rate = self.params.get("rs_packet_size") / (self.params.get("rs_packet_size") + self.params.get("rs_nsym"))  # RS编码包大小
+            self.code_numerator = self.params.get("rs_packet_size")
+            self.code_denominator = self.params.get("rs_packet_size") + self.params.get("rs_nsym")
+            self.code_rate = self.code_numerator / self.code_denominator  # RS编码包大小
         elif self.code_type == "LDPC":
             matrix_type = self.params.get("ldpc_matrix_type", "engineering")
             if matrix_type == "ieee802153d_1440":
@@ -32,15 +34,22 @@ class BitStreamProcessor:
                 k = int(self.params.get("ldpc_k"))
             else:
                 raise ValueError("ldpc_matrix_type must be 'engineering' or 'ieee802153d_1440'")
+            self.code_numerator, self.code_denominator = k, n
             self.code_rate = k / n
         link_mode = (self.params.get("link_mode")).lower()
         if link_mode == "ofdm":
             n_pilots = len(self.params.get("pilot_block_indexes"))
             n_data_syms = self.params.get("subframe_ofdm_num") - n_pilots
             n_sc = self.params.get("subwave_num")
-            self.frame_bit_num = self.NCBPS * n_sc * n_data_syms * self.code_rate
+            symbol_bits = self.NCBPS * n_sc * n_data_syms
         else:
-            self.frame_bit_num = self.NCBPS * self.subframe_length * self.subframe_num * self.code_rate
+            symbol_bits = self.NCBPS * self.subframe_length * self.subframe_num
+        # 编码率按整数分子/分母精确计算单帧比特数，避免浮点除法把本应
+        # 整数的帧比特数算成 107711.9999…（如 6×480×51×1056/1440）。
+        total = int(symbol_bits) * int(self.code_numerator)
+        if total % self.code_denominator:
+            raise ValueError("请检查调制方式、帧结构和编码效率的配置，确保单帧比特数为整数")
+        self.frame_bit_num = total // self.code_denominator
         self.seed_strategy = self.params.get("seed_strategy")  # 随机种子策略
         self.random_seed = self.params.get("random_seed")
         self._seed_counter = 0

@@ -1,0 +1,17 @@
+[
+  {
+    "snr": 18.0,
+    "result": {
+      "SNRdB": 18.0,
+      "BER": 5.129419191919192e-06,
+      "total_bits": 45619200,
+      "total_errors": 234,
+      "total_frames": 50,
+      "raw_throughput_bps": 103304347826.08696,
+      "actual_rate_bps": 103304347826.08696,
+      "effective_throughput_bps": 103303817934.78261,
+      "spectral_efficiency_bps_per_hz": 3.4434782608695653,
+      "EbN0_dB": 12.630026544280994
+    }
+  }
+]

@@ -33,6 +33,11 @@ from PySide6.QtWidgets import (
 )
 
 from thz_sim_ui.constants import STATUS_COLORS
+from thz_sim_ui.services.ber_test_service import (
+    BER_TEST_MODES,
+    ber_mode_schemes,
+    ber_mode_snr_default,
+)
 from thz_sim_ui.services.functional_test_service import FunctionalTestWorker
 from thz_sim_ui.widgets.charts import TextSummaryCard
 from thz_sim_ui.widgets.common import CardWidget, StatusBadge
@@ -418,36 +423,133 @@ class FunctionalTestPage(WorkbenchPage):
         return self._wrap_with_hint(box, hint)
 
     def _build_ber_params(self) -> QWidget:
+        self.ber_mode_combo = combo([mode["label"] for mode in BER_TEST_MODES])
+        for index, mode in enumerate(BER_TEST_MODES):
+            self.ber_mode_combo.setItemData(index, mode["key"])
+
+        self.ber_link_config = QPlainTextEdit()
+        self.ber_link_config.setReadOnly(True)
+        self.ber_link_config.setStyleSheet(_MONO_STYLE)
+        self.ber_link_config.setMinimumHeight(170)
+        self.ber_link_config.setMaximumHeight(230)
+        self.ber_link_box = QGroupBox("链路配置显示")
+        link_layout = QVBoxLayout(self.ber_link_box)
+        link_layout.setContentsMargins(14, 18, 14, 14)
+        link_layout.addWidget(self.ber_link_config)
+
+        self.ber_snr_min = dspin(-20.0, 100.0, 14.0, decimals=1, suffix=" dB")
+        self.ber_snr_max = dspin(-20.0, 100.0, 23.0, decimals=1, suffix=" dB")
+        self.ber_snr_step = dspin(0.1, 10.0, 1.0, decimals=1, suffix=" dB")
         self.ber_seed = spin(0, 2147483647, 2026)
         self.ber_quick_bits = spin(100000, 10000000, 300000)
         self.ber_quick_bits.setSingleStep(100000)
         self.ber_quick_errors = spin(10, 10000, 100)
         self.ber_quick_errors.setSingleStep(10)
-        fixed = QLabel(
-            "64QAM OFDM   20～26 dB\n"
-            "16QAM OFDM   14～20 dB\n"
-            "64QAM SC       17～23 dB\n"
-            "16QAM SC       11～17 dB\n"
-            "64QAM OFDM RS  12～19 dB\n"
-            "64QAM SC RS      9～16 dB"
-        )
-        fixed.setStyleSheet(_MONO_STYLE)
-        box = make_form_group("BER ≤ 1e-6 验收配置", [
-            ("固定链路", QLabel("六模式 / AWGN / LDPC + RS")),
-            ("SNR 扫描范围", fixed),
-            ("目标 BER", QLabel("1e-6（95% 单侧置信）")),
-            ("预扫描每点最大比特数", self.ber_quick_bits),
-            ("预扫描每点最少误码数", self.ber_quick_errors),
+
+        mode_box = make_form_group("测试方式选择", [("测试方式", self.ber_mode_combo)])
+        snr_box = make_form_group("SNR 扫描范围", [
+            ("最小值", self.ber_snr_min),
+            ("最大值", self.ber_snr_max),
+            ("步长", self.ber_snr_step),
+        ])
+        scan_box = make_form_group("扫描控制", [
+            ("每点最大比特数", self.ber_quick_bits),
+            ("每点最少误码数", self.ber_quick_errors),
             ("随机种子", self.ber_seed),
         ])
         hint = QLabel(
-            "预扫描生成瀑布曲线；候选达标点至少累计 2,995,733 bit。"
-            "零误码时仅当 95% BER 上限不超过 1e-6 才判定通过。"
-            "完整运行约需十分钟，可随时停止，已完成点会保存到 simulation_results。"
+            "目标 BER ≤ 1e-6（95% 单侧置信）：预扫描生成瀑布曲线；"
+            "候选达标点至少累计 2,995,733 bit，零误码时仅当 95% BER 上限"
+            "不超过 1e-6 才判定通过。切换测试方式会载入对应 batch/single "
+            "工程的链路配置，并将 SNR 扫描范围恢复为工程默认值（可自由修改）。"
+            "对比方式以短帧逐次累计统计量；0.5Tbps 方式每次试次按工程配置"
+            "时长（0.04 ms）生成数据量。可随时停止，已完成点会保存到 simulation_results。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
-        return self._wrap_with_hint(box, hint)
+
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        for widget in (mode_box, self.ber_link_box, snr_box, scan_box, hint):
+            layout.addWidget(widget)
+        self.ber_mode_combo.currentIndexChanged.connect(self._on_ber_mode_changed)
+        self._on_ber_mode_changed(0)
+        return wrap
+
+    def _on_ber_mode_changed(self, _index: int) -> None:
+        """切换测试方式：刷新链路配置显示并恢复默认 SNR 扫描范围。"""
+        mode_key = self.ber_mode_combo.currentData()
+        try:
+            schemes = ber_mode_schemes(mode_key)
+            snr_min, snr_max, snr_step = ber_mode_snr_default(mode_key)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.ber_link_config.setPlainText(f"链路配置读取失败：{exc}")
+            return
+        self.ber_link_config.setPlainText(self._format_ber_link_configs(schemes))
+        self.ber_snr_min.setValue(snr_min)
+        self.ber_snr_max.setValue(snr_max)
+        self.ber_snr_step.setValue(snr_step)
+
+    @staticmethod
+    def _format_ber_link_configs(schemes: List[dict]) -> str:
+        """把工程配置列表渲染为等宽文本，展示各链路的关键参数。"""
+        lines: List[str] = []
+        for index, scheme in enumerate(schemes):
+            config = scheme["config"]
+            lines.append(f"[配置 {index + 1}] {scheme['label']}")
+            lines.append(
+                f"  链路模式：{config.get('链路模式', '-')}"
+                f"    带宽：{config.get('带宽', '-')} GHz"
+                f"    载频：{config.get('载频', '-')} GHz"
+            )
+            lines.append(
+                f"  数据源：{config.get('数据源配置', '-')}"
+                f"    数据子帧长度：{config.get('数据子帧长度', '-')}"
+                f"    单帧数据子帧数量：{config.get('单帧数据子帧数量', '-')}"
+            )
+            lines.append(
+                f"  CP长度：{config.get('CP长度', '-')}"
+                f"    调制方式：{config.get('调制方式', '-')}"
+                f"    信道编码：{config.get('信道编码类型', '-')}"
+            )
+            lines.append(
+                f"  扰码：{config.get('扰码配置', '-')}"
+                f"    前导码：{config.get('前导码配置', '-')}"
+                f"    OFDM子载波数：{config.get('OFDM子载波数', '-')}"
+            )
+            lines.append(
+                f"  单帧OFDM符号数：{config.get('单帧OFDM符号数', '-')}"
+                f"    块状导频：{config.get('块状导频索引', '-')}"
+            )
+            lines.append(
+                f"  波形成形：{config.get('波形成形', '-')}"
+                f"    滚降因子：{config.get('滚降因子', '-')}"
+                f"    滤波器跨度：{config.get('滤波器跨度', '-')}"
+                f"    过采样率：{config.get('过采样率', '-')}"
+            )
+            lines.append(
+                f"  采样率：{config.get('采样率', '-')} Msps"
+                f"    时长：{config.get('时长', '-')} ms"
+                f"    信道估计与均衡：{config.get('信道估计与均衡', '-')}"
+            )
+            channel_cfg = config.get("_channel_params") or {}
+            if channel_cfg.get("enable_multipath"):
+                mode_text = {
+                    "deterministic": "确定性回放",
+                    "pdp_rayleigh": "PDP 瑞利",
+                }.get(channel_cfg.get("measured_channel_mode"),
+                      channel_cfg.get("measured_channel_mode", "-"))
+                lines.append(
+                    f"  信道：实测 {mode_text}"
+                    f"（{channel_cfg.get('measured_channel_scenario', '-')} 场景）+ AWGN"
+                )
+            else:
+                lines.append("  信道：仅 AWGN（BER 扫描口径）")
+            if index < len(schemes) - 1:
+                lines.append("")
+        return "\n".join(lines)
 
     @staticmethod
     def _wrap_with_hint(box: QWidget, hint: QWidget) -> QWidget:
@@ -648,7 +750,7 @@ class FunctionalTestPage(WorkbenchPage):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         self.ber_placeholder = self._make_placeholder(
-            "点击左侧「运行测试」执行六模式全链路 BER 扫描")
+            "点击左侧「运行测试」执行全链路 BER 扫描")
         self.ber_progress_label = QLabel("待运行")
         self.ber_progress_label.setWordWrap(True)
         self.ber_progress = QProgressBar()
@@ -657,7 +759,7 @@ class FunctionalTestPage(WorkbenchPage):
         progress_card = CardWidget("运行进度")
         progress_card.layout.addWidget(self.ber_progress_label)
         progress_card.layout.addWidget(self.ber_progress)
-        self.ber_plot_card = CardWidget("六模式 BER 曲线")
+        self.ber_plot_card = CardWidget("全链路 BER 曲线")
         self.ber_plot = QLabel()
         self.ber_plot.setAlignment(Qt.AlignCenter)
         self.ber_plot.setMinimumHeight(390)
@@ -964,9 +1066,13 @@ class FunctionalTestPage(WorkbenchPage):
             return {"threshold_tbps": self.total_rate_threshold.value()}
         if test_type == "ber":
             return {
-                "random_seed": self.ber_seed.value(),
+                "mode_key": self.ber_mode_combo.currentData(),
+                "snr_min": self.ber_snr_min.value(),
+                "snr_max": self.ber_snr_max.value(),
+                "snr_step": self.ber_snr_step.value(),
                 "quick_max_bits": self.ber_quick_bits.value(),
                 "quick_min_errors": self.ber_quick_errors.value(),
+                "random_seed": self.ber_seed.value(),
             }
         return {
             "bits_per_point": self.calibration_bits.value(),
@@ -1088,7 +1194,7 @@ class FunctionalTestPage(WorkbenchPage):
             self._ber_pixmaps = []
             self.ber_table.setRowCount(0)
             self.ber_progress.setValue(0)
-            self.ber_progress_label.setText("正在初始化四模式 BER 扫描…")
+            self.ber_progress_label.setText("正在初始化全链路 BER 扫描…")
             self.ber_summary_card.set_lines(["运行中…"])
 
     def _render_modulation(self, result: dict) -> None:
@@ -1189,8 +1295,8 @@ class FunctionalTestPage(WorkbenchPage):
         self.ber_progress.setValue(100 if not result.get("cancelled") else self.ber_progress.value())
         self.ber_progress_label.setText(
             "测试已停止，已完成结果已保存" if result.get("cancelled") else
-            ("六种模式均达到 BER ≤ 1e-6" if result.get("ok") else
-             "测试结束，但存在模式未达到 BER ≤ 1e-6"))
+            ("全部链路均达到 BER ≤ 1e-6" if result.get("ok") else
+             "测试结束，但存在链路未达到 BER ≤ 1e-6"))
         self._apply_result_pixmaps(self._ber_pixmaps)
 
     def _render_codec(self, result: dict) -> None:
@@ -1333,5 +1439,8 @@ class FunctionalTestPage(WorkbenchPage):
             "单链路物理层速率测试": self._build_payload("single_link_rate"),
             "总物理层速率测试": self._build_payload("total_phy_rate"),
             "功能校准测试": self._build_payload("function_calibration"),
-            "误码率测试": self._build_payload("ber"),
+            "误码率测试": {
+                "测试方式": self.ber_mode_combo.currentText(),
+                **self._build_payload("ber"),
+            },
         }
