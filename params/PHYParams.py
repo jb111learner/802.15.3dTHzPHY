@@ -137,6 +137,8 @@ class PHYParams(BaseParams):
             "ppre": 1,                                                                              # PPRE字段（物理层前导码配置，0-3）
             "pw": 0,                                                                                # PW字段
             "MCS": 1,                                                                               # 调制编码方案("0": DBPSK, "1":QAM, "2":APSK)
+            "pi2_rotation": True,                                                                   # 发射端逐符号 pi/2 旋转（SC-FDE PAPR 抑制）；功能测试可关闭
+            "qpsk_pi4_compensation": True,                                                          # QPSK 的 pi/4 映射补偿（关闭后为方型 QPSK）；功能测试可关闭
 
             # 信道相关
             "enable_awgn": True,                                                                    # 是否启用AWGN噪声

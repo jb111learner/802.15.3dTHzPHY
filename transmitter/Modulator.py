@@ -186,10 +186,13 @@ class THzModulator:
         bits = bits.astype(np.int8)
         c = bits.reshape(-1, 2)
         L_sym = len(c)
-        # MATLAB对齐的QPSK映射：pi/4旋转补偿 + 基础缩放
+        # MATLAB对齐的QPSK映射：pi/4旋转补偿 + 基础缩放。
+        # qpsk_pi4_compensation=False 时输出方型 QPSK {(±1±1j)/√2}。
         real_part = 2 * c[:, 0] - 1
         imag_part = 2 * c[:, 1] - 1
-        s = (real_part + 1j * imag_part) * np.exp(-1j * np.pi / 4) / self.const_scale[2]
+        s = (real_part + 1j * imag_part) / self.const_scale[2]
+        if bool(self.params.get("qpsk_pi4_compensation", True)):
+            s = s * np.exp(-1j * np.pi / 4)
         # pi/2旋转
         phase = np.exp(1j * np.pi * np.arange(L_sym) / 2)
         d = s * phase
@@ -308,6 +311,13 @@ class THzModulator:
                 symbols_modulated = self._256qam_modulate(bits)
             else:
                 raise ValueError(f"不支持的NCBPS：{self.NCBPS}")
+
+        # pi2_rotation=False 时去除逐符号 pi/2 旋转（DBPSK 本身无旋转）。
+        if not bool(self.params.get("pi2_rotation", True)) and self.MCS != 0:
+            symbols_modulated = (
+                np.asarray(symbols_modulated, dtype=np.complex128)
+                * np.exp(-1j * np.pi * np.arange(len(symbols_modulated)) / 2)
+            )
             
         result_dict = {
             "signal_stream": symbols_modulated,

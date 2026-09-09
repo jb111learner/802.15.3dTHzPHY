@@ -24,41 +24,48 @@ VERIFICATION_BITS = math.ceil(-math.log(1.0 - CONFIDENCE) / TARGET_BER)
 
 # 顺序与需求保持一致。界面沿用项目的 (k,n) 标法。
 BER_CONFIGS = (
-    {"key": "64qam_ofdm", "label": "64QAM OFDM LDPC(1344,1440)", "mode": "ofdm", "ncbps": 6, "code_type": "LDPC",
-     "snr_values": tuple(range(20, 27))},
-    {"key": "16qam_ofdm", "label": "16QAM OFDM LDPC(1344,1440)", "mode": "ofdm", "ncbps": 4, "code_type": "LDPC",
+    {"key": "64qam_ofdm", "label": "64QAM OFDM LDPC(1056,1440)", "mode": "ofdm", "ncbps": 6, "code_type": "LDPC",
      "snr_values": tuple(range(14, 21))},
-    {"key": "64qam_sc", "label": "64QAM SC LDPC(1344,1440)", "mode": "sc-fde", "ncbps": 6, "code_type": "LDPC",
-     "snr_values": tuple(range(17, 24))},
-    {"key": "16qam_sc", "label": "16QAM SC LDPC(1344,1440)", "mode": "sc-fde", "ncbps": 4, "code_type": "LDPC",
-     "snr_values": tuple(range(11, 18))},
+    {"key": "16qam_ofdm", "label": "16QAM OFDM LDPC(1056,1440)", "mode": "ofdm", "ncbps": 4, "code_type": "LDPC",
+     "snr_values": tuple(range(9, 15))},
+    {"key": "64qam_sc", "label": "64QAM SC LDPC(1056,1440)", "mode": "sc-fde", "ncbps": 6, "code_type": "LDPC",
+     "snr_values": tuple(range(12, 19))},
+    {"key": "16qam_sc", "label": "16QAM SC LDPC(1056,1440)", "mode": "sc-fde", "ncbps": 4, "code_type": "LDPC",
+     "snr_values": tuple(range(8, 14))},
     {"key": "64qam_ofdm_rs", "label": "64QAM OFDM RS(11,15)", "mode": "ofdm", "ncbps": 6, "code_type": "RS",
      "rs_nsym": 4, "rs_c_exp": 4, "rs_packet_size": 11,
-     "snr_values": tuple(range(12, 20))},
+     "snr_values": tuple(range(19, 27))},
     {"key": "64qam_sc_rs", "label": "64QAM SC RS(192,255)", "mode": "sc-fde", "ncbps": 6, "code_type": "RS",
      "rs_nsym": 63, "rs_c_exp": 8, "rs_packet_size": 192,
-     "snr_values": tuple(range(9, 17))},
+     "snr_values": tuple(range(16, 23))},
 )
 
-# 误码率测试的四种测试方式：前三种对应 batch 批量对比工程（各含两条链路），
-# 最后一种对应 single 单方案工程（单链路）。前三种的默认 SNR 扫描范围取自
-# batch 工程设置；0.5Tbps 方式默认 35～45 dB、步进 1 dB。
-# keep_channel=True 时保留工程原信道设置（0.5Tbps 为实测 PDP 瑞利信道），
-# 其余对比方式统一采用仅 AWGN 口径。
-BER_TEST_MODES = (
-    {"key": "modulation_compare", "label": "对比调制方式",
-     "batch": "(64QAM_vs_16QAM)_OFDM_LDPC"},
-    {"key": "codec_compare", "label": "对比编码方式",
-     "batch": "64QAM_OFDM_(LDPC_vs_RS)"},
-    {"key": "waveform_compare", "label": "对比波形方式",
-     "batch": "64QAM_(OFDM_vs_SC)_LDPC"},
-    {"key": "tbps05", "label": "0.5Tbps方式",
-     "single": "256QAM_MIMO_OFDM_AWGN_LDPC", "keep_channel": True},
+# 误码率测试的配置选择：旧六种链路配置 + 0.5Tbps 工程配置。
+# 每次运行只跑所选的一条链路，严格按 SNR 扫描范围与扫描控制参数逐点仿真
+# （无早停、无置信验证）；0.5Tbps 保留工程实测确定性回放信道，其余为仅 AWGN。
+BER_CONFIG_OPTIONS = (
+    {"key": "64qam_ofdm", "label": "64QAM OFDM LDPC(1056,1440)", "mode": "ofdm",
+     "ncbps": 6, "code_type": "LDPC", "snr_default": (14.0, 20.0, 1.0)},
+    {"key": "16qam_ofdm", "label": "16QAM OFDM LDPC(1056,1440)", "mode": "ofdm",
+     "ncbps": 4, "code_type": "LDPC", "snr_default": (9.0, 14.0, 1.0)},
+    {"key": "64qam_sc", "label": "64QAM SC LDPC(1056,1440)", "mode": "sc-fde",
+     "ncbps": 6, "code_type": "LDPC", "snr_default": (12.0, 18.0, 1.0)},
+    {"key": "16qam_sc", "label": "16QAM SC LDPC(1056,1440)", "mode": "sc-fde",
+     "ncbps": 4, "code_type": "LDPC", "snr_default": (8.0, 13.0, 1.0)},
+    {"key": "64qam_ofdm_rs", "label": "64QAM OFDM RS(11,15)", "mode": "ofdm",
+     "ncbps": 6, "code_type": "RS", "rs_nsym": 4, "rs_c_exp": 4,
+     "rs_packet_size": 11, "snr_default": (19.0, 26.0, 1.0)},
+    {"key": "64qam_sc_rs", "label": "64QAM SC RS(192,255)", "mode": "sc-fde",
+     "ncbps": 6, "code_type": "RS", "rs_nsym": 63, "rs_c_exp": 8,
+     "rs_packet_size": 192, "snr_default": (16.0, 22.0, 1.0)},
+    {"key": "tbps05", "label": "256QAM MIMO OFDM LDPC（0.5Tbps）",
+     "single": "256QAM_MIMO_OFDM_AWGN_LDPC", "keep_channel": True,
+     "snr_default": (30.0, 34.0, 1.0)},
 )
 
 _PROJECTS_ROOT = Path(__file__).resolve().parents[2] / "projects"
 
-# 0.5Tbps 方式的 MIMO 信道口径：实测确定性回放。逐试次原样回放实测 2×2 CIR，
+# 0.5Tbps 配置的 MIMO 信道口径：实测确定性回放。逐试次原样回放实测 2×2 CIR，
 # 使各 SNR 点只对噪声做统计平均；pdp_rayleigh 会在每次试次间引入额外的
 # 信道随机实现，不利于定点 BER 评估。
 BER_MEASURED_CHANNEL_MODE = "deterministic"
@@ -73,12 +80,12 @@ def _apply_ber_channel_policy(config: dict) -> dict:
     return config
 
 
-def get_ber_mode(mode_key: str) -> dict:
-    """按 key 返回测试方式定义。"""
-    for mode in BER_TEST_MODES:
-        if mode["key"] == str(mode_key):
-            return mode
-    raise ValueError(f"未知误码率测试方式：{mode_key}")
+def get_ber_option(option_key: str) -> dict:
+    """按 key 返回误码率测试配置选择项。"""
+    for option in BER_CONFIG_OPTIONS:
+        if option["key"] == str(option_key):
+            return option
+    raise ValueError(f"未知误码率测试配置：{option_key}")
 
 
 def load_ber_project_config(project_name: str) -> dict:
@@ -90,56 +97,62 @@ def load_ber_project_config(project_name: str) -> dict:
         return json.load(file)
 
 
-def load_ber_batch_config(batch_name: str) -> dict:
-    """加载 batch 工程的 batch_config.json。"""
-    path = _PROJECTS_ROOT / "batch" / str(batch_name) / "batch_config.json"
-    if not path.exists():
-        raise FileNotFoundError(f"批量对比配置不存在：{path}")
-    with path.open(encoding="utf-8") as file:
-        return json.load(file)
+def ber_option_snr_default(option_key: str) -> tuple:
+    """返回配置选择项的默认 SNR 扫描范围 (min, max, step)。"""
+    return tuple(get_ber_option(option_key)["snr_default"])
 
 
-def ber_mode_schemes(mode_key: str) -> List[dict]:
-    """返回测试方式下的链路配置列表（工程名、结果标签、config.json 内容）。
-
-    返回的 config 已按 BER 测试口径修正（实测信道固定为确定性回放）。
-    """
-    mode = get_ber_mode(mode_key)
-    if "single" in mode:
-        config = _apply_ber_channel_policy(load_ber_project_config(mode["single"]))
-        return [{
-            "project": mode["single"],
-            "label": str(config.get("工程名称") or mode["single"]),
-            "config": config,
-        }]
-    batch = load_ber_batch_config(mode["batch"])
-    schemes = []
-    for scheme in batch.get("配置方案", []):
-        project = str(scheme.get("工程", ""))
-        config = _apply_ber_channel_policy(load_ber_project_config(project))
-        schemes.append({
-            "project": project,
-            "label": str(scheme.get("结果标签") or config.get("工程名称") or project),
-            "config": config,
-        })
-    return schemes
-
-
-def ber_mode_snr_default(mode_key: str) -> tuple:
-    """返回测试方式的默认 SNR 扫描范围 (min, max, step)。"""
-    mode = get_ber_mode(mode_key)
-    if "batch" in mode:
-        batch = load_ber_batch_config(mode["batch"])
-        return (float(batch["SNR最小值"]), float(batch["SNR最大值"]),
-                float(batch["SNR步长"]))
-    return (35.0, 45.0, 1.0)
+def ber_option_link_text(option_key: str) -> str:
+    """返回配置选择项的链路配置说明文本（界面「链路配置显示」用）。"""
+    option = get_ber_option(option_key)
+    if option_key == "tbps05":
+        config = _apply_ber_channel_policy(load_ber_project_config(option["single"]))
+        channel_cfg = config.get("_channel_params") or {}
+        lines = [f"[配置] {config.get('工程名称', '-')}"]
+        lines.append(
+            f"  链路模式：{config.get('链路模式', '-')}"
+            f"    带宽：{config.get('带宽', '-')} GHz"
+            f"    载频：{config.get('载频', '-')} GHz")
+        lines.append(
+            f"  数据源：{config.get('数据源配置', '-')}"
+            f"    调制方式：{config.get('调制方式', '-')}"
+            f"    信道编码：{config.get('信道编码类型', '-')}")
+        lines.append(
+            f"  CP长度：{config.get('CP长度', '-')}"
+            f"    OFDM子载波数：{config.get('OFDM子载波数', '-')}"
+            f"    单帧OFDM符号数：{config.get('单帧OFDM符号数', '-')}")
+        lines.append(
+            f"  采样率：{config.get('采样率', '-')} Msps"
+            f"    时长：{config.get('时长', '-')} ms"
+            f"    信道估计与均衡：{config.get('信道估计与均衡', '-')}")
+        lines.append(
+            f"  信道：{channel_cfg.get('multipath_source', '-')} 实测 PDP"
+            f"（{channel_cfg.get('measured_channel_mode', '-')} / "
+            f"{channel_cfg.get('measured_channel_scenario', '-')}）+ AWGN")
+        lines.append(
+            f"  默认 SNR 扫描范围：{option['snr_default'][0]:.0f}～"
+            f"{option['snr_default'][1]:.0f} dB，步进 {option['snr_default'][2]:.0f} dB")
+        return "\n".join(lines)
+    code_text = ("LDPC(1056,1440)，码率 11/15" if option.get("code_type") == "LDPC"
+                 else f"RS({option['rs_packet_size']},{option['rs_packet_size'] + option['rs_nsym']})，硬译码")
+    mode_text = ("OFDM，512 子载波，CP 32，导频 [0, 16, 32]"
+                 if option["mode"] == "ofdm"
+                 else "SC-FDE，子帧 480 × 51，CP 32")
+    return (
+        f"链路配置：{option['label']}\n"
+        f"  链路模式：{mode_text}\n"
+        f"  信道编码：{code_text}\n"
+        f"  信道：仅 AWGN（BER 扫描口径）\n"
+        f"  默认 SNR 扫描范围：{option['snr_default'][0]:.0f}～"
+        f"{option['snr_default'][1]:.0f} dB，步进 {option['snr_default'][2]:.0f} dB"
+    )
 
 
 def map_ber_project_config(config: dict, keep_channel: bool = False) -> dict:
     """把工程 config.json 映射为 PHYParams 键值。
 
     keep_channel=False 时信道段统一替换为仅 AWGN（对比方式口径）；
-    keep_channel=True 时保留工程原信道设置（如 0.5Tbps 的实测 PDP 瑞利信道）。
+    keep_channel=True 时保留工程原信道设置（如 0.5Tbps 的实测确定性回放）。
     """
     from thz_sim_ui.services.backend import BackendService
 
@@ -159,11 +172,8 @@ def map_ber_project_config(config: dict, keep_channel: bool = False) -> dict:
     return BackendService.map_ui_params_to_phy_params(normalized)
 
 
-def build_mode_configs(mode_key: str, snr_min: float, snr_max: float,
-                       snr_step: float) -> List[dict]:
-    """按测试方式与 SNR 扫描范围构造扫描配置列表。"""
-    mode = get_ber_mode(mode_key)
-    keep_channel = bool(mode.get("keep_channel", False))
+def _scan_snr_values(snr_min: float, snr_max: float, snr_step: float) -> tuple:
+    """按扫描范围生成 SNR 点序列。"""
     snr_min, snr_max, snr_step = float(snr_min), float(snr_max), float(snr_step)
     if snr_step <= 0:
         raise ValueError("SNR 步长必须大于 0")
@@ -173,16 +183,21 @@ def build_mode_configs(mode_key: str, snr_min: float, snr_max: float,
               np.arange(snr_min, snr_max + snr_step / 2.0, snr_step)]
     if not values:
         raise ValueError("SNR 扫描范围内至少需要一个扫描点")
-    configs = []
-    for index, scheme in enumerate(ber_mode_schemes(mode_key)):
-        configs.append({
-            "key": f"{mode_key}:{index}",
-            "label": scheme["label"],
-            "mapped": map_ber_project_config(scheme["config"], keep_channel),
-            "keep_channel": keep_channel,
-            "snr_values": tuple(values),
-        })
-    return configs
+    return tuple(values)
+
+
+def build_ber_option_config(option_key: str, snr_min: float, snr_max: float,
+                            snr_step: float) -> dict:
+    """按配置选择项与 SNR 扫描范围构造单条链路的扫描配置。"""
+    option = get_ber_option(option_key)
+    config = {key: value for key, value in option.items()
+              if key not in ("snr_default", "single", "keep_channel")}
+    config["snr_values"] = _scan_snr_values(snr_min, snr_max, snr_step)
+    if option_key == "tbps05":
+        project = _apply_ber_channel_policy(load_ber_project_config(option["single"]))
+        config["mapped"] = map_ber_project_config(project, keep_channel=True)
+        config["keep_channel"] = True
+    return config
 
 
 def required_zero_error_bits(target_ber: float = TARGET_BER,
@@ -259,7 +274,7 @@ def build_ber_params(config: dict, snr_db: float, seed: int):
         "rs_packet_size": int(config["rs_packet_size"]), "decode_mode": "hard",
     } if code_type == "RS" else {
         "code_type": "LDPC", "ldpc_matrix_type": "ieee802153d_1440",
-        "ldpc_standard_rate": "14/15", "ldpc_n": 1440, "ldpc_k": 1344,
+        "ldpc_standard_rate": "11/15", "ldpc_n": 1440, "ldpc_k": 1056,
     })
     params.update(
         data_source="PRBS", duration=1e-7, sample_length=None,
@@ -309,17 +324,15 @@ def run_ber_frame(config: dict, snr_db: float, seed: int) -> dict:
 
 
 def _point(config: dict, snr_db: float, base_seed: int,
-           stop: Callable[[int, int], bool], start: Optional[dict],
+           stop: Callable[[int, int], bool],
            progress_callback: Optional[Callable[[dict], None]],
            should_cancel: Optional[Callable[[], bool]], config_index: int,
-           phase: str, confidence: float,
+           phase: str,
            frame_runner: Callable[[dict, float, int], dict]) -> tuple[dict, bool]:
-    point = dict(start or {})
-    total_bits = int(point.get("total_bits", 0))
-    total_errors = int(point.get("total_errors", 0))
-    runs = int(point.get("independent_runs", 0))
-    elapsed = float(point.get("elapsed_seconds", 0.0))
-    ebn0_values = list(point.get("_ebn0_values", []))
+    """在单个 SNR 点按停止条件逐试次累计实测统计量，返回点数据与取消标志。"""
+    total_bits = total_errors = runs = 0
+    elapsed = 0.0
+    ebn0_values: List[float] = []
     while stop(total_bits, total_errors):
         if should_cancel is not None and should_cancel():
             break
@@ -339,14 +352,13 @@ def _point(config: dict, snr_db: float, base_seed: int,
             })
     cancelled = should_cancel is not None and should_cancel()
     ber = total_errors / total_bits if total_bits else float("nan")
-    upper = one_sided_ber_upper(total_errors, total_bits, confidence) if total_bits else float("nan")
     return ({
         "SNRdB": float(snr_db),
         "EbN0_dB": float(np.nanmean(ebn0_values)) if ebn0_values else float("nan"),
-        "BER": ber, "ber_upper_95": upper, "total_bits": total_bits,
+        "BER": ber, "total_bits": total_bits,
         "total_errors": total_errors, "independent_runs": runs,
-        "elapsed_seconds": elapsed, "phase": phase, "verified": False,
-        "passes": False, "_ebn0_values": ebn0_values,
+        "elapsed_seconds": elapsed, "phase": phase,
+        "_ebn0_values": ebn0_values,
     }, cancelled)
 
 
@@ -382,29 +394,28 @@ def _plot_results(results: list[dict], target_ber: float,
     fig, ax = plt.subplots(figsize=(8.4, 5.5))
     colors = ["#2C68B4", "#D95F02", "#3A9D3A", "#9467BD", "#00A6A6", "#8C6B4F"]
     markers = ["o", "s", "^", "D", "P", "X"]
+    zero_level = float(target_ber) * 0.15  # 0 误码点空心圆所在高度
+    zero_label_used = False
     for result, color, marker in zip(results, colors, markers):
         points = sorted(result.get("points", []),
                         key=lambda value: float(value.get(x_key, float("nan"))))
         if not points:
             continue
         x = np.asarray([point[x_key] for point in points], dtype=float)
-        # 实测非零点与完成置信验证的零误码点组成主曲线。仅做过短预扫描的
-        # 零误码点不与主曲线连接，避免其较宽置信上限制造“BER 回升”假象。
+        # 每个点绘制其实测 BER；0 误码点不连线，在底部以空心圆标识。
         y = np.asarray([
-            point["BER"] if point["total_errors"] else
-            (point["ber_upper_95"] if point.get("passes") else np.nan)
+            point["BER"] if point["total_errors"] else np.nan
             for point in points
         ], dtype=float)
         ax.semilogy(x, y, color=color, marker=marker, lw=1.4, ms=5.5,
                     label=comparison_title([result["label"]]))
-        unverified_zero = np.asarray([
-            point["total_errors"] == 0 and not point.get("passes") for point in points
-        ])
-        if np.any(unverified_zero):
-            upper = np.asarray([point["ber_upper_95"] for point in points], dtype=float)
-            ax.semilogy(x[unverified_zero], upper[unverified_zero],
-                        linestyle="none", marker="v",
-                        fillstyle="none", color=color, ms=7)
+        zero = np.asarray([point["total_errors"] == 0 for point in points])
+        if np.any(zero):
+            ax.semilogy(x[zero], np.full(int(zero.sum()), zero_level),
+                        linestyle="none", marker="o", fillstyle="none",
+                        color=color, ms=7,
+                        label="无误码点" if not zero_label_used else None)
+            zero_label_used = True
     ax.axhline(target_ber, color="#E5484D", ls="--", lw=1.2,
                label=f"目标 BER = {target_ber:.0e}")
     ax.set_xlabel(xlabel)
@@ -413,10 +424,10 @@ def _plot_results(results: list[dict], target_ber: float,
         title = comparison_title([item.get("label") for item in results])
     ax.set_title(title)
     ax.grid(True, which="both")
-    ax.set_ylim(1e-7, 0.5)
+    ax.set_ylim(zero_level / 1.5, 0.5)
     ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.0e}"))
     ax.legend(fontsize=8, ncol=2)
-    ax.text(0.01, 0.018, "注：零误码达标点按 95% 单侧 BER 上限绘制",
+    ax.text(0.01, 0.018, "注：0 误码点以空心圆标识，不参与连线",
             transform=ax.transAxes, fontsize=8, color="#596579")
     fig.tight_layout()
     buffer = io.BytesIO()
@@ -507,89 +518,66 @@ def generate_saved_curves(result_json_path) -> List[str]:
 
 def run_ber_test(random_seed: int = 2026, quick_max_bits: int = 300_000,
                  quick_min_errors: int = 100, target_ber: float = TARGET_BER,
-                 confidence: float = CONFIDENCE, output_root: Optional[str] = None,
+                 output_root: Optional[str] = None,
                  save_artifacts: bool = True,
                  progress_callback: Optional[Callable[[dict], None]] = None,
                  should_cancel: Optional[Callable[[], bool]] = None,
-                 configs: Optional[tuple[dict, ...]] = None,
-                 mode_key: Optional[str] = None,
-                 snr_min: float = 14.0, snr_max: float = 23.0, snr_step: float = 1.0,
+                 config: Optional[dict] = None,
+                 config_key: Optional[str] = None,
+                 snr_min: Optional[float] = None,
+                 snr_max: Optional[float] = None,
+                 snr_step: float = 1.0,
                  frame_runner: Callable[[dict, float, int], dict] = run_ber_frame) -> dict:
-    """运行全链路 BER 曲线和零误码置信验证。
+    """按所选配置严格扫描全部 SNR 点。
 
-    未显式传入 configs 时按测试方式 mode_key（默认「对比调制方式」）读取
-    batch/single 工程配置，并按 SNR 扫描范围生成配置列表；显式传入
-    configs 时保持旧行为（默认六模式）。
+    每个点按「每点最大比特数 + 每点最少误码数」逐试次累计实测统计量，
+    无早停、无 95% 置信验证；0 误码点在曲线上以空心圆标识。每次运行只
+    运行一条链路配置，产出一张图、一条误码曲线。
     """
     if int(quick_max_bits) <= 0 or int(quick_min_errors) <= 0:
-        raise ValueError("预扫描比特数和最少错误比特必须大于 0")
-    verification_bits = required_zero_error_bits(target_ber, confidence)
-    mode_label = ""
-    if configs:
-        selected_configs = tuple(configs)
-    elif mode_key is not None:
-        selected_configs = tuple(build_mode_configs(
-            str(mode_key), float(snr_min), float(snr_max), float(snr_step)))
-        mode_label = get_ber_mode(mode_key)["label"]
-    else:
-        selected_configs = tuple(BER_CONFIGS)
+        raise ValueError("每点最大比特数和最少误码数必须大于 0")
+    if config is None:
+        option = get_ber_option(config_key or "64qam_ofdm")
+        config = build_ber_option_config(
+            option["key"],
+            float(option["snr_default"][0] if snr_min is None else snr_min),
+            float(option["snr_default"][1] if snr_max is None else snr_max),
+            float(snr_step))
+    config = dict(config)
+    config["_total_configs"] = 1
     started = time.perf_counter()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     root = Path(output_root) if output_root else Path(__file__).resolve().parents[2] / "simulation_results" / "functional_ber"
     run_dir = root / timestamp
-    results: list[dict] = []
+    results = [{"key": config["key"], "label": config["label"], "points": []}]
     cancelled = False
 
     def checkpoint() -> None:
         if save_artifacts:
             _write_checkpoint(run_dir / "ber_results.json", {
-                "target_BER": target_ber, "confidence": confidence,
-                "minimum_verification_bits": verification_bits,
-                "cancelled": cancelled, "results": _serializable_results(results),
+                "target_BER": target_ber, "cancelled": cancelled,
+                "results": _serializable_results(results),
             })
 
-    for config_index, source in enumerate(selected_configs):
-        config = dict(source)
-        config["_total_configs"] = len(selected_configs)
-        config_result = {"key": config["key"], "label": config["label"],
-                         "points": [], "threshold_SNRdB": None, "passes": False}
-        results.append(config_result)
-        for point_index, snr_db in enumerate(config["snr_values"]):
-            stop = lambda bits, errors: bits < int(quick_max_bits) and errors < int(quick_min_errors)
-            point, cancelled = _point(
-                config, snr_db, int(random_seed), stop, None, progress_callback,
-                should_cancel, config_index, "预扫描", confidence, frame_runner)
-            config_result["points"].append(point)
-            if not cancelled and point["total_errors"] == 0:
-                # 零误码预扫描只是候选，立即在同一点继续累计。候选通过后便
-                # 结束该模式，避免继续产生统计量较弱、视觉上反而更高的上限点。
-                verify_stop = lambda bits, errors: errors == 0 and bits < verification_bits
-                verified, cancelled = _point(
-                    config, point["SNRdB"], int(random_seed), verify_stop, point,
-                    progress_callback, should_cancel, config_index, "达标验证",
-                    confidence, frame_runner)
-                point.update(verified)
-                point["verified"] = point["total_bits"] >= verification_bits
-                point["passes"] = bool(
-                    point["verified"] and point["total_errors"] == 0
-                    and point["ber_upper_95"] <= target_ber)
-                if point["passes"]:
-                    config_result["passes"] = True
-                    config_result["threshold_SNRdB"] = point["SNRdB"]
-            if progress_callback is not None:
-                progress_callback({
-                    "config_index": config_index, "config_label": config["label"],
-                    "total_configs": len(selected_configs),
-                    "phase": "完成扫描点", "snr_db": float(snr_db),
-                    "point_index": point_index + 1, "point_count": len(config["snr_values"]),
-                    "total_bits": point["total_bits"], "total_errors": point["total_errors"],
-                })
-            checkpoint()
-            if cancelled or point["passes"]:
-                break
+    point_count = len(config["snr_values"])
+    for point_index, snr_db in enumerate(config["snr_values"]):
+        stop = lambda bits, errors: bits < int(quick_max_bits) and errors < int(quick_min_errors)
+        point, cancelled = _point(
+            config, snr_db, int(random_seed), stop, progress_callback,
+            should_cancel, 0, "扫描", frame_runner)
+        results[0]["points"].append(point)
+        if progress_callback is not None:
+            progress_callback({
+                "config_index": 0, "config_label": config["label"],
+                "total_configs": 1, "phase": "完成扫描点",
+                "snr_db": float(snr_db),
+                "point_index": point_index + 1, "point_count": point_count,
+                "total_bits": point["total_bits"],
+                "total_errors": point["total_errors"],
+            })
+        checkpoint()
         if cancelled:
             break
-        checkpoint()
 
     png, figure = _plot_results(results, target_ber)
     _, ebn0_figure = _plot_results(results, target_ber,
@@ -609,37 +597,36 @@ def run_ber_test(random_seed: int = 2026, quick_max_bits: int = 300_000,
     plt.close(ebn0_figure)
 
     rows = []
-    for config_result in results:
-        for point in sorted(config_result["points"], key=lambda value: value["SNRdB"]):
-            status = "通过" if point["passes"] else ("样本不足" if point["total_errors"] == 0 else "未通过")
-            rows.append([
-                config_result["label"], f"{point['SNRdB']:.1f}", f"{point['EbN0_dB']:.3f}",
-                str(point["total_errors"]), f"{point['total_bits']:,}", f"{point['BER']:.3e}",
-                f"{point['ber_upper_95']:.3e}", str(point["independent_runs"]), status,
-            ])
-    completed = len(results) == len(selected_configs) and not cancelled
-    passed_count = sum(bool(item["passes"]) for item in results)
+    for point in sorted(results[0]["points"], key=lambda value: value["SNRdB"]):
+        ber_text = "0（无误码）" if point["total_errors"] == 0 else f"{point['BER']:.3e}"
+        rows.append([
+            f"{point['SNRdB']:.1f}", f"{point['EbN0_dB']:.3f}",
+            str(point["total_errors"]), f"{point['total_bits']:,}",
+            ber_text, str(point["independent_runs"]),
+        ])
+    completed = len(results[0]["points"]) == point_count and not cancelled
+    scanned_min = min(float(p["SNRdB"]) for p in results[0]["points"]) \
+        if results[0]["points"] else float("nan")
+    scanned_max = max(float(p["SNRdB"]) for p in results[0]["points"]) \
+        if results[0]["points"] else float("nan")
     summary = [
-        {"label": "目标与置信度", "value": f"BER ≤ {target_ber:.0e}，{confidence:.0%} 单侧置信"},
-        {"label": "零误码验证比特数", "value": f"≥ {verification_bits:,} bit"},
-        {"label": "达标链路", "value": f"{passed_count}/{len(selected_configs)}"},
+        {"label": "测试配置", "value": config["label"]},
+        {"label": "目标 BER", "value": f"{target_ber:.0e}（图中红色虚线）"},
+        {"label": "扫描范围", "value": f"{scanned_min:.1f}～{scanned_max:.1f} dB，"
+                                      f"已完成 {len(results[0]['points'])}/{point_count} 点"},
     ]
-    if mode_label:
-        summary.insert(0, {"label": "测试方式", "value": mode_label})
-    for item in results:
-        value = (f"{item['threshold_SNRdB']:.1f} dB" if item["passes"] else
-                 ("已停止" if cancelled else "扫描范围内未达标"))
-        summary.append({"label": item["label"], "value": value})
+    if cancelled:
+        summary.append({"label": "状态", "value": "已停止，已完成点已保存"})
     if artifact_paths:
         summary.append({"label": "结果目录", "value": str(run_dir)})
     return {
-        "test_type": "ber", "ok": bool(completed and passed_count == len(selected_configs)),
+        "test_type": "ber", "ok": completed,
         "cancelled": cancelled, "elapsed_ms": (time.perf_counter() - started) * 1000.0,
         "summary": summary, "checks": [],
-        "plots": [{"title": "全链路 BER 曲线", "png": png}],
-        "table": {"columns": ["模式", "SNR/dB", "Eb/N0/dB", "误码数", "比特数",
-                              "实测 BER", "95% 上限", "运行次数", "判定"], "rows": rows},
-        "data": {"target_BER": target_ber, "confidence": confidence,
-                 "minimum_verification_bits": verification_bits,
-                 "results": _serializable_results(results), "artifact_paths": artifact_paths},
+        "plots": [{"title": "BER 曲线", "png": png}],
+        "table": {"columns": ["SNR/dB", "Eb/N0/dB", "误码数", "比特数",
+                              "实测 BER", "运行次数"], "rows": rows},
+        "data": {"target_BER": target_ber,
+                 "results": _serializable_results(results),
+                 "artifact_paths": artifact_paths},
     }

@@ -25,6 +25,35 @@ def test_tx_modulation_generates_expected_symbol_count(modulation, ncbps):
     assert result["data"]["output_symbol_count"] == 256
     assert result["data"]["shown_symbol_count"] == 128
     assert result["plots"][0]["png"].startswith(b"\x89PNG")
+    # 星座点 I/Q 表格：每个唯一星座点一行，且不再显示调制耗时
+    assert result["table"]["columns"] == ["星座点", "I 分量", "Q 分量"]
+    assert len(result["table"]["rows"]) == 2 ** ncbps
+    assert not any(item["label"] == "调制耗时" for item in result["summary"])
+
+
+def test_modulation_test_disables_pi2_rotation_for_qpsk():
+    pytest.importorskip("PySide6")
+    from thz_sim_ui.services.functional_test_service import run_modulation_test
+
+    result = run_modulation_test(
+        modulation="QPSK",
+        num_symbols=1024,
+        show_points=1024,
+        random_seed=2026,
+    )
+
+    # 关闭 pi/2 旋转与 pi/4 补偿后 QPSK 为方型四点 {(±1±1j)/√2}
+    scale = 1.0 / (2 ** 0.5)
+    pairs = sorted(
+        (round(float(row[1]), 6), round(float(row[2]), 6))
+        for row in result["table"]["rows"])
+    expected = sorted([
+        (round(scale, 6), round(scale, 6)),
+        (round(scale, 6), round(-scale, 6)),
+        (round(-scale, 6), round(scale, 6)),
+        (round(-scale, 6), round(-scale, 6)),
+    ])
+    assert pairs == expected
 
 
 def test_modulation_test_is_first_ui_option():

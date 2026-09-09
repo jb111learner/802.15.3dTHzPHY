@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -34,11 +35,14 @@ from PySide6.QtWidgets import (
 
 from thz_sim_ui.constants import STATUS_COLORS
 from thz_sim_ui.services.ber_test_service import (
-    BER_TEST_MODES,
-    ber_mode_schemes,
-    ber_mode_snr_default,
+    BER_CONFIG_OPTIONS,
+    ber_option_link_text,
+    ber_option_snr_default,
 )
-from thz_sim_ui.services.functional_test_service import FunctionalTestWorker
+from thz_sim_ui.services.functional_test_service import (
+    FunctionalTestWorker,
+    qam_constellation_points,
+)
 from thz_sim_ui.widgets.charts import TextSummaryCard
 from thz_sim_ui.widgets.common import CardWidget, StatusBadge
 from thz_sim_ui.widgets.forms import combo, dspin, make_form_group, make_radio_group, spin
@@ -51,7 +55,7 @@ _PLACEHOLDER_STYLE = (
 _MONO_STYLE = "font-family: Consolas, monospace;"
 
 _TEST_KEYS = (
-    "modulation", "waveform", "codec", "precision",
+    "modulation", "waveform_time", "waveform_spectrum", "codec", "precision",
     "single_link_rate", "total_phy_rate", "function_calibration", "ber",
 )
 
@@ -74,7 +78,8 @@ class FunctionalTestPage(WorkbenchPage):
         self._codec_detail_lines: List[str] = []
         self._codec_case_results: List[dict] = []
         self._modulation_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
-        self._wave_pixmaps: List[tuple] = []  # [(QLabel, QPixmap 原图)]
+        self._wave_time_pixmaps: List[tuple] = []
+        self._wave_spectrum_pixmaps: List[tuple] = []
         self._calibration_pixmaps: List[tuple] = []
         self._ber_pixmaps: List[tuple] = []
 
@@ -86,14 +91,15 @@ class FunctionalTestPage(WorkbenchPage):
 
     def _build_left_panel(self) -> None:
         radio_box = make_radio_group("测试项目选择", [
-            "调制方式测试 (QPSK/16QAM/64QAM)",
-            "波形测试 (单载波/OFDM)",
-            "编码技术测试 (RS/LDPC)",
+            "调制方式测试",
+            "时域波形测试",
+            "功率谱测试",
+            "编码技术测试",
             "浮点精度验证",
-            "单链路物理层速率测试 (≥50 Gbps)",
-            "总物理层速率测试 (≥0.5 Tbps)",
-            "功能校准测试",
-            "误码率测试 (BER ≤ 1e-6)",
+            "单链路物理层速率测试",
+            "总物理层速率测试",
+            "校准测试",
+            "误码率测试",
         ])
         self.test_radios: List[QRadioButton] = radio_box.findChildren(QRadioButton)
         for rb in self.test_radios:
@@ -102,7 +108,8 @@ class FunctionalTestPage(WorkbenchPage):
 
         self.param_stack = QStackedWidget()
         self.param_stack.addWidget(self._build_modulation_params())
-        self.param_stack.addWidget(self._build_waveform_params())
+        self.param_stack.addWidget(self._build_waveform_time_params())
+        self.param_stack.addWidget(self._build_waveform_spectrum_params())
         self.param_stack.addWidget(self._build_codec_params())
         self.param_stack.addWidget(self._build_precision_params())
         self.param_stack.addWidget(self._build_single_rate_params())
@@ -149,98 +156,64 @@ class FunctionalTestPage(WorkbenchPage):
         hint.setObjectName("CardHint")
         return self._wrap_with_hint(box, hint)
 
-    def _build_waveform_params(self) -> QWidget:
-        self.wave_mode = combo(["单载波", "OFDM"])
+    def _build_waveform_time_params(self) -> QWidget:
+        self.wave_time_mode = combo(["单载波", "OFDM"])
 
-        self.wave_time_symbol = combo(["典型复符号", "同号复符号"])
-        self.wave_time_filter_type = combo(["RRC", "RC", "RECT"])
-        self.wave_time_filter_len = spin(8, 128, 32)
-        self.wave_time_sps = spin(1, 16, 4)
-        self.wave_time_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
-        self.wave_time_pulses = spin(2, 3, 2)
+        self.wave_time_sc_modulation = combo(["QPSK", "16QAM", "64QAM"])
+        self.wave_time_sc_pulses = spin(2, 3, 2)
+        self.wave_time_sc_filter_type = combo(["RRC", "RC", "RECT"])
+        self.wave_time_sc_filter_len = spin(8, 128, 32)
+        self.wave_time_sc_sps = spin(1, 16, 4)
+        self.wave_time_sc_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
 
-        self.wave_spectrum_modulation = combo(["QPSK", "BPSK", "16QAM", "64QAM", "256QAM"])
-        self.wave_spectrum_filter_type = combo(["RRC", "RC", "RECT"])
-        self.wave_spectrum_filter_len = spin(8, 128, 32)
-        self.wave_spectrum_sps = spin(1, 16, 4)
-        self.wave_spectrum_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
-        self.wave_spectrum_symbols = spin(2048, 131072, 8192)
-        self.wave_spectrum_symbols.setSingleStep(2048)
+        self.wave_time_ofdm_symbols = spin(2, 3, 2)
+        self.wave_time_ofdm_start = spin(-1024, 1023, -6)
+        self.wave_time_ofdm_step = spin(1, 1024, 11)
+        self.wave_time_ofdm_nsc = spin(64, 2048, 512)
+        self.wave_time_ofdm_nsc.setSingleStep(64)
+        self.wave_time_ofdm_sps = spin(1, 16, 4)
+        self.wave_time_ofdm_cp = spin(0, 1024, 32)
 
-        self.wave_ofdm_time_modulation = combo(["16QAM"])
-        self.wave_ofdm_time_symbols = spin(2, 3, 2)
-        self.wave_ofdm_time_start = spin(-1024, 1023, -6)
-        self.wave_ofdm_time_step = spin(1, 1024, 11)
-        self.wave_ofdm_time_nsc = spin(64, 2048, 512)
-        self.wave_ofdm_time_nsc.setSingleStep(64)
-        self.wave_ofdm_time_sps = spin(1, 16, 4)
-        self.wave_ofdm_time_cp = spin(0, 1024, 32)
+        self.wave_time_ofdm_heat_symbols = spin(8, 512, 48)
+        self.wave_time_ofdm_heat_start = spin(-1024, 1023, -24)
+        self.wave_time_ofdm_heat_step = spin(1, 128, 1)
+        self.wave_time_ofdm_heat_margin = spin(0, 64, 4)
+        self.wave_time_ofdm_heat_floor = dspin(-120.0, -20.0, -45.0, decimals=1, suffix="dB")
 
-        self.wave_ofdm_heat_modulation = combo(["16QAM"])
-        self.wave_ofdm_heat_symbols = spin(8, 512, 48)
-        self.wave_ofdm_heat_start = spin(-1024, 1023, -24)
-        self.wave_ofdm_heat_step = spin(1, 128, 1)
-        self.wave_ofdm_heat_margin = spin(0, 64, 4)
-        self.wave_ofdm_heat_floor = dspin(-120.0, -20.0, -45.0, decimals=1, suffix="dB")
-
-        self.wave_ofdm_spectrum_modulation = combo(["16QAM"])
-        self.wave_ofdm_spectrum_scale = combo(["对数功率 dB", "线性归一化功率"])
-        self.wave_ofdm_spectrum_nsc = spin(64, 2048, 512)
-        self.wave_ofdm_spectrum_nsc.setSingleStep(64)
-        self.wave_ofdm_spectrum_sps = spin(1, 16, 4)
-        self.wave_ofdm_spectrum_cp = spin(0, 1024, 32)
-        self.wave_ofdm_spectrum_symbols = spin(16, 2048, 128)
-        self.wave_ofdm_spectrum_symbols.setSingleStep(16)
-        self.wave_ofdm_spectrum_seed = spin(0, 2147483647, 2026)
-
-        mode_box = make_form_group("波形测试模式", [("链路模式", self.wave_mode)])
-        self.wave_sc_time_box = make_form_group("单载波时域波形参数", [
-            ("测试符号", self.wave_time_symbol),
-            ("滤波器类型", self.wave_time_filter_type),
-            ("滤波器长度", self.wave_time_filter_len),
-            ("过采样率", self.wave_time_sps),
-            ("滚降系数", self.wave_time_rolloff),
-            ("完整脉冲数", self.wave_time_pulses),
+        mode_box = make_form_group("时域波形测试模式", [("链路模式", self.wave_time_mode)])
+        self.wave_time_sc_box = make_form_group("单载波时域波形参数", [
+            ("调制符号", self.wave_time_sc_modulation),
+            ("完整脉冲数", self.wave_time_sc_pulses),
+            ("滤波器类型", self.wave_time_sc_filter_type),
+            ("滤波器长度", self.wave_time_sc_filter_len),
+            ("过采样率", self.wave_time_sc_sps),
+            ("滚降系数", self.wave_time_sc_rolloff),
         ])
-        self.wave_sc_spectrum_box = make_form_group("单载波功率谱参数", [
-            ("调制符号", self.wave_spectrum_modulation),
-            ("滤波器类型", self.wave_spectrum_filter_type),
-            ("滤波器长度", self.wave_spectrum_filter_len),
-            ("过采样率", self.wave_spectrum_sps),
-            ("滚降系数", self.wave_spectrum_rolloff),
-            ("频谱符号数", self.wave_spectrum_symbols),
+        self.wave_time_symbol_box = QGroupBox("各脉冲星座点选择")
+        self.wave_time_symbol_layout = QVBoxLayout(self.wave_time_symbol_box)
+        self.wave_time_symbol_layout.setContentsMargins(14, 18, 14, 14)
+        self.wave_time_symbol_layout.setSpacing(10)
+        self.wave_time_symbol_selectors: List[tuple] = []  # [(QSpinBox, QLabel)]
+
+        self.wave_time_ofdm_box = make_form_group("OFDM 时域波形参数", [
+            ("显示 OFDM 符号数", self.wave_time_ofdm_symbols),
+            ("起始子载波 k", self.wave_time_ofdm_start),
+            ("子载波步长", self.wave_time_ofdm_step),
+            ("子载波数", self.wave_time_ofdm_nsc),
+            ("过采样率", self.wave_time_ofdm_sps),
+            ("CP 长度", self.wave_time_ofdm_cp),
         ])
-        self.wave_ofdm_time_box = make_form_group("OFDM 时域波形参数", [
-            ("典型符号", self.wave_ofdm_time_modulation),
-            ("显示 OFDM 符号数", self.wave_ofdm_time_symbols),
-            ("起始子载波 k", self.wave_ofdm_time_start),
-            ("子载波步长", self.wave_ofdm_time_step),
-            ("子载波数", self.wave_ofdm_time_nsc),
-            ("过采样率", self.wave_ofdm_time_sps),
-            ("CP 长度", self.wave_ofdm_time_cp),
-        ])
-        self.wave_ofdm_heat_box = make_form_group("OFDM 逐符号频谱热图参数", [
-            ("典型符号", self.wave_ofdm_heat_modulation),
-            ("扫描符号数", self.wave_ofdm_heat_symbols),
-            ("起始子载波 k", self.wave_ofdm_heat_start),
-            ("扫描步长", self.wave_ofdm_heat_step),
-            ("横轴边距", self.wave_ofdm_heat_margin),
-            ("色阶下限", self.wave_ofdm_heat_floor),
-        ])
-        self.wave_ofdm_spectrum_box = make_form_group("OFDM 功率谱参数", [
-            ("典型符号", self.wave_ofdm_spectrum_modulation),
-            ("纵坐标", self.wave_ofdm_spectrum_scale),
-            ("子载波数", self.wave_ofdm_spectrum_nsc),
-            ("过采样率", self.wave_ofdm_spectrum_sps),
-            ("CP 长度", self.wave_ofdm_spectrum_cp),
-            ("随机 OFDM 符号数", self.wave_ofdm_spectrum_symbols),
-            ("随机种子", self.wave_ofdm_spectrum_seed),
+        self.wave_time_ofdm_heat_box = make_form_group("OFDM 逐符号频谱热图参数", [
+            ("扫描符号数", self.wave_time_ofdm_heat_symbols),
+            ("起始子载波 k", self.wave_time_ofdm_heat_start),
+            ("扫描步长", self.wave_time_ofdm_heat_step),
+            ("横轴边距", self.wave_time_ofdm_heat_margin),
+            ("色阶下限", self.wave_time_ofdm_heat_floor),
         ])
         hint = QLabel(
-            "单载波默认采用典型复符号与典型成型参数：时域图分别显示 I/Q 完整脉冲，"
-            "并叠加理想波形。OFDM 使用确定性典型 16QAM 单音扫描，显示含 CP 时域图、"
-            "逐符号频谱热图；功率谱单独使用随机 16QAM-OFDM 连续时域数据经 FFT 计算。"
-            "两种模式均不生成 PAPR。"
+            "单载波：从所选调制（QPSK/16QAM/64QAM）的星座图中为每个完整脉冲"
+            "挑选星座点，时域图分别显示 I/Q 实际与理想波形。"
+            "OFDM 使用确定性典型 16QAM 单音扫描，显示含 CP 时域图与逐符号频谱热图。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
@@ -249,21 +222,129 @@ class FunctionalTestPage(WorkbenchPage):
         layout = QVBoxLayout(wrap)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        for widget in (mode_box, self.wave_sc_time_box, self.wave_sc_spectrum_box,
-                       self.wave_ofdm_time_box, self.wave_ofdm_heat_box,
-                       self.wave_ofdm_spectrum_box, hint):
+        for widget in (mode_box, self.wave_time_sc_box, self.wave_time_symbol_box,
+                       self.wave_time_ofdm_box, self.wave_time_ofdm_heat_box, hint):
             layout.addWidget(widget)
-        self.wave_mode.currentTextChanged.connect(self._on_wave_mode_changed)
-        self._on_wave_mode_changed(self.wave_mode.currentText())
+        self.wave_time_mode.currentTextChanged.connect(self._on_wave_time_mode_changed)
+        self.wave_time_sc_modulation.currentIndexChanged.connect(
+            lambda _index: self._rebuild_wave_time_symbol_selectors())
+        self.wave_time_sc_pulses.valueChanged.connect(
+            lambda _value: self._rebuild_wave_time_symbol_selectors())
+        self._rebuild_wave_time_symbol_selectors()
+        self._on_wave_time_mode_changed(self.wave_time_mode.currentText())
         return wrap
 
-    def _on_wave_mode_changed(self, text: str) -> None:
+    def _on_wave_time_mode_changed(self, text: str) -> None:
         is_ofdm = text == "OFDM"
-        self.wave_sc_time_box.setVisible(not is_ofdm)
-        self.wave_sc_spectrum_box.setVisible(not is_ofdm)
-        self.wave_ofdm_time_box.setVisible(is_ofdm)
-        self.wave_ofdm_heat_box.setVisible(is_ofdm)
-        self.wave_ofdm_spectrum_box.setVisible(is_ofdm)
+        self.wave_time_sc_box.setVisible(not is_ofdm)
+        self.wave_time_symbol_box.setVisible(not is_ofdm)
+        self.wave_time_ofdm_box.setVisible(is_ofdm)
+        self.wave_time_ofdm_heat_box.setVisible(is_ofdm)
+        self._fit_param_stack_height()
+
+    def _rebuild_wave_time_symbol_selectors(self) -> None:
+        """按调制方式与完整脉冲数重建每个脉冲的星座点选择控件。
+
+        每行用容器 QWidget 承载（QFormLayout 的 addRow(文本, 控件) 内部
+        布局项无法稳定取得 widget，重建清理会残留/误删控件，导致 I/Q 值
+        显示重叠错乱）；重建时整行容器销毁，selectors 列表始终指向新控件。
+        """
+        while self.wave_time_symbol_layout.count():
+            item = self.wave_time_symbol_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self.wave_time_symbol_selectors = []
+        points = qam_constellation_points(self.wave_time_sc_modulation.currentText())
+        last_index = len(points) - 1
+        for index in range(self.wave_time_sc_pulses.value()):
+            selector = spin(0, last_index, min(index, last_index))
+            value_label = QLabel()
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            caption = QLabel(f"脉冲 {index + 1} 星座点")
+            caption.setMinimumWidth(96)
+            row.addWidget(caption)
+            row.addWidget(selector)
+            row.addWidget(value_label)
+            row.addStretch(1)
+            self.wave_time_symbol_layout.addWidget(row_widget)
+
+            def _update(_value=None, sel=selector, lab=value_label, pts=points):
+                point = pts[sel.value()]
+                lab.setText(f"I = {point.real:+.3f}，Q = {point.imag:+.3f}")
+
+            selector.valueChanged.connect(_update)
+            _update()
+            self.wave_time_symbol_selectors.append((selector, value_label))
+        self._fit_param_stack_height()
+
+    def _build_waveform_spectrum_params(self) -> QWidget:
+        self.wave_spectrum_mode = combo(["单载波", "OFDM"])
+
+        self.wave_spectrum_sc_modulation = combo(["QPSK", "BPSK", "16QAM", "64QAM", "256QAM"])
+        self.wave_spectrum_sc_filter_type = combo(["RRC", "RC", "RECT"])
+        self.wave_spectrum_sc_filter_len = spin(8, 128, 32)
+        self.wave_spectrum_sc_sps = spin(1, 16, 4)
+        self.wave_spectrum_sc_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
+        self.wave_spectrum_sc_symbols = spin(2048, 131072, 8192)
+        self.wave_spectrum_sc_symbols.setSingleStep(2048)
+        self.wave_spectrum_sc_scale = combo(["对数功率 dB", "线性归一化功率"])
+
+        self.wave_spectrum_ofdm_scale = combo(["对数功率 dB", "线性归一化功率"])
+        self.wave_spectrum_ofdm_nsc = spin(64, 2048, 512)
+        self.wave_spectrum_ofdm_nsc.setSingleStep(64)
+        self.wave_spectrum_ofdm_sps = spin(1, 16, 4)
+        self.wave_spectrum_ofdm_cp = spin(0, 1024, 32)
+        self.wave_spectrum_ofdm_symbols = spin(16, 2048, 128)
+        self.wave_spectrum_ofdm_symbols.setSingleStep(16)
+        self.wave_spectrum_ofdm_seed = spin(0, 2147483647, 2026)
+
+        mode_box = make_form_group("功率谱测试模式", [("链路模式", self.wave_spectrum_mode)])
+        self.wave_spectrum_sc_box = make_form_group("单载波功率谱参数", [
+            ("调制符号", self.wave_spectrum_sc_modulation),
+            ("滤波器类型", self.wave_spectrum_sc_filter_type),
+            ("滤波器长度", self.wave_spectrum_sc_filter_len),
+            ("过采样率", self.wave_spectrum_sc_sps),
+            ("滚降系数", self.wave_spectrum_sc_rolloff),
+            ("频谱符号数", self.wave_spectrum_sc_symbols),
+            ("纵坐标", self.wave_spectrum_sc_scale),
+        ])
+        self.wave_spectrum_ofdm_box = make_form_group("OFDM 功率谱参数", [
+            ("纵坐标", self.wave_spectrum_ofdm_scale),
+            ("子载波数", self.wave_spectrum_ofdm_nsc),
+            ("过采样率", self.wave_spectrum_ofdm_sps),
+            ("CP 长度", self.wave_spectrum_ofdm_cp),
+            ("随机 OFDM 符号数", self.wave_spectrum_ofdm_symbols),
+            ("随机种子", self.wave_spectrum_ofdm_seed),
+        ])
+        hint = QLabel(
+            "单载波：实测 Welch 功率谱叠加理想无限长滤波器的解析滚降响应，"
+            "纵坐标支持对数功率 dB 与线性归一化功率两种显示；"
+            "OFDM：随机 16QAM-OFDM 连续时域数据经分段 FFT 平均计算功率谱。"
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("CardHint")
+
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        for widget in (mode_box, self.wave_spectrum_sc_box,
+                       self.wave_spectrum_ofdm_box, hint):
+            layout.addWidget(widget)
+        self.wave_spectrum_mode.currentTextChanged.connect(
+            self._on_wave_spectrum_mode_changed)
+        self._on_wave_spectrum_mode_changed(self.wave_spectrum_mode.currentText())
+        return wrap
+
+    def _on_wave_spectrum_mode_changed(self, text: str) -> None:
+        is_ofdm = text == "OFDM"
+        self.wave_spectrum_sc_box.setVisible(not is_ofdm)
+        self.wave_spectrum_ofdm_box.setVisible(is_ofdm)
+        self._fit_param_stack_height()
 
     def _build_codec_params(self) -> QWidget:
         self.codec_type_combo = combo(["RS (GF符号)", "LDPC (十六进制)"])
@@ -410,43 +491,47 @@ class FunctionalTestPage(WorkbenchPage):
     def _build_calibration_params(self) -> QWidget:
         self.calibration_bits = spin(10000, 10000000, 200000)
         self.calibration_seed = spin(0, 2147483647, 2026)
-        box = make_form_group("功能校准参数", [
+        box = make_form_group("校准测试参数", [
             ("每个 BER 点比特数", self.calibration_bits),
             ("随机种子", self.calibration_seed),
         ])
         hint = QLabel(
-            "QPSK、16QAM、64QAM 与 AWGN 理论 BER 曲线比较；"
-            "LDPC(14/15) 和 RS(15,11) 与工程内 MATLAB 固定参考结果比较。"
+            "QPSK / 16QAM / 64QAM 与 AWGN 理论 BER 曲线比较；"
+            "LDPC(1440,1056) 与 RS(15,11) 的 QPSK 编码链路 BER 校准"
+            "（理论曲线为同 Eb/N0 下未编码 QPSK，用于展示编码增益）。"
+            "每条曲线独立绘图，图下附仿真点明细表格。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
         return self._wrap_with_hint(box, hint)
 
     def _build_ber_params(self) -> QWidget:
-        self.ber_mode_combo = combo([mode["label"] for mode in BER_TEST_MODES])
-        for index, mode in enumerate(BER_TEST_MODES):
-            self.ber_mode_combo.setItemData(index, mode["key"])
+        self.ber_config_combo = combo(
+            [option["label"] for option in BER_CONFIG_OPTIONS])
+        for index, option in enumerate(BER_CONFIG_OPTIONS):
+            self.ber_config_combo.setItemData(index, option["key"])
 
         self.ber_link_config = QPlainTextEdit()
         self.ber_link_config.setReadOnly(True)
         self.ber_link_config.setStyleSheet(_MONO_STYLE)
-        self.ber_link_config.setMinimumHeight(170)
-        self.ber_link_config.setMaximumHeight(230)
+        self.ber_link_config.setMinimumHeight(150)
+        self.ber_link_config.setMaximumHeight(210)
         self.ber_link_box = QGroupBox("链路配置显示")
         link_layout = QVBoxLayout(self.ber_link_box)
         link_layout.setContentsMargins(14, 18, 14, 14)
         link_layout.addWidget(self.ber_link_config)
 
         self.ber_snr_min = dspin(-20.0, 100.0, 14.0, decimals=1, suffix=" dB")
-        self.ber_snr_max = dspin(-20.0, 100.0, 23.0, decimals=1, suffix=" dB")
+        self.ber_snr_max = dspin(-20.0, 100.0, 20.0, decimals=1, suffix=" dB")
         self.ber_snr_step = dspin(0.1, 10.0, 1.0, decimals=1, suffix=" dB")
         self.ber_seed = spin(0, 2147483647, 2026)
-        self.ber_quick_bits = spin(100000, 10000000, 300000)
+        self.ber_quick_bits = spin(100000, 10000000, 3000000)
         self.ber_quick_bits.setSingleStep(100000)
         self.ber_quick_errors = spin(10, 10000, 100)
         self.ber_quick_errors.setSingleStep(10)
 
-        mode_box = make_form_group("测试方式选择", [("测试方式", self.ber_mode_combo)])
+        config_box = make_form_group("测试配置选择", [
+            ("链路配置", self.ber_config_combo)])
         snr_box = make_form_group("SNR 扫描范围", [
             ("最小值", self.ber_snr_min),
             ("最大值", self.ber_snr_max),
@@ -458,12 +543,11 @@ class FunctionalTestPage(WorkbenchPage):
             ("随机种子", self.ber_seed),
         ])
         hint = QLabel(
-            "目标 BER ≤ 1e-6（95% 单侧置信）：预扫描生成瀑布曲线；"
-            "候选达标点至少累计 2,995,733 bit，零误码时仅当 95% BER 上限"
-            "不超过 1e-6 才判定通过。切换测试方式会载入对应 batch/single "
-            "工程的链路配置，并将 SNR 扫描范围恢复为工程默认值（可自由修改）。"
-            "对比方式以短帧逐次累计统计量；0.5Tbps 方式每次试次按工程配置"
-            "时长（0.04 ms）生成数据量。可随时停止，已完成点会保存到 simulation_results。"
+            "严格按 SNR 扫描范围逐点仿真（无早停、无 95% 置信验证）："
+            "每个点按每点最大比特数与最少误码数逐试次累计实测误码率，"
+            "0 误码点在曲线上以空心圆标识，目标 BER=1e-6 以红色虚线标出。"
+            "切换配置会载入对应链路说明并恢复默认 SNR 扫描范围（可自由修改）。"
+            "可随时停止，已完成点会保存到 simulation_results。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
@@ -472,84 +556,25 @@ class FunctionalTestPage(WorkbenchPage):
         layout = QVBoxLayout(wrap)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        for widget in (mode_box, self.ber_link_box, snr_box, scan_box, hint):
+        for widget in (config_box, self.ber_link_box, snr_box, scan_box, hint):
             layout.addWidget(widget)
-        self.ber_mode_combo.currentIndexChanged.connect(self._on_ber_mode_changed)
-        self._on_ber_mode_changed(0)
+        self.ber_config_combo.currentIndexChanged.connect(self._on_ber_config_changed)
+        self._on_ber_config_changed(0)
         return wrap
 
-    def _on_ber_mode_changed(self, _index: int) -> None:
-        """切换测试方式：刷新链路配置显示并恢复默认 SNR 扫描范围。"""
-        mode_key = self.ber_mode_combo.currentData()
+    def _on_ber_config_changed(self, _index: int) -> None:
+        """切换链路配置：刷新链路配置显示并恢复默认 SNR 扫描范围。"""
+        option_key = self.ber_config_combo.currentData()
         try:
-            schemes = ber_mode_schemes(mode_key)
-            snr_min, snr_max, snr_step = ber_mode_snr_default(mode_key)
+            text = ber_option_link_text(option_key)
+            snr_min, snr_max, snr_step = ber_option_snr_default(option_key)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.ber_link_config.setPlainText(f"链路配置读取失败：{exc}")
             return
-        self.ber_link_config.setPlainText(self._format_ber_link_configs(schemes))
+        self.ber_link_config.setPlainText(text)
         self.ber_snr_min.setValue(snr_min)
         self.ber_snr_max.setValue(snr_max)
         self.ber_snr_step.setValue(snr_step)
-
-    @staticmethod
-    def _format_ber_link_configs(schemes: List[dict]) -> str:
-        """把工程配置列表渲染为等宽文本，展示各链路的关键参数。"""
-        lines: List[str] = []
-        for index, scheme in enumerate(schemes):
-            config = scheme["config"]
-            lines.append(f"[配置 {index + 1}] {scheme['label']}")
-            lines.append(
-                f"  链路模式：{config.get('链路模式', '-')}"
-                f"    带宽：{config.get('带宽', '-')} GHz"
-                f"    载频：{config.get('载频', '-')} GHz"
-            )
-            lines.append(
-                f"  数据源：{config.get('数据源配置', '-')}"
-                f"    数据子帧长度：{config.get('数据子帧长度', '-')}"
-                f"    单帧数据子帧数量：{config.get('单帧数据子帧数量', '-')}"
-            )
-            lines.append(
-                f"  CP长度：{config.get('CP长度', '-')}"
-                f"    调制方式：{config.get('调制方式', '-')}"
-                f"    信道编码：{config.get('信道编码类型', '-')}"
-            )
-            lines.append(
-                f"  扰码：{config.get('扰码配置', '-')}"
-                f"    前导码：{config.get('前导码配置', '-')}"
-                f"    OFDM子载波数：{config.get('OFDM子载波数', '-')}"
-            )
-            lines.append(
-                f"  单帧OFDM符号数：{config.get('单帧OFDM符号数', '-')}"
-                f"    块状导频：{config.get('块状导频索引', '-')}"
-            )
-            lines.append(
-                f"  波形成形：{config.get('波形成形', '-')}"
-                f"    滚降因子：{config.get('滚降因子', '-')}"
-                f"    滤波器跨度：{config.get('滤波器跨度', '-')}"
-                f"    过采样率：{config.get('过采样率', '-')}"
-            )
-            lines.append(
-                f"  采样率：{config.get('采样率', '-')} Msps"
-                f"    时长：{config.get('时长', '-')} ms"
-                f"    信道估计与均衡：{config.get('信道估计与均衡', '-')}"
-            )
-            channel_cfg = config.get("_channel_params") or {}
-            if channel_cfg.get("enable_multipath"):
-                mode_text = {
-                    "deterministic": "确定性回放",
-                    "pdp_rayleigh": "PDP 瑞利",
-                }.get(channel_cfg.get("measured_channel_mode"),
-                      channel_cfg.get("measured_channel_mode", "-"))
-                lines.append(
-                    f"  信道：实测 {mode_text}"
-                    f"（{channel_cfg.get('measured_channel_scenario', '-')} 场景）+ AWGN"
-                )
-            else:
-                lines.append("  信道：仅 AWGN（BER 扫描口径）")
-            if index < len(schemes) - 1:
-                lines.append("")
-        return "\n".join(lines)
 
     @staticmethod
     def _wrap_with_hint(box: QWidget, hint: QWidget) -> QWidget:
@@ -567,7 +592,8 @@ class FunctionalTestPage(WorkbenchPage):
     def _build_right_panel(self) -> None:
         self.result_stack = QStackedWidget()
         self.result_stack.addWidget(self._build_modulation_results())
-        self.result_stack.addWidget(self._build_waveform_results())
+        self.result_stack.addWidget(self._build_waveform_time_results())
+        self.result_stack.addWidget(self._build_waveform_spectrum_results())
         self.result_stack.addWidget(self._build_codec_results())
         self.result_stack.addWidget(self._build_precision_results())
         self.result_stack.addWidget(self._build_table_results(
@@ -598,34 +624,50 @@ class FunctionalTestPage(WorkbenchPage):
         self.modulation_card = CardWidget("发射端星座图")
         self.modulation_plot = QLabel()
         self.modulation_plot.setAlignment(Qt.AlignCenter)
-        self.modulation_plot.setMinimumHeight(320)
+        self.modulation_plot.setMinimumHeight(430)
         self.modulation_card.layout.addWidget(self.modulation_plot)
         self.modulation_card.hide()
         layout.addWidget(self.modulation_card)
+
+        self.modulation_constellation_table = self._make_table(["星座点", "I 分量", "Q 分量"])
+        self.modulation_constellation_table.hide()
+        layout.addWidget(self.modulation_constellation_table)
 
         self.modulation_summary_card = _UpdatableSummaryCard("调制信息", ["尚未运行"])
         layout.addWidget(self.modulation_summary_card)
         layout.addStretch(1)
         return page
 
-    def _build_waveform_results(self) -> QWidget:
+    def _build_waveform_time_results(self) -> QWidget:
+        return self._build_wave_results_page(
+            "wave_time", "点击左侧「运行测试」生成时域波形")
+
+    def _build_waveform_spectrum_results(self) -> QWidget:
+        return self._build_wave_results_page(
+            "wave_spectrum", "点击左侧「运行测试」生成功率谱")
+
+    def _build_wave_results_page(self, prefix: str, placeholder_text: str) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        self.wave_placeholder = self._make_placeholder("点击左侧「运行测试」生成波形")
-        layout.addWidget(self.wave_placeholder)
+        placeholder = self._make_placeholder(placeholder_text)
+        setattr(self, f"{prefix}_placeholder", placeholder)
+        layout.addWidget(placeholder)
 
-        # 结果图卡片容器：按每次运行产出的图数量动态生成（时域/星座/CCDF/频谱等）
-        self.wave_cards_container = QWidget()
-        self.wave_cards_layout = QVBoxLayout(self.wave_cards_container)
-        self.wave_cards_layout.setContentsMargins(0, 0, 0, 0)
-        self.wave_cards_layout.setSpacing(12)
-        layout.addWidget(self.wave_cards_container)
+        # 结果图卡片容器：按每次运行产出的图数量动态生成（时域/热图/频谱等）
+        cards_container = QWidget()
+        cards_layout = QVBoxLayout(cards_container)
+        cards_layout.setContentsMargins(0, 0, 0, 0)
+        cards_layout.setSpacing(12)
+        setattr(self, f"{prefix}_cards_container", cards_container)
+        setattr(self, f"{prefix}_cards_layout", cards_layout)
+        layout.addWidget(cards_container)
 
-        self.wave_checks_card = _UpdatableSummaryCard("验证结果", ["尚未运行"])
-        layout.addWidget(self.wave_checks_card)
+        checks_card = _UpdatableSummaryCard("验证结果", ["尚未运行"])
+        setattr(self, f"{prefix}_checks_card", checks_card)
+        layout.addWidget(checks_card)
         layout.addStretch(1)
         return page
 
@@ -728,19 +770,15 @@ class FunctionalTestPage(WorkbenchPage):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         self.calibration_placeholder = self._make_placeholder(
-            "点击左侧「运行测试」执行调制与编码功能校准")
-        self.calibration_plot_card = CardWidget("BER 校准曲线")
-        self.calibration_plot = QLabel()
-        self.calibration_plot.setAlignment(Qt.AlignCenter)
-        self.calibration_plot.setMinimumHeight(340)
-        self.calibration_plot_card.layout.addWidget(self.calibration_plot)
-        self.calibration_plot_card.hide()
-        self.calibration_table = self._make_table(
-            ["校准项目", "样本/用例数", "最大对数偏差", "单调", "判定"])
-        self.calibration_summary_card = _UpdatableSummaryCard("功能校准总览", ["尚未运行"])
+            "点击左侧「运行测试」执行调制与编码 BER 校准")
+        # 每条校准曲线一张图，图下附仿真点明细表格
+        self.calibration_cards_container = QWidget()
+        self.calibration_cards_layout = QVBoxLayout(self.calibration_cards_container)
+        self.calibration_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.calibration_cards_layout.setSpacing(12)
+        self.calibration_summary_card = _UpdatableSummaryCard("校准总览", ["尚未运行"])
         layout.addWidget(self.calibration_placeholder)
-        layout.addWidget(self.calibration_plot_card)
-        layout.addWidget(self.calibration_table, 1)
+        layout.addWidget(self.calibration_cards_container)
         layout.addWidget(self.calibration_summary_card)
         return page
 
@@ -759,17 +797,17 @@ class FunctionalTestPage(WorkbenchPage):
         progress_card = CardWidget("运行进度")
         progress_card.layout.addWidget(self.ber_progress_label)
         progress_card.layout.addWidget(self.ber_progress)
-        self.ber_plot_card = CardWidget("全链路 BER 曲线")
+        self.ber_plot_card = CardWidget("BER 曲线")
         self.ber_plot = QLabel()
         self.ber_plot.setAlignment(Qt.AlignCenter)
         self.ber_plot.setMinimumHeight(390)
         self.ber_plot_card.layout.addWidget(self.ber_plot)
         self.ber_plot_card.hide()
         self.ber_table = self._make_table([
-            "模式", "SNR/dB", "Eb/N0/dB", "误码数", "比特数",
-            "实测 BER", "95% 上限", "运行次数", "判定",
+            "SNR/dB", "Eb/N0/dB", "误码数", "比特数",
+            "实测 BER", "运行次数",
         ])
-        self.ber_summary_card = _UpdatableSummaryCard("BER 验收总览", ["尚未运行"])
+        self.ber_summary_card = _UpdatableSummaryCard("BER 扫描总览", ["尚未运行"])
         layout.addWidget(self.ber_placeholder)
         layout.addWidget(progress_card)
         layout.addWidget(self.ber_plot_card)
@@ -806,15 +844,27 @@ class FunctionalTestPage(WorkbenchPage):
         idx = self._selected_index()
         self.param_stack.setCurrentIndex(idx)
         self.result_stack.setCurrentIndex(idx)
-        self.stop_button.setVisible(idx == 7)
-        if idx == 2:
+        self.stop_button.setVisible(idx == 8)
+        if idx == 3:
             self.param_stack.setMaximumHeight(760 if self.codec_advanced_box.isChecked() else 440)
         else:
             # QStackedWidget 默认按所有页面中最大的 sizeHint 请求高度，导致
             # 参数较少的速率页出现大片空白；这里只采用当前页的紧凑高度。
-            current = self.param_stack.currentWidget()
-            current.adjustSize()
-            self.param_stack.setMaximumHeight(max(120, current.sizeHint().height()))
+            self._fit_param_stack_height()
+
+    def _fit_param_stack_height(self) -> None:
+        """把参数区高度贴合当前页面的 sizeHint（编码页固定高度除外）。
+
+        波形测试页切换链路模式会增删参数组，需要重新贴合，否则内容会被
+        压进旧模式的页面高度，出现参数行挤在一起的现象。
+        """
+        if self._selected_test() == "codec":
+            return
+        current = self.param_stack.currentWidget()
+        if current is None:
+            return
+        current.adjustSize()
+        self.param_stack.setMaximumHeight(max(120, current.sizeHint().height()))
 
     def _demo_path(self) -> Path:
         name = "rs_demo.json" if "RS" in self.codec_type_combo.currentText() else "ldpc_demo.json"
@@ -979,13 +1029,11 @@ class FunctionalTestPage(WorkbenchPage):
     def _on_progress(self, progress: dict) -> None:
         if self._selected_test() != "ber":
             return
-        config_index = int(progress.get("config_index", 0))
+        # 单配置扫描：进度按当前链路配置已完成的扫描点计算。
         point_index = int(progress.get("point_index", 0))
-        point_count = int(progress.get("point_count", 7))
-        total_configs = max(1, int(progress.get("total_configs", 6)))
-        # 各配置等分总进度；逐点扫描显示确定进度，验证阶段保持在该配置尾部。
-        local = min(0.95, point_index / max(point_count, 1)) if point_index else 0.9
-        percent = int(100.0 * (config_index + local) / total_configs)
+        point_count = max(1, int(progress.get("point_count", 11)))
+        local = min(0.98, point_index / point_count) if point_index else 0.0
+        percent = int(100.0 * local)
         self.ber_progress.setValue(min(percent, 99))
         self.ber_progress_label.setText(
             f"{progress.get('config_label', '-')}｜{progress.get('phase', '-')}｜"
@@ -1002,41 +1050,57 @@ class FunctionalTestPage(WorkbenchPage):
                 "show_points": self.modulation_show.value(),
                 "random_seed": self.modulation_seed.value(),
             }
-        if test_type == "waveform":
-            payload = {
-                "link_mode": "sc-fde" if self.wave_mode.currentText() == "单载波" else "ofdm",
-                "time_symbol_pattern": self.wave_time_symbol.currentText(),
-                "time_pulse_count": self.wave_time_pulses.value(),
-                "time_filter_type": self.wave_time_filter_type.currentText().lower(),
-                "time_filter_length": self.wave_time_filter_len.value(),
-                "time_oversampling": self.wave_time_sps.value(),
-                "time_rolloff": self.wave_time_rolloff.value(),
-                "spectrum_modulation": self.wave_spectrum_modulation.currentText(),
-                "spectrum_filter_type": self.wave_spectrum_filter_type.currentText().lower(),
-                "spectrum_filter_length": self.wave_spectrum_filter_len.value(),
-                "spectrum_oversampling": self.wave_spectrum_sps.value(),
-                "spectrum_rolloff": self.wave_spectrum_rolloff.value(),
-                "spectrum_num_symbols": self.wave_spectrum_symbols.value(),
-            }
-            if payload["link_mode"] == "ofdm":
+        if test_type == "waveform_time":
+            is_ofdm = self.wave_time_mode.currentText() == "OFDM"
+            payload = {"link_mode": "ofdm" if is_ofdm else "sc-fde"}
+            if is_ofdm:
                 payload.update({
-                    "ofdm_subcarriers": self.wave_ofdm_time_nsc.value(),
-                    "oversampling": self.wave_ofdm_time_sps.value(),
-                    "ofdm_cp_length": self.wave_ofdm_time_cp.value(),
-                    "ofdm_time_symbol_count": self.wave_ofdm_time_symbols.value(),
-                    "ofdm_time_start_subcarrier": self.wave_ofdm_time_start.value(),
-                    "ofdm_time_subcarrier_step": self.wave_ofdm_time_step.value(),
-                    "ofdm_heatmap_symbol_count": self.wave_ofdm_heat_symbols.value(),
-                    "ofdm_heatmap_start_subcarrier": self.wave_ofdm_heat_start.value(),
-                    "ofdm_heatmap_subcarrier_step": self.wave_ofdm_heat_step.value(),
-                    "ofdm_heatmap_axis_margin": self.wave_ofdm_heat_margin.value(),
-                    "ofdm_heatmap_floor_db": self.wave_ofdm_heat_floor.value(),
-                    "ofdm_spectrum_scale": self.wave_ofdm_spectrum_scale.currentText(),
-                    "ofdm_spectrum_subcarriers": self.wave_ofdm_spectrum_nsc.value(),
-                    "ofdm_spectrum_oversampling": self.wave_ofdm_spectrum_sps.value(),
-                    "ofdm_spectrum_cp_length": self.wave_ofdm_spectrum_cp.value(),
-                    "ofdm_spectrum_num_symbols": self.wave_ofdm_spectrum_symbols.value(),
-                    "ofdm_spectrum_random_seed": self.wave_ofdm_spectrum_seed.value(),
+                    "ofdm_subcarriers": self.wave_time_ofdm_nsc.value(),
+                    "ofdm_oversampling": self.wave_time_ofdm_sps.value(),
+                    "ofdm_cp_length": self.wave_time_ofdm_cp.value(),
+                    "ofdm_time_symbol_count": self.wave_time_ofdm_symbols.value(),
+                    "ofdm_time_start_subcarrier": self.wave_time_ofdm_start.value(),
+                    "ofdm_time_subcarrier_step": self.wave_time_ofdm_step.value(),
+                    "ofdm_heatmap_symbol_count": self.wave_time_ofdm_heat_symbols.value(),
+                    "ofdm_heatmap_start_subcarrier": self.wave_time_ofdm_heat_start.value(),
+                    "ofdm_heatmap_subcarrier_step": self.wave_time_ofdm_heat_step.value(),
+                    "ofdm_heatmap_axis_margin": self.wave_time_ofdm_heat_margin.value(),
+                    "ofdm_heatmap_floor_db": self.wave_time_ofdm_heat_floor.value(),
+                })
+            else:
+                payload.update({
+                    "sc_modulation": self.wave_time_sc_modulation.currentText(),
+                    "sc_symbol_indexes": tuple(
+                        selector.value()
+                        for selector, _label in self.wave_time_symbol_selectors),
+                    "sc_pulse_count": self.wave_time_sc_pulses.value(),
+                    "sc_filter_type": self.wave_time_sc_filter_type.currentText().lower(),
+                    "sc_filter_length": self.wave_time_sc_filter_len.value(),
+                    "sc_oversampling": self.wave_time_sc_sps.value(),
+                    "sc_rolloff": self.wave_time_sc_rolloff.value(),
+                })
+            return payload
+        if test_type == "waveform_spectrum":
+            is_ofdm = self.wave_spectrum_mode.currentText() == "OFDM"
+            payload = {"link_mode": "ofdm" if is_ofdm else "sc-fde"}
+            if is_ofdm:
+                payload.update({
+                    "ofdm_spectrum_subcarriers": self.wave_spectrum_ofdm_nsc.value(),
+                    "ofdm_spectrum_oversampling": self.wave_spectrum_ofdm_sps.value(),
+                    "ofdm_spectrum_cp_length": self.wave_spectrum_ofdm_cp.value(),
+                    "ofdm_spectrum_scale": self.wave_spectrum_ofdm_scale.currentText(),
+                    "ofdm_spectrum_num_symbols": self.wave_spectrum_ofdm_symbols.value(),
+                    "ofdm_spectrum_random_seed": self.wave_spectrum_ofdm_seed.value(),
+                })
+            else:
+                payload.update({
+                    "sc_modulation": self.wave_spectrum_sc_modulation.currentText(),
+                    "sc_filter_type": self.wave_spectrum_sc_filter_type.currentText().lower(),
+                    "sc_filter_length": self.wave_spectrum_sc_filter_len.value(),
+                    "sc_oversampling": self.wave_spectrum_sc_sps.value(),
+                    "sc_rolloff": self.wave_spectrum_sc_rolloff.value(),
+                    "sc_num_symbols": self.wave_spectrum_sc_symbols.value(),
+                    "sc_scale": self.wave_spectrum_sc_scale.currentText(),
                 })
             return payload
         if test_type == "codec":
@@ -1066,7 +1130,7 @@ class FunctionalTestPage(WorkbenchPage):
             return {"threshold_tbps": self.total_rate_threshold.value()}
         if test_type == "ber":
             return {
-                "mode_key": self.ber_mode_combo.currentData(),
+                "config_key": self.ber_config_combo.currentData(),
                 "snr_min": self.ber_snr_min.value(),
                 "snr_max": self.ber_snr_max.value(),
                 "snr_step": self.ber_snr_step.value(),
@@ -1084,8 +1148,10 @@ class FunctionalTestPage(WorkbenchPage):
                         ("已完成" if result.get("ok") else "已失败"))
         if test_type == "modulation":
             self._render_modulation(result)
-        elif test_type == "waveform":
-            self._render_waveform(result)
+        elif test_type == "waveform_time":
+            self._render_waveform(result, "wave_time")
+        elif test_type == "waveform_spectrum":
+            self._render_waveform(result, "wave_spectrum")
         elif test_type == "codec":
             self._render_codec(result)
         elif test_type == "precision":
@@ -1106,7 +1172,8 @@ class FunctionalTestPage(WorkbenchPage):
         self._set_badge("已失败")
         target = {
             "modulation": self.modulation_placeholder,
-            "waveform": self.wave_placeholder,
+            "waveform_time": self.wave_time_placeholder,
+            "waveform_spectrum": self.wave_spectrum_placeholder,
             "codec": self.codec_placeholder,
             "precision": self.prec_placeholder,
             "single_link_rate": self.single_rate_placeholder,
@@ -1139,14 +1206,22 @@ class FunctionalTestPage(WorkbenchPage):
             self.modulation_placeholder.show()
             self.modulation_card.hide()
             self.modulation_plot.clear()
+            self.modulation_constellation_table.hide()
+            self.modulation_constellation_table.setRowCount(0)
             self._modulation_pixmaps = []
             self.modulation_summary_card.set_lines(["运行中…"])
-        elif test_type == "waveform":
-            self.wave_placeholder.setText("运行中，请稍候…")
-            self.wave_placeholder.show()
-            self._clear_wave_cards()
-            self._wave_pixmaps = []
-            self.wave_checks_card.set_lines(["运行中…"])
+        elif test_type == "waveform_time":
+            self.wave_time_placeholder.setText("运行中，请稍候…")
+            self.wave_time_placeholder.show()
+            self._clear_wave_cards("wave_time")
+            self._wave_time_pixmaps = []
+            self.wave_time_checks_card.set_lines(["运行中…"])
+        elif test_type == "waveform_spectrum":
+            self.wave_spectrum_placeholder.setText("运行中，请稍候…")
+            self.wave_spectrum_placeholder.show()
+            self._clear_wave_cards("wave_spectrum")
+            self._wave_spectrum_pixmaps = []
+            self.wave_spectrum_checks_card.set_lines(["运行中…"])
         elif test_type == "codec":
             self.codec_placeholder.setText("运行中，请稍候…")
             self.codec_placeholder.show()
@@ -1181,10 +1256,8 @@ class FunctionalTestPage(WorkbenchPage):
         elif test_type == "function_calibration":
             self.calibration_placeholder.setText("运行中，请稍候…")
             self.calibration_placeholder.show()
-            self.calibration_plot_card.hide()
-            self.calibration_plot.clear()
+            self._clear_calibration_cards()
             self._calibration_pixmaps = []
-            self.calibration_table.setRowCount(0)
             self.calibration_summary_card.set_lines(["运行中…"])
         else:
             self.ber_placeholder.setText("运行中，请稍候…")
@@ -1194,7 +1267,7 @@ class FunctionalTestPage(WorkbenchPage):
             self._ber_pixmaps = []
             self.ber_table.setRowCount(0)
             self.ber_progress.setValue(0)
-            self.ber_progress_label.setText("正在初始化全链路 BER 扫描…")
+            self.ber_progress_label.setText("正在初始化 BER 扫描…")
             self.ber_summary_card.set_lines(["运行中…"])
 
     def _render_modulation(self, result: dict) -> None:
@@ -1210,17 +1283,33 @@ class FunctionalTestPage(WorkbenchPage):
         lines = [f"{item['label']}：{item['value']}" for item in result.get("summary", [])]
         self.modulation_summary_card.set_lines(lines or ["-"])
 
-    def _clear_wave_cards(self) -> None:
-        while self.wave_cards_layout.count():
-            item = self.wave_cards_layout.takeAt(0)
+        # 每个星座点的 I/Q 值表格
+        table = result.get("table") or {}
+        columns = table.get("columns", ["星座点", "I 分量", "Q 分量"])
+        rows = table.get("rows", [])
+        self.modulation_constellation_table.setColumnCount(len(columns))
+        self.modulation_constellation_table.setHorizontalHeaderLabels(columns)
+        self.modulation_constellation_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            for column_index, value in enumerate(row):
+                self.modulation_constellation_table.setItem(
+                    row_index, column_index, QTableWidgetItem(str(value)))
+        self.modulation_constellation_table.resizeColumnsToContents()
+        self.modulation_constellation_table.setVisible(bool(rows))
+
+    def _clear_wave_cards(self, prefix: str) -> None:
+        layout = getattr(self, f"{prefix}_cards_layout")
+        while layout.count():
+            item = layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
 
-    def _render_waveform(self, result: dict) -> None:
-        self._clear_wave_cards()
-        self._wave_pixmaps = []
+    def _render_waveform(self, result: dict, prefix: str) -> None:
+        self._clear_wave_cards(prefix)
+        pixmaps: List[tuple] = []
+        layout = getattr(self, f"{prefix}_cards_layout")
         for plot in result.get("plots", []):
             card = CardWidget(plot.get("title", ""))
             label = QLabel()
@@ -1229,20 +1318,18 @@ class FunctionalTestPage(WorkbenchPage):
             # 在纵向被过度压缩。
             label.setMinimumHeight(320)
             card.layout.addWidget(label)
-            self.wave_cards_layout.addWidget(card)
+            layout.addWidget(card)
             pm = QPixmap()
             if pm.loadFromData(plot.get("png", b""), "PNG"):
-                self._wave_pixmaps.append((label, pm))
-        self.wave_placeholder.hide()
-        self._apply_wave_pixmaps()
+                pixmaps.append((label, pm))
+        setattr(self, f"_{prefix}_pixmaps", pixmaps)
+        getattr(self, f"{prefix}_placeholder").hide()
+        self._apply_result_pixmaps(pixmaps)
         lines = [
             f"{'通过' if c['ok'] else '失败'} | {c['name']}：{c['detail']}"
             for c in result.get("checks", [])
         ]
-        self.wave_checks_card.set_lines(lines or ["无校验项"])
-
-    def _apply_wave_pixmaps(self) -> None:
-        self._apply_result_pixmaps(self._wave_pixmaps)
+        getattr(self, f"{prefix}_checks_card").set_lines(lines or ["无校验项"])
 
     @staticmethod
     def _apply_result_pixmaps(pixmaps: List[tuple]) -> None:
@@ -1269,17 +1356,47 @@ class FunctionalTestPage(WorkbenchPage):
         lines = [f"{item['label']}：{item['value']}" for item in result.get("summary", [])]
         summary_card.set_lines(lines or ["-"])
 
+    def _clear_calibration_cards(self) -> None:
+        while self.calibration_cards_layout.count():
+            item = self.calibration_cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
     def _render_calibration(self, result: dict) -> None:
+        self._clear_calibration_cards()
         self._calibration_pixmaps = []
         plots = result.get("plots", [])
-        if plots:
+        tables = result.get("tables", [])
+        for index, plot in enumerate(plots):
+            # 校准图卡片
+            card = CardWidget(plot.get("title", ""))
+            label = QLabel()
+            label.setAlignment(Qt.AlignCenter)
+            label.setMinimumHeight(340)
+            card.layout.addWidget(label)
+            self.calibration_cards_layout.addWidget(card)
             pm = QPixmap()
-            if pm.loadFromData(plots[0].get("png", b""), "PNG"):
-                self._calibration_pixmaps.append((self.calibration_plot, pm))
-                self.calibration_plot_card.show()
-        self._render_table_result(result, self.calibration_table,
-                                  self.calibration_placeholder,
-                                  self.calibration_summary_card)
+            if pm.loadFromData(plot.get("png", b""), "PNG"):
+                self._calibration_pixmaps.append((label, pm))
+            # 图下仿真点明细表格
+            if index < len(tables):
+                table_info = tables[index]
+                table = self._make_table(table_info.get("columns", []))
+                rows = table_info.get("rows", [])
+                table.setRowCount(len(rows))
+                for row_index, row in enumerate(rows):
+                    for column_index, value in enumerate(row):
+                        table.setItem(row_index, column_index,
+                                     QTableWidgetItem(str(value)))
+                table.resizeColumnsToContents()
+                table.setMaximumHeight(36 + 30 * len(rows))
+                self.calibration_cards_layout.addWidget(table)
+        self.calibration_placeholder.hide()
+        lines = [f"{item['label']}：{item['value']}"
+                 for item in result.get("summary", [])]
+        self.calibration_summary_card.set_lines(lines or ["-"])
         self._apply_result_pixmaps(self._calibration_pixmaps)
 
     def _render_ber(self, result: dict) -> None:
@@ -1295,8 +1412,7 @@ class FunctionalTestPage(WorkbenchPage):
         self.ber_progress.setValue(100 if not result.get("cancelled") else self.ber_progress.value())
         self.ber_progress_label.setText(
             "测试已停止，已完成结果已保存" if result.get("cancelled") else
-            ("全部链路均达到 BER ≤ 1e-6" if result.get("ok") else
-             "测试结束，但存在链路未达到 BER ≤ 1e-6"))
+            "测试完成，全部扫描点已仿真")
         self._apply_result_pixmaps(self._ber_pixmaps)
 
     def _render_codec(self, result: dict) -> None:
@@ -1370,7 +1486,8 @@ class FunctionalTestPage(WorkbenchPage):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._apply_result_pixmaps(self._modulation_pixmaps)
-        self._apply_wave_pixmaps()
+        self._apply_result_pixmaps(self._wave_time_pixmaps)
+        self._apply_result_pixmaps(self._wave_spectrum_pixmaps)
         self._apply_result_pixmaps(self._calibration_pixmaps)
         self._apply_result_pixmaps(self._ber_pixmaps)
 
@@ -1385,51 +1502,8 @@ class FunctionalTestPage(WorkbenchPage):
                 "星座图显示点数": self.modulation_show.value(),
                 "随机种子": self.modulation_seed.value(),
             },
-            "波形测试": {
-                "链路模式": self.wave_mode.currentText(),
-                "时域波形": {
-                    "测试符号": self.wave_time_symbol.currentText(),
-                    "滤波器类型": self.wave_time_filter_type.currentText(),
-                    "滤波器长度": self.wave_time_filter_len.value(),
-                    "过采样率": self.wave_time_sps.value(),
-                    "滚降系数": self.wave_time_rolloff.value(),
-                    "完整脉冲数": self.wave_time_pulses.value(),
-                },
-                "功率谱": {
-                    "调制符号": self.wave_spectrum_modulation.currentText(),
-                    "滤波器类型": self.wave_spectrum_filter_type.currentText(),
-                    "滤波器长度": self.wave_spectrum_filter_len.value(),
-                    "过采样率": self.wave_spectrum_sps.value(),
-                    "滚降系数": self.wave_spectrum_rolloff.value(),
-                    "频谱符号数": self.wave_spectrum_symbols.value(),
-                },
-                "OFDM时域": {
-                    "典型符号": self.wave_ofdm_time_modulation.currentText(),
-                    "显示符号数": self.wave_ofdm_time_symbols.value(),
-                    "起始子载波": self.wave_ofdm_time_start.value(),
-                    "子载波步长": self.wave_ofdm_time_step.value(),
-                    "子载波数": self.wave_ofdm_time_nsc.value(),
-                    "过采样率": self.wave_ofdm_time_sps.value(),
-                    "CP长度": self.wave_ofdm_time_cp.value(),
-                },
-                "OFDM频谱热图": {
-                    "典型符号": self.wave_ofdm_heat_modulation.currentText(),
-                    "扫描符号数": self.wave_ofdm_heat_symbols.value(),
-                    "起始子载波": self.wave_ofdm_heat_start.value(),
-                    "扫描步长": self.wave_ofdm_heat_step.value(),
-                    "横轴边距": self.wave_ofdm_heat_margin.value(),
-                    "色阶下限dB": self.wave_ofdm_heat_floor.value(),
-                },
-                "OFDM功率谱": {
-                    "典型符号": self.wave_ofdm_spectrum_modulation.currentText(),
-                    "纵坐标": self.wave_ofdm_spectrum_scale.currentText(),
-                    "子载波数": self.wave_ofdm_spectrum_nsc.value(),
-                    "过采样率": self.wave_ofdm_spectrum_sps.value(),
-                    "CP长度": self.wave_ofdm_spectrum_cp.value(),
-                    "随机OFDM符号数": self.wave_ofdm_spectrum_symbols.value(),
-                    "随机种子": self.wave_ofdm_spectrum_seed.value(),
-                },
-            },
+            "时域波形测试": self._build_payload("waveform_time"),
+            "功率谱测试": self._build_payload("waveform_spectrum"),
             "编码类型": self.codec_type_combo.currentText(),
             "精度验证": {
                 "链路模式": self.prec_mode.currentText(),
@@ -1438,9 +1512,9 @@ class FunctionalTestPage(WorkbenchPage):
             },
             "单链路物理层速率测试": self._build_payload("single_link_rate"),
             "总物理层速率测试": self._build_payload("total_phy_rate"),
-            "功能校准测试": self._build_payload("function_calibration"),
+            "校准测试": self._build_payload("function_calibration"),
             "误码率测试": {
-                "测试方式": self.ber_mode_combo.currentText(),
+                "测试配置": self.ber_config_combo.currentText(),
                 **self._build_payload("ber"),
             },
         }
