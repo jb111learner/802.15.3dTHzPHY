@@ -1,1 +1,1 @@
-以后测试、编译运行代码全部使用thz环境，使用conda activate thz 命令。
+以后测试、编译运行代码全部使用communication环境，使用conda activate communication命令。
