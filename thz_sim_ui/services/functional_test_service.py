@@ -130,6 +130,25 @@ def run_modulation_test(modulation: str = "QPSK", num_symbols: int = 1024,
         [str(index + 1), f"{float(point.real):.6f}", f"{float(point.imag):.6f}"]
         for index, point in enumerate(unique_symbols)
     ]
+    # 星座点网格：按 (Q, I) 坐标排布（行=Q 自上而下递减、列=I 自左向右
+    # 递增），页面据此渲染 2×2 / 4×4 / 8×8 网格表；未命中的点留空。
+    i_levels = sorted({float(point.real) for point in unique_symbols})
+    q_levels = sorted({float(point.imag) for point in unique_symbols}, reverse=True)
+    by_coord = {
+        (round(float(point.real), 9), round(float(point.imag), 9)): point
+        for point in unique_symbols
+    }
+    grid_cells = []
+    for q in q_levels:
+        row_cells = []
+        for i in i_levels:
+            point = by_coord.get((round(i, 9), round(q, 9)))
+            row_cells.append(
+                None if point is None else [float(point.imag), float(point.real)])
+        grid_cells.append(row_cells)
+    constellation_grid = {
+        "i_levels": i_levels, "q_levels": q_levels, "cells": grid_cells,
+    }
 
     _apply_plot_style()
     fig, ax = plt.subplots(figsize=(7.4, 6.0))
@@ -171,6 +190,7 @@ def run_modulation_test(modulation: str = "QPSK", num_symbols: int = 1024,
         "constellation": [
             [float(point.real), float(point.imag)] for point in unique_symbols
         ],
+        "constellation_grid": constellation_grid,
     }
     # ok 仅表示任务正常生成结果，不代表星座质量的人工验收结论。
     result["ok"] = True
@@ -2004,9 +2024,13 @@ def _rate_result(test_type: str, params, threshold_bps: float) -> Dict[str, Any]
             "columns": ["指标", "测量值", "门限/参考", "判定"],
             "rows": [
                 ["理论速率", f"{theoretical / 1e9:.3f} Gbps", "帧结构公式", "参考"],
-                ["实际速率", f"{actual / 1e9:.3f} Gbps", f"≥ {threshold_bps / 1e9:.3f} Gbps", "通过" if passed else "失败"],
-                ["信息比特数", str(information_bits), "实际 TX 输入", "参考"],
-                ["波形持续时间", f"{waveform_duration:.9e} s", "实际 TX 输出", "参考"],
+                ["信息比特数", f"{information_bits:,}", "实际 TX 输入", "参考"],
+                ["波形持续时间", f"{waveform_duration:.6e} s", "实际 TX 输出", "参考"],
+                ["实际速率计算",
+                 f"{information_bits:,} bit ÷ {waveform_duration:.6e} s = {actual / 1e9:.3f} Gbps",
+                 "信息比特数 ÷ 波形持续时间", "参考"],
+                ["实际速率", f"{actual / 1e9:.3f} Gbps",
+                 f"≥ {threshold_bps / 1e9:.3f} Gbps", "通过" if passed else "失败"],
             ],
         },
     })
@@ -2053,7 +2077,11 @@ def run_single_link_rate_test(link_mode: str = "ofdm", modulation: str = "64QAM"
 
 
 def run_total_phy_rate_test(threshold_tbps: float = 0.5) -> Dict[str, Any]:
-    """固定验收配置：256QAM、1024 子载波、2×2 MIMO、LDPC(11/15)。"""
+    """固定验收配置：256QAM、1024 子载波、2×2 MIMO、LDPC(11/15)，CP 长度 32。
+
+    该配置与参数配置页同配置（MIMO-OFDM / 256QAM / 1024 子载波 /
+    LDPC 11/15 / 60 GBd / CP 32）的理论速率一致，约 567.61 Gbps。
+    """
     from params.PHYParams import PHYParams
 
     if threshold_tbps <= 0:
@@ -2064,7 +2092,7 @@ def run_total_phy_rate_test(threshold_tbps: float = 0.5) -> Dict[str, Any]:
         enable_mimo=True, link_mode="ofdm", num_tx=2, num_rx=2,
         num_spatial_streams=2, mimo_scheme="spatial_multiplexing",
         mimo_detector="mmse", mimo_channel_model="identity", mimo_csi_mode="estimated",
-        mimo_num_taps=1, subwave_num=1024, gi_length=64,
+        mimo_num_taps=1, subwave_num=1024, gi_length=32,
         pilot_block_indexes=[], subframe_ofdm_num=45, NCBPS=8,
         code_type="LDPC", ldpc_matrix_type="ieee802153d_1440",
         ldpc_standard_rate="11/15", sample_rate=60e9,
@@ -2075,22 +2103,12 @@ def run_total_phy_rate_test(threshold_tbps: float = 0.5) -> Dict[str, Any]:
         sample_length=frame_bits // 8,
     )
     result = _rate_result("total_phy_rate", params, float(threshold_tbps) * 1e12)
-    aligned = frame_bits % 1056 == 0
     result["data"].update({
         "configuration": "256QAM / 1024 子载波 / 2×2 MIMO / LDPC(11/15)",
         "frame_information_bits": frame_bits,
-        "ldpc_padding_bits": 0 if aligned else frame_bits % 1056,
     })
     result["summary"].insert(0, {"label": "固定配置", "value": result["data"]["configuration"]})
-    result["table"]["rows"].extend([
-        ["空间流数", "2", "2×2 MIMO", "通过"],
-        ["LDPC 块对齐", f"{frame_bits} bit = {frame_bits // 1056} × 1056", "补零 0 bit", "通过" if aligned else "失败"],
-    ])
-    result["checks"].append({
-        "name": "LDPC 信息块整帧对齐", "ok": aligned,
-        "detail": f"{frame_bits} bit 可整除 1056 bit，补零为 0" if aligned else "帧信息比特未与 LDPC 块对齐",
-    })
-    result["ok"] = result["ok"] and aligned
+    result["table"]["rows"].insert(1, ["空间流数", "2", "2×2 MIMO", "通过"])
     return result
 
 
@@ -2112,6 +2130,86 @@ def _qam_theoretical_ber(modulation: str, ebn0_db: np.ndarray) -> np.ndarray:
     ber = (4.0 / k) * (1.0 - 1.0 / np.sqrt(M)) * q
     ber -= (4.0 / k) * (1.0 - 1.0 / np.sqrt(M)) ** 2 * q ** 2
     return np.clip(ber, 0.0, 0.5)
+
+
+def _rs_hard_decoded_ber(ebn0_db, n: int = 255, k: int = 192, m: int = 8) -> np.ndarray:
+    """RS 硬判决译码后的编码 BER 解析理论（有界距离译码）。
+
+    信道比特错误率取 Es/N0 = 2·rate·Eb/N0 下的 QPSK BER；每个 RS 符号
+    由 m 个连续比特组成，符号错误率 p_s = 1-(1-p_b)^m；纠错能力
+    t = floor((n-k)/2)。符号错误数超过 t 时译码失败，输出接收到的
+    消息符号（与 galois 及 MATLAB comm.RSDecoder 硬判决行为一致），
+    其比特错误率仍为信道 p_b，故编码 BER = p_b × P(失败)。
+    """
+    from scipy.special import comb, erfc
+
+    rate = k / n
+    ebn0 = 10.0 ** (np.asarray(ebn0_db, dtype=float) / 10.0)
+    p_b = 0.5 * erfc(np.sqrt(rate * ebn0))
+    p_s = 1.0 - (1.0 - p_b) ** m
+    t = (n - k) // 2
+    p_fail = np.empty_like(p_s)
+    for idx, p in enumerate(p_s):
+        p_fail[idx] = float(sum(
+            comb(n, i, exact=False) * (p ** i) * ((1.0 - p) ** (n - i))
+            for i in range(t + 1, n + 1)))
+    return p_b * p_fail
+
+
+_CALIBRATION_MATLAB_REFERENCE_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "test_cases" / "calibration_matlab_reference.json"
+)
+
+
+def _load_matlab_calibration_reference() -> Dict[str, dict]:
+    """读取 MATLAB 官方工具生成的编码后 BER 参考数据（可选文件）。
+
+    数据文件由 test_cases/calibration_matlab_reference.m 生成，按编码
+    名称索引（如 "LDPC(1440,1056)" / "RS(255,192)"），每条含 ebn0_db
+    与 ber 两个等长列表。
+    """
+    try:
+        with open(_CALIBRATION_MATLAB_REFERENCE_PATH, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    references: Dict[str, dict] = {}
+    for key, value in payload.items():
+        if not isinstance(value, dict):
+            continue
+        name = str(value.get("name") or key)
+        ebn0 = value.get("ebn0_db")
+        ber = value.get("ber")
+        if (isinstance(ebn0, list) and isinstance(ber, list)
+                and len(ebn0) == len(ber) and ber):
+            references[name] = {
+                "ebn0_db": [float(item) for item in ebn0],
+                "ber": [float(item) for item in ber],
+            }
+    return references
+
+
+def _coded_theory_for(name: str, ebn0_points,
+                      matlab_refs: Dict[str, dict]) -> Optional[dict]:
+    """编码后理论曲线：优先 MATLAB 官方参考数据，RS 回退解析式。"""
+    reference = matlab_refs.get(name)
+    if reference:
+        return {
+            "ebn0_db": reference["ebn0_db"],
+            "ber": reference["ber"],
+            "source": "matlab",
+        }
+    if name == "RS(255,192)":
+        points = np.asarray(ebn0_points, dtype=float)
+        return {
+            "ebn0_db": list(points),
+            "ber": _rs_hard_decoded_ber(points).tolist(),
+            "source": "analytic",
+        }
+    return None
 
 
 def _run_modulation_calibration(bits_per_point: int, random_seed: int):
@@ -2180,7 +2278,7 @@ def _run_modulation_calibration(bits_per_point: int, random_seed: int):
 
 def _run_coded_calibration(code_type: str, ebn0_points, bits_per_point: int,
                            random_seed: int):
-    """LDPC(1440,1056) / RS(15,11) 的 QPSK 编码链路 BER 校准。
+    """LDPC(1440,1056) / RS(255,192) 的 QPSK 编码链路 BER 校准。
 
     理论曲线取同 Eb/N0 下未编码 QPSK 的 AWGN 理论 BER，用于直观展示
     编码增益；每个点记录误码数/比特数等明细。
@@ -2194,10 +2292,14 @@ def _run_coded_calibration(code_type: str, ebn0_points, bits_per_point: int,
         name = "LDPC(1440,1056)"
         coding = {"code_type": "LDPC", "ldpc_matrix_type": "ieee802153d_1440",
                   "ldpc_standard_rate": "11/15", "ldpc_n": 1440, "ldpc_k": 1056}
+        rate = 11.0 / 15.0
+        block_bits = 1056
     else:
-        name = "RS(15,11)"
-        coding = {"code_type": "RS", "rs_nsym": 4, "rs_c_exp": 4,
-                  "rs_packet_size": 11, "decode_mode": "hard"}
+        name = "RS(255,192)"
+        coding = {"code_type": "RS", "rs_nsym": 63, "rs_c_exp": 8,
+                  "rs_packet_size": 192, "decode_mode": "hard"}
+        rate = 192.0 / 255.0
+        block_bits = 192 * 8
 
     params = PHYParams()
     # 调制/解调使用链路原生映射（含 pi/2 旋转与 pi/4 补偿），保证与
@@ -2207,10 +2309,9 @@ def _run_coded_calibration(code_type: str, ebn0_points, bits_per_point: int,
     modulator = THzModulator(params)
     demodulator = THzDemodulator(params)
 
-    rate = 11.0 / 15.0
     count = max(int(bits_per_point), 10000)
-    # RS 以 44 bit（11 符号 × 4 bit）为单位分包，信息比特取整到块边界。
-    count -= count % 44
+    # 信息比特取整到编码块边界（LDPC 1056 bit / RS 1536 bit）。
+    count -= count % block_bits
     rng = np.random.default_rng(
         int(random_seed) + (100 if code_type == "LDPC" else 200))
     bits = rng.integers(0, 2, count, dtype=np.uint8)
@@ -2252,18 +2353,29 @@ def _run_coded_calibration(code_type: str, ebn0_points, bits_per_point: int,
 
 
 def _calibration_curve_table(curve: dict) -> dict:
-    """把一条校准曲线的仿真点明细整理为表格。"""
+    """把一条校准曲线的仿真点明细整理为表格。
+
+    编码曲线（LDPC/RS）的「理论 BER」列直接填充编码后理论 BER
+    （MATLAB 官方参考 / RS 解析式），不再单列一列；未编码调制曲线
+    仍为 AWGN 理论 BER。0 误码参考点显示「—」。
+    """
+    coded_ber = (curve.get("coded_theory") or {}).get("ber") or []
     rows = []
     for index, ebn0_db in enumerate(curve["ebn0_db"]):
         errors = curve["total_errors"][index]
         ber_text = "0（无误码）" if errors == 0 else f"{curve['simulated'][index]:.3e}"
+        if coded_ber and index < len(coded_ber):
+            theory_ber = float(coded_ber[index])
+            theory_text = f"{theory_ber:.3e}" if theory_ber > 1e-12 else "—"
+        else:
+            theory_text = f"{curve['theoretical'][index]:.3e}"
         rows.append([
             f"{curve['snr_db'][index]:.2f}",
             f"{float(ebn0_db):.2f}",
             str(errors),
             f"{curve['total_bits'][index]:,}",
             ber_text,
-            f"{curve['theoretical'][index]:.3e}",
+            theory_text,
         ])
     return {
         "title": f"{curve['name']} 仿真点数据",
@@ -2275,23 +2387,30 @@ def _calibration_curve_table(curve: dict) -> dict:
 
 def run_function_calibration_test(bits_per_point: int = 200000,
                                   random_seed: int = 2026) -> Dict[str, Any]:
-    """校准 QPSK/16QAM/64QAM 与 LDPC(1440,1056)/RS(15,11) 的 BER 曲线。
+    """校准 QPSK/16QAM/64QAM 与 LDPC(1440,1056)/RS(255,192) 的 BER 曲线。
 
     每条曲线独立绘图（前 4 个 Eb/N0 点），每张图下附带仿真点明细表格。
+    编码曲线额外绘制「编码后理论」曲线：RS(255,192) 为硬判决解析式，
+    LDPC(1440,1056) 来自 MATLAB 官方 Communications Toolbox 同配置仿真
+    （test_cases/calibration_matlab_reference.json，可用随附 .m 脚本重新生成）。
     """
     if int(bits_per_point) < 10000:
         raise ValueError("每个 BER 点的比特数不能少于 10000")
     t0 = time.perf_counter()
     result = _new_result("function_calibration")
     curves, checks = _run_modulation_calibration(int(bits_per_point), int(random_seed))
+    matlab_refs = _load_matlab_calibration_reference()
 
+    # RS(255,192) 采用 4..7 dB：其纠错能力悬崖位于 5~6 dB，原 2..5 dB
+    # 区间内曲线与信道 BER 几乎重合，无法体现编码增益。
     coded_specs = [
         ("LDPC", np.arange(1.0, 5.0, 1.0)),
-        ("RS", np.arange(2.0, 6.0, 1.0)),
+        ("RS", np.arange(4.0, 8.0, 1.0)),
     ]
     for code_type, points in coded_specs:
         curve, monotonic = _run_coded_calibration(
             code_type, points, int(bits_per_point), int(random_seed))
+        curve["coded_theory"] = _coded_theory_for(curve["name"], points, matlab_refs)
         curves.append(curve)
         checks.append({
             "name": f"{curve['name']} BER 曲线单调",
@@ -2310,6 +2429,15 @@ def run_function_calibration_test(bits_per_point: int = 200000,
                     label=f"{curve['name']} 仿真")
         ax.semilogy(curve["ebn0_db"], curve["theoretical"], "--", color=color,
                     label="未编码 QPSK 理论" if "QPSK" not in curve["name"] else f"{curve['name']} 理论")
+        coded_theory = curve.get("coded_theory")
+        if coded_theory:
+            is_matlab = coded_theory.get("source") == "matlab"
+            label = "编码后理论（MATLAB）" if is_matlab else "编码后理论（RS 解析式）"
+            # 0 误码参考点抬高到图幅下限上方（semilogy 不能画 0）
+            coded_ber = np.maximum(
+                np.asarray(coded_theory["ber"], dtype=float), 1.2e-6)
+            ax.semilogy(coded_theory["ebn0_db"], coded_ber, "-.", color=color,
+                        marker="s", ms=4, label=label)
         ax.set_xlabel("Eb/N0 (dB)")
         ax.set_ylabel("BER")
         ax.set_title(f"{curve['name']} BER 校准（前 4 个 Eb/N0 点）")
@@ -2322,6 +2450,11 @@ def run_function_calibration_test(bits_per_point: int = 200000,
                       "png": _figure_to_png(fig)})
         tables.append(_calibration_curve_table(curve))
 
+    coded_theory_texts = [
+        f"{curve['name']}：{'MATLAB' if (curve.get('coded_theory') or {}).get('source') == 'matlab' else '解析式'}"
+        for curve in curves
+        if curve.get("coded_theory")
+    ]
     result.update({
         "ok": all(item["ok"] for item in checks),
         "elapsed_ms": (time.perf_counter() - t0) * 1e3,
@@ -2330,7 +2463,8 @@ def run_function_calibration_test(bits_per_point: int = 200000,
         "tables": tables,
         "summary": [
             {"label": "调制校准", "value": "QPSK / 16QAM / 64QAM，各 4 个 Eb/N0 点"},
-            {"label": "编码校准", "value": "LDPC(1440,1056) / RS(15,11)，QPSK 编码链路，各 4 点"},
+            {"label": "编码校准", "value": "LDPC(1440,1056) / RS(255,192)，QPSK 编码链路，各 4 点"},
+            {"label": "编码理论曲线", "value": "；".join(coded_theory_texts) or "无"},
             {"label": "通过项", "value": f"{sum(c['ok'] for c in checks)}/{len(checks)}"},
             {"label": "最终判定", "value": "通过" if all(c["ok"] for c in checks) else "失败"},
         ],

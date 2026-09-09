@@ -1,0 +1,62 @@
+{
+  "description": "编码后理论 BER 参考曲线：与 Python 功能测试校准相同配置 (QPSK Gray + AWGN, Es/N0 = 2*rate*Eb/N0)",
+  "generated_by": "MATLAB R2024b Communications Toolbox (official functions)",
+  "ldpc": {
+    "name": "LDPC(1440,1056)",
+    "code_rate": "11/15",
+    "decode_algorithm": "min-sum (ldpcDecode, 30 iterations)",
+    "ebn0_db": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "ber": [
+      0.078598484848484848,
+      0.012626262626262626,
+      0.00020164583843829126,
+      0
+    ],
+    "bits": [
+      1056,
+      3168,
+      391776,
+      4.000128E+6
+    ],
+    "errors": [
+      83,
+      40,
+      79,
+      0
+    ]
+  },
+  "rs": {
+    "name": "RS(255,192)",
+    "code_rate": "192/255",
+    "decoding": "hard-decision (comm.RSDecoder, BitInput)",
+    "ebn0_db": [
+      4,
+      5,
+      6,
+      7
+    ],
+    "ber": [
+      0.029296875,
+      0.003136837121212121,
+      0,
+      0
+    ],
+    "bits": [
+      1536,
+      16896,
+      4.00128E+6,
+      4.00128E+6
+    ],
+    "errors": [
+      45,
+      53,
+      0,
+      0
+    ]
+  }
+}

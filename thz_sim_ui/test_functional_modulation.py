@@ -29,6 +29,21 @@ def test_tx_modulation_generates_expected_symbol_count(modulation, ncbps):
     assert result["table"]["columns"] == ["星座点", "I 分量", "Q 分量"]
     assert len(result["table"]["rows"]) == 2 ** ncbps
     assert not any(item["label"] == "调制耗时" for item in result["summary"])
+    # 星座点 IQ 网格：QPSK 2×2 / 16QAM 4×4 / 64QAM 8×8，按 (Q, I) 坐标排布
+    grid = result["data"]["constellation_grid"]
+    level_count = 2 ** (ncbps // 2)
+    assert len(grid["q_levels"]) == level_count
+    assert len(grid["i_levels"]) == level_count
+    assert len(grid["cells"]) == level_count
+    assert all(len(row) == level_count for row in grid["cells"])
+    assert grid["q_levels"] == sorted(grid["q_levels"], reverse=True)
+    assert grid["i_levels"] == sorted(grid["i_levels"])
+    for row_cells, q in zip(grid["cells"], grid["q_levels"]):
+        for cell, i in zip(row_cells, grid["i_levels"]):
+            assert cell is not None
+            q_value, i_value = cell
+            assert q_value == pytest.approx(q, abs=1e-9)
+            assert i_value == pytest.approx(i, abs=1e-9)
 
 
 def test_modulation_test_disables_pi2_rotation_for_qpsk():

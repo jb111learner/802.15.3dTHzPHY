@@ -482,7 +482,8 @@ class FunctionalTestPage(WorkbenchPage):
         ])
         hint = QLabel(
             "固定采用 60 GBd、256QAM、1024 子载波、2×2 双空间流、"
-            "LDPC(1440,1056) 11/15；同时检查 LDPC 整帧零补齐。"
+            "LDPC(1440,1056) 11/15，CP 长度 32；"
+            "实际速率 = 信息比特数 ÷ 波形持续时间。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
@@ -497,8 +498,9 @@ class FunctionalTestPage(WorkbenchPage):
         ])
         hint = QLabel(
             "QPSK / 16QAM / 64QAM 与 AWGN 理论 BER 曲线比较；"
-            "LDPC(1440,1056) 与 RS(15,11) 的 QPSK 编码链路 BER 校准"
-            "（理论曲线为同 Eb/N0 下未编码 QPSK，用于展示编码增益）。"
+            "LDPC(1440,1056) 与 RS(255,192) 的 QPSK 编码链路 BER 校准："
+            "虚线为同 Eb/N0 下未编码 QPSK 理论，点划线为编码后理论曲线"
+            "（RS 为硬判决解析式，LDPC 来自 MATLAB 官方工具同配置仿真）。"
             "每条曲线独立绘图，图下附仿真点明细表格。"
         )
         hint.setWordWrap(True)
@@ -624,7 +626,8 @@ class FunctionalTestPage(WorkbenchPage):
         self.modulation_card = CardWidget("发射端星座图")
         self.modulation_plot = QLabel()
         self.modulation_plot.setAlignment(Qt.AlignCenter)
-        self.modulation_plot.setMinimumHeight(430)
+        # 高度与星座点网格表、汇总卡整体平衡，保证最小窗口下整页无滚动条
+        self.modulation_plot.setMinimumHeight(330)
         self.modulation_card.layout.addWidget(self.modulation_plot)
         self.modulation_card.hide()
         layout.addWidget(self.modulation_card)
@@ -1283,19 +1286,58 @@ class FunctionalTestPage(WorkbenchPage):
         lines = [f"{item['label']}：{item['value']}" for item in result.get("summary", [])]
         self.modulation_summary_card.set_lines(lines or ["-"])
 
-        # 每个星座点的 I/Q 值表格
-        table = result.get("table") or {}
-        columns = table.get("columns", ["星座点", "I 分量", "Q 分量"])
-        rows = table.get("rows", [])
-        self.modulation_constellation_table.setColumnCount(len(columns))
-        self.modulation_constellation_table.setHorizontalHeaderLabels(columns)
-        self.modulation_constellation_table.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
-            for column_index, value in enumerate(row):
-                self.modulation_constellation_table.setItem(
-                    row_index, column_index, QTableWidgetItem(str(value)))
-        self.modulation_constellation_table.resizeColumnsToContents()
-        self.modulation_constellation_table.setVisible(bool(rows))
+        # 星座点 IQ 网格表：行=Q（自上而下递减）、列=I（自左向右递增），
+        # 每个星座点一个单元格，直接显示 (Q, I) 坐标值（QPSK 2×2、
+        # 16QAM 4×4、64QAM 8×8），无需滚动即可看全。
+        grid = (result.get("data") or {}).get("constellation_grid") or {}
+        grid_cells = grid.get("cells", [])
+        table_widget = self.modulation_constellation_table
+        if grid_cells:
+            i_levels = grid.get("i_levels", [])
+            q_levels = grid.get("q_levels", [])
+            table_widget.verticalHeader().setVisible(True)
+            table_widget.setColumnCount(len(i_levels))
+            table_widget.setHorizontalHeaderLabels([f"I={value:+.3f}" for value in i_levels])
+            table_widget.setRowCount(len(q_levels))
+            table_widget.setVerticalHeaderLabels([f"Q={value:+.3f}" for value in q_levels])
+            for row_index, row_cells in enumerate(grid_cells):
+                for column_index, cell in enumerate(row_cells):
+                    # 单元格按 (Q, I) 坐标形式两行显示：第一行 Q、第二行 I
+                    text = "—" if cell is None else f"{cell[0]:+.3f}\n{cell[1]:+.3f}"
+                    item = QTableWidgetItem(text)
+                    item.setTextAlignment(Qt.AlignCenter)
+                    table_widget.setItem(row_index, column_index, item)
+            table_widget.resizeRowsToContents()
+            for row_index in range(table_widget.rowCount()):
+                table_widget.setRowHeight(row_index, table_widget.rowHeight(row_index) + 3)
+            table_widget.resizeColumnsToContents()
+            # 网格列均分拉伸：等宽列与星座图方型排布对应，且保证任意
+            # 窗口宽度下都不出现横向滚动条
+            table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            table_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            # 表格高度设为完整内容高度，全部行直接显示，不出现表内纵向滚动条
+            table_widget.setMinimumHeight(
+                table_widget.horizontalHeader().height()
+                + sum(table_widget.rowHeight(r) for r in range(table_widget.rowCount()))
+                + 2 * table_widget.frameWidth() + 2)
+            table_widget.setVisible(True)
+        else:
+            # 旧结果回退：逐点 I/Q 列表
+            table = result.get("table") or {}
+            columns = table.get("columns", ["星座点", "I 分量", "Q 分量"])
+            rows = table.get("rows", [])
+            table_widget.verticalHeader().setVisible(False)
+            table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+            table_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            table_widget.setColumnCount(len(columns))
+            table_widget.setHorizontalHeaderLabels(columns)
+            table_widget.setRowCount(len(rows))
+            for row_index, row in enumerate(rows):
+                for column_index, value in enumerate(row):
+                    table_widget.setItem(
+                        row_index, column_index, QTableWidgetItem(str(value)))
+            table_widget.resizeColumnsToContents()
+            table_widget.setVisible(bool(rows))
 
     def _clear_wave_cards(self, prefix: str) -> None:
         layout = getattr(self, f"{prefix}_cards_layout")
@@ -1351,7 +1393,8 @@ class FunctionalTestPage(WorkbenchPage):
                 table.setItem(r, c, QTableWidgetItem(str(value)))
         table.resizeColumnsToContents()
         for c in range(len(columns)):
-            table.setColumnWidth(c, min(table.columnWidth(c), 320))
+            # 上限放宽以容纳速率表的“实际速率计算”公式列（~520px）
+            table.setColumnWidth(c, min(table.columnWidth(c), 560))
         self._codec_detail_lines = result.get("detail_lines", [])
         lines = [f"{item['label']}：{item['value']}" for item in result.get("summary", [])]
         summary_card.set_lines(lines or ["-"])
