@@ -291,9 +291,7 @@ class FunctionalTestPage(WorkbenchPage):
         self.wave_spectrum_sc_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
         self.wave_spectrum_sc_symbols = spin(2048, 131072, 8192)
         self.wave_spectrum_sc_symbols.setSingleStep(2048)
-        self.wave_spectrum_sc_scale = combo(["对数功率 dB", "线性归一化功率"])
 
-        self.wave_spectrum_ofdm_scale = combo(["对数功率 dB", "线性归一化功率"])
         self.wave_spectrum_ofdm_nsc = spin(64, 2048, 512)
         self.wave_spectrum_ofdm_nsc.setSingleStep(64)
         self.wave_spectrum_ofdm_sps = spin(1, 16, 4)
@@ -310,10 +308,8 @@ class FunctionalTestPage(WorkbenchPage):
             ("过采样率", self.wave_spectrum_sc_sps),
             ("滚降系数", self.wave_spectrum_sc_rolloff),
             ("频谱符号数", self.wave_spectrum_sc_symbols),
-            ("纵坐标", self.wave_spectrum_sc_scale),
         ])
         self.wave_spectrum_ofdm_box = make_form_group("OFDM 功率谱参数", [
-            ("纵坐标", self.wave_spectrum_ofdm_scale),
             ("子载波数", self.wave_spectrum_ofdm_nsc),
             ("过采样率", self.wave_spectrum_ofdm_sps),
             ("CP 长度", self.wave_spectrum_ofdm_cp),
@@ -321,9 +317,9 @@ class FunctionalTestPage(WorkbenchPage):
             ("随机种子", self.wave_spectrum_ofdm_seed),
         ])
         hint = QLabel(
-            "单载波：实测 Welch 功率谱叠加理想无限长滤波器的解析滚降响应，"
-            "纵坐标支持对数功率 dB 与线性归一化功率两种显示；"
+            "单载波：实测 Welch 功率谱叠加理想无限长滤波器的解析滚降响应；"
             "OFDM：随机 16QAM-OFDM 连续时域数据经分段 FFT 平均计算功率谱。"
+            "两种链路均同时绘制对数功率 dB 与线性归一化功率两张图。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
@@ -1093,7 +1089,6 @@ class FunctionalTestPage(WorkbenchPage):
                     "ofdm_spectrum_subcarriers": self.wave_spectrum_ofdm_nsc.value(),
                     "ofdm_spectrum_oversampling": self.wave_spectrum_ofdm_sps.value(),
                     "ofdm_spectrum_cp_length": self.wave_spectrum_ofdm_cp.value(),
-                    "ofdm_spectrum_scale": self.wave_spectrum_ofdm_scale.currentText(),
                     "ofdm_spectrum_num_symbols": self.wave_spectrum_ofdm_symbols.value(),
                     "ofdm_spectrum_random_seed": self.wave_spectrum_ofdm_seed.value(),
                 })
@@ -1105,7 +1100,6 @@ class FunctionalTestPage(WorkbenchPage):
                     "sc_oversampling": self.wave_spectrum_sc_sps.value(),
                     "sc_rolloff": self.wave_spectrum_sc_rolloff.value(),
                     "sc_num_symbols": self.wave_spectrum_sc_symbols.value(),
-                    "sc_scale": self.wave_spectrum_sc_scale.currentText(),
                 })
             return payload
         if test_type == "codec":

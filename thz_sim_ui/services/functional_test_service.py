@@ -810,10 +810,13 @@ def _run_ofdm_heatmap_test(n_sc: int, sps: int, cp_len: int, symbol_count: int,
 
 
 def _run_ofdm_random_spectrum_test(n_sc: int, sps: int, cp_len: int,
-                                   scale: str, num_symbols: int,
+                                   num_symbols: int,
                                    random_seed: int, checks: list,
                                    plots: list, summary: list) -> None:
-    """由随机 16QAM-OFDM 连续时域流通过分段 FFT 平均计算实际 PSD。"""
+    """由随机 16QAM-OFDM 连续时域流通过分段 FFT 平均计算实际 PSD。
+
+    纵坐标固定同时绘制对数功率 dB 与线性归一化功率两张图。
+    """
     n_sc = int(n_sc)
     sps = int(sps)
     cp_len = int(cp_len)
@@ -889,48 +892,46 @@ def _run_ofdm_random_spectrum_test(n_sc: int, sps: int, cp_len: int,
         ),
     })
 
-    scale_key = str(scale).lower()
-    is_db = scale_key in ("db", "对数功率 db", "对数")
-    if not is_db and scale_key not in ("linear", "线性归一化功率", "线性"):
-        raise ValueError(f"不支持的功率谱纵坐标：{scale}")
-    y_measured = measured_db if is_db else measured
-    ylabel = "归一化功率谱 (dB)" if is_db else "归一化功率谱"
-
     # 理论功率谱：理想带限矩形 —— 补零 IFFT 的砖墙带限，带内平坦
     # 0 dB、带外无能量，边界即 ±Rs/2。
     theory_lin = np.where(np.abs(f) <= fs_base / 2.0, 1.0, 1e-12)
     theory_db = 10 * np.log10(theory_lin + 1e-15)
-
-    _apply_plot_style()
-    fig, ax = plt.subplots(figsize=(8.2, 4.8))
-    ax.plot(
-        f / 1e9, y_measured, color="#2C68B4", lw=0.95, alpha=0.95,
-        label="随机 16QAM-OFDM 实测 PSD（分段 FFT）")
-    ax.plot(
-        f / 1e9, theory_db if is_db else theory_lin,
-        color="#D95F02", lw=1.6, ls="--",
-        label="理论带限响应（理想矩形）")
     edge_ghz = fs_base / 2e9
-    ax.axvline(
-        edge_ghz, color="#E5484D", lw=1.35, ls="--",
-        label="理论占用带宽边界 ±Rs/2")
-    ax.axvline(-edge_ghz, color="#E5484D", lw=1.35, ls="--")
     view_half_ghz = min(fs_out / 2e9, edge_ghz * 2.0)
-    ax.set_xlim(-view_half_ghz, view_half_ghz)
-    if is_db:
-        ax.set_ylim(-60, 5)
-    else:
-        upper = max(1.2, float(np.percentile(y_measured[inband_ref], 99)) * 1.1)
-        ax.set_ylim(0, upper)
-    ax.set_xlabel("频率 (GHz)")
-    ax.set_ylabel(ylabel)
-    ax.set_title("随机 16QAM-OFDM 连续时域信号功率谱")
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    plots.append({"title": "OFDM 随机 16QAM 功率谱", "png": _figure_to_png(fig)})
+
+    # 两种纵坐标（对数功率 dB 与线性归一化功率）同时绘图
+    for scale_label, is_db in (("对数功率 dB", True), ("线性归一化功率", False)):
+        _apply_plot_style()
+        fig, ax = plt.subplots(figsize=(8.2, 4.8))
+        y_measured = measured_db if is_db else measured
+        ylabel = "归一化功率谱 (dB)" if is_db else "归一化功率谱"
+        ax.plot(
+            f / 1e9, y_measured, color="#2C68B4", lw=0.95, alpha=0.95,
+            label="随机 16QAM-OFDM 实测 PSD（分段 FFT）")
+        ax.plot(
+            f / 1e9, theory_db if is_db else theory_lin,
+            color="#D95F02", lw=1.6, ls="--",
+            label="理论带限响应（理想矩形）")
+        ax.axvline(
+            edge_ghz, color="#E5484D", lw=1.35, ls="--",
+            label="理论占用带宽边界 ±Rs/2")
+        ax.axvline(-edge_ghz, color="#E5484D", lw=1.35, ls="--")
+        ax.set_xlim(-view_half_ghz, view_half_ghz)
+        if is_db:
+            ax.set_ylim(-60, 5)
+        else:
+            upper = max(1.2, float(np.percentile(y_measured[inband_ref], 99)) * 1.1)
+            ax.set_ylim(0, upper)
+        ax.set_xlabel("频率 (GHz)")
+        ax.set_ylabel(ylabel)
+        ax.set_title("随机 16QAM-OFDM 连续时域信号功率谱")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+        fig.tight_layout()
+        plots.append({"title": f"OFDM 随机 16QAM 功率谱（{scale_label}）",
+                      "png": _figure_to_png(fig)})
     summary.extend([
-        {"label": "功率谱纵坐标", "value": "对数功率 dB" if is_db else "线性归一化功率"},
+        {"label": "功率谱纵坐标", "value": "对数功率 dB + 线性归一化功率（双图）"},
         {"label": "理论占用带宽边界", "value": f"±{edge_ghz:.1f} GHz（红色虚线）"},
         {"label": "理论曲线", "value": "理想带限矩形（补零 IFFT 砖墙带限）"},
         {"label": "功率谱数据", "value": (
@@ -1169,14 +1170,12 @@ def _ideal_filter_response(f_n, filter_type: str, rolloff: float) -> np.ndarray:
 
 
 def _run_spectrum_test(params, mode: str, modulation: str, num_symbols: int,
-                       scale: str, checks: list, plots: list,
-                       summary: list) -> None:
+                       checks: list, plots: list, summary: list) -> None:
     """经过成型滤波器后的功率谱（Welch），叠加理论滤波器响应并标注截止频率。
 
     采样方式：成型输出为基带复数信号，采样率 fs_base×sps；Welch 使用较短分段
-    保留可见统计波动；频率轴归一化为 f/fs_base，便于标注通带/截止。
-    理论曲线按理想无限长滤波器的解析响应绘制（直接滚降形状）；纵坐标支持
-    对数功率 dB 与线性归一化功率两种显示。
+    保留可见统计波动；理论曲线按理想无限长滤波器的解析响应绘制（直接滚降
+    形状）；纵坐标固定同时绘制对数功率 dB 与线性归一化功率两张图。
     """
     from params.PHYParams import PHYParams
     from transmitter.Modulator import THzModulator
@@ -1195,10 +1194,6 @@ def _run_spectrum_test(params, mode: str, modulation: str, num_symbols: int,
     num_symbols = int(num_symbols)
     if num_symbols < 2048:
         raise ValueError("功率谱符号数不能少于 2048")
-    scale_key = str(scale).lower()
-    is_db = scale_key in ("db", "对数功率 db", "对数")
-    if not is_db and scale_key not in ("linear", "线性归一化功率", "线性"):
-        raise ValueError(f"不支持的功率谱纵坐标：{scale}")
 
     p = PHYParams()
     # 关闭逐符号 pi/2 旋转：旋转会使频谱整体搬移 Rs/4（双峰），遮住成型
@@ -1354,50 +1349,54 @@ def _run_spectrum_test(params, mode: str, modulation: str, num_symbols: int,
         theory_db = np.where(np.abs(f_n) <= 0.5, 0.0, -120.0)
         theory_lin = np.where(np.abs(f_n) <= 0.5, 1.0, 0.0)
 
-    _apply_plot_style()
-    fig, ax = plt.subplots(figsize=(7.5, 4.0))
-    ax.set_facecolor("white")
-    fig.patch.set_facecolor("white")
-    if is_db:
-        measured_plot, theory_plot, ylabel, ylim = psd_db, theory_db, "归一化功率谱 (dB)", (-60, 5)
-    else:
-        plot_ref_lin = float(np.median(psd_lin[mask_ref])) + 1e-30
-        measured_plot = psd_lin / plot_ref_lin
-        theory_plot = theory_lin
-        ylabel = "归一化功率谱"
-        upper = max(1.2, float(
-            np.percentile(measured_plot[np.abs(f_n) < 1.0], 99)) * 1.1)
-        ylim = (0, upper)
-    f_ghz = f_n * fs_base / 1e9  # 横坐标统一为频率 (GHz)，与 OFDM 功率谱一致
-    ax.plot(f_ghz, measured_plot, color="#2C68B4", lw=0.85, alpha=0.9,
-            label="实测功率谱（Welch）")
-    ax.plot(f_ghz, theory_plot, color="#D95F02", lw=1.8, ls="--",
-            label=h_label)
-    for cf in cut_lines:
-        ax.axvline(cf * fs_base / 1e9, color="#E5484D", lw=1.0, ls="-.")
-        ax.axvline(-cf * fs_base / 1e9, color="#E5484D", lw=1.0, ls="-.")
-    for be in band_edges:
-        ax.axvline(be * fs_base / 1e9, color="gray", lw=0.6, ls=":")
-        ax.axvline(-be * fs_base / 1e9, color="gray", lw=0.6, ls=":")
-    ax.set_xlabel("频率 (GHz)")
-    ax.set_ylabel(ylabel)
-    visible_mode = "单载波" if mode == "sc-fde" else "OFDM"
     if mode == "sc-fde":
         title_text = f"单载波功率谱（{modulation}，{filter_type.upper()} β={rolloff}）"
+        base_card_title = "功率谱"
     else:
         title_text = "OFDM 功率谱（随机 16QAM-OFDM）"
-    ax.set_title(title_text)
-    ax.set_xlim(-1.2 * fs_base / 1e9, 1.2 * fs_base / 1e9)
-    ax.set_ylim(*ylim)
-    ax.grid(True)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    plots.append({"title": "功率谱", "png": _figure_to_png(fig)})
+        base_card_title = "OFDM 功率谱"
+    # 两种纵坐标（对数功率 dB 与线性归一化功率）同时绘图
+    for scale_label, is_db in (("对数功率 dB", True), ("线性归一化功率", False)):
+        _apply_plot_style()
+        fig, ax = plt.subplots(figsize=(7.5, 4.0))
+        ax.set_facecolor("white")
+        fig.patch.set_facecolor("white")
+        if is_db:
+            measured_plot, theory_plot, ylabel, ylim = psd_db, theory_db, "归一化功率谱 (dB)", (-60, 5)
+        else:
+            plot_ref_lin = float(np.median(psd_lin[mask_ref])) + 1e-30
+            measured_plot = psd_lin / plot_ref_lin
+            theory_plot = theory_lin
+            ylabel = "归一化功率谱"
+            upper = max(1.2, float(
+                np.percentile(measured_plot[np.abs(f_n) < 1.0], 99)) * 1.1)
+            ylim = (0, upper)
+        f_ghz = f_n * fs_base / 1e9  # 横坐标统一为频率 (GHz)，与 OFDM 功率谱一致
+        ax.plot(f_ghz, measured_plot, color="#2C68B4", lw=0.85, alpha=0.9,
+                label="实测功率谱（Welch）")
+        ax.plot(f_ghz, theory_plot, color="#D95F02", lw=1.8, ls="--",
+                label=h_label)
+        for cf in cut_lines:
+            ax.axvline(cf * fs_base / 1e9, color="#E5484D", lw=1.0, ls="-.")
+            ax.axvline(-cf * fs_base / 1e9, color="#E5484D", lw=1.0, ls="-.")
+        for be in band_edges:
+            ax.axvline(be * fs_base / 1e9, color="gray", lw=0.6, ls=":")
+            ax.axvline(-be * fs_base / 1e9, color="gray", lw=0.6, ls=":")
+        ax.set_xlabel("频率 (GHz)")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title_text)
+        ax.set_xlim(-1.2 * fs_base / 1e9, 1.2 * fs_base / 1e9)
+        ax.set_ylim(*ylim)
+        ax.grid(True)
+        ax.legend(fontsize=8)
+        fig.tight_layout()
+        plots.append({"title": f"{base_card_title}（{scale_label}）",
+                      "png": _figure_to_png(fig)})
     summary.extend([
         {"label": "功率谱符号", "value": f"{modulation}，{num_symbols} 个符号"},
         {"label": "功率谱滤波器", "value": f"{params.get('filter_type').upper()} L={L}，{sps}×，β={rolloff}"},
         {"label": "截止与带宽", "value": cut_text},
-        {"label": "功率谱纵坐标", "value": "对数功率 dB" if is_db else "线性归一化功率"},
+        {"label": "功率谱纵坐标", "value": "对数功率 dB + 线性归一化功率（双图）"},
         {"label": "频谱测试", "value": f"Welch {nperseg} 点分段平均，采样率 {fs_out / 1e9:.0f} GHz"},
     ])
 
@@ -1469,18 +1468,16 @@ def run_waveform_spectrum_test(link_mode: str = "sc-fde",
                                sc_oversampling: int = 4,
                                sc_rolloff: float = 0.22,
                                sc_num_symbols: int = 8192,
-                               sc_scale: str = "对数功率 dB",
                                ofdm_spectrum_subcarriers: int = 512,
                                ofdm_spectrum_oversampling: int = 4,
                                ofdm_spectrum_cp_length: int = 32,
-                               ofdm_spectrum_scale: str = "对数功率 dB",
                                ofdm_spectrum_num_symbols: int = 128,
                                ofdm_spectrum_random_seed: int = 2026) -> Dict[str, Any]:
     """功率谱测试：单载波（成型滤波器 PSD + 理想滚降理论）或 OFDM（随机 16QAM PSD）。
 
-    单载波：实测 Welch 功率谱叠加理想无限长滤波器的解析滚降响应，
-    纵坐标支持对数功率 dB 与线性归一化功率；OFDM：随机 16QAM-OFDM
-    连续时域数据经分段 FFT 平均，纵坐标同样支持两种显示。
+    单载波：实测 Welch 功率谱叠加理想无限长滤波器的解析滚降响应；
+    OFDM：随机 16QAM-OFDM 连续时域数据经分段 FFT 平均。两种链路均
+    同时绘制对数功率 dB 与线性归一化功率两张图。
     """
     from params.PHYParams import PHYParams
 
@@ -1500,12 +1497,11 @@ def run_waveform_spectrum_test(link_mode: str = "sc-fde",
             rolloff=float(sc_rolloff),
         )
         _run_spectrum_test(params, mode, str(sc_modulation), int(sc_num_symbols),
-                           str(sc_scale), result["checks"], result["plots"],
-                           result["summary"])
+                           result["checks"], result["plots"], result["summary"])
     else:
         _run_ofdm_random_spectrum_test(
             int(ofdm_spectrum_subcarriers), int(ofdm_spectrum_oversampling),
-            int(ofdm_spectrum_cp_length), str(ofdm_spectrum_scale),
+            int(ofdm_spectrum_cp_length),
             int(ofdm_spectrum_num_symbols), int(ofdm_spectrum_random_seed),
             result["checks"], result["plots"], result["summary"])
 

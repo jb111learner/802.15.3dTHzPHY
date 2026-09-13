@@ -55,14 +55,15 @@ def test_single_carrier_spectrum_defaults_and_db_scale_checks_pass():
     result = run_waveform_spectrum_test(sc_num_symbols=4096)
 
     assert result["ok"]
-    assert [plot["title"] for plot in result["plots"]] == ["功率谱"]
-    assert result["plots"][0]["png"].startswith(b"\x89PNG")
+    assert [plot["title"] for plot in result["plots"]] == [
+        "功率谱（对数功率 dB）", "功率谱（线性归一化功率）"]
+    assert all(plot["png"].startswith(b"\x89PNG") for plot in result["plots"])
     checks = {check["name"]: check for check in result["checks"]}
     assert checks["频谱通带平坦"]["ok"]
     assert checks["截止频率位置正确"]["ok"]
     assert checks["带外响应符合理论"]["ok"]
     summary = {item["label"]: item["value"] for item in result["summary"]}
-    assert summary["功率谱纵坐标"] == "对数功率 dB"
+    assert summary["功率谱纵坐标"] == "对数功率 dB + 线性归一化功率（双图）"
 
 
 def test_single_carrier_spectrum_custom_parameters_and_linear_scale():
@@ -77,14 +78,14 @@ def test_single_carrier_spectrum_custom_parameters_and_linear_scale():
         sc_oversampling=5,
         sc_rolloff=0.15,
         sc_num_symbols=2048,
-        sc_scale="线性归一化功率",
     )
 
     assert result["ok"]
+    assert len(result["plots"]) == 2
     summary = {item["label"]: item["value"] for item in result["summary"]}
     assert summary["功率谱符号"].startswith("16QAM，2048")
     assert "L=40，5×，β=0.15" in summary["功率谱滤波器"]
-    assert summary["功率谱纵坐标"] == "线性归一化功率"
+    assert summary["功率谱纵坐标"] == "对数功率 dB + 线性归一化功率（双图）"
 
 
 def test_ofdm_time_single_tone_scan_returns_time_and_heatmap():
@@ -114,13 +115,15 @@ def test_ofdm_spectrum_linear_scale():
     pytest.importorskip("PySide6")
     from thz_sim_ui.services.functional_test_service import run_waveform_spectrum_test
 
-    result = run_waveform_spectrum_test(
-        link_mode="ofdm", ofdm_spectrum_scale="线性归一化功率")
+    result = run_waveform_spectrum_test(link_mode="ofdm")
 
     assert result["ok"]
-    assert [plot["title"] for plot in result["plots"]] == ["OFDM 随机 16QAM 功率谱"]
+    assert [plot["title"] for plot in result["plots"]] == [
+        "OFDM 随机 16QAM 功率谱（对数功率 dB）",
+        "OFDM 随机 16QAM 功率谱（线性归一化功率）",
+    ]
     summary = {item["label"]: item["value"] for item in result["summary"]}
-    assert summary["功率谱纵坐标"] == "线性归一化功率"
+    assert summary["功率谱纵坐标"] == "对数功率 dB + 线性归一化功率（双图）"
     assert summary["理论占用带宽边界"] == "±15.0 GHz（红色虚线）"
     checks = {check["name"]: check for check in result["checks"]}
     assert checks["红色带宽边界外开始带外滚降"]["ok"]
@@ -202,7 +205,7 @@ def test_spectrum_ui_defaults_and_ofdm_switch():
         assert payload["link_mode"] == "sc-fde"
         assert payload["sc_modulation"] == "QPSK"
         assert payload["sc_num_symbols"] == 8192
-        assert payload["sc_scale"] == "对数功率 dB"
+        assert "sc_scale" not in payload
         assert payload["sc_filter_length"] == 32
 
         page.wave_spectrum_mode.setCurrentText("OFDM")
@@ -211,7 +214,7 @@ def test_spectrum_ui_defaults_and_ofdm_switch():
         assert not page.wave_spectrum_ofdm_box.isHidden()
         payload = page._build_payload("waveform_spectrum")
         assert payload["link_mode"] == "ofdm"
-        assert payload["ofdm_spectrum_scale"] == "对数功率 dB"
+        assert "ofdm_spectrum_scale" not in payload
         assert payload["ofdm_spectrum_num_symbols"] == 128
         assert payload["ofdm_spectrum_random_seed"] == 2026
     finally:
