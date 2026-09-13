@@ -98,7 +98,7 @@ class FunctionalTestPage(WorkbenchPage):
             "浮点精度验证",
             "单链路物理层速率测试",
             "总物理层速率测试",
-            "校准测试",
+            "调制编码功能正确性验证",
             "误码率测试",
         ])
         self.test_radios: List[QRadioButton] = radio_box.findChildren(QRadioButton)
@@ -167,8 +167,8 @@ class FunctionalTestPage(WorkbenchPage):
         self.wave_time_sc_rolloff = dspin(0.0, 1.0, 0.22, decimals=3)
 
         self.wave_time_ofdm_symbols = spin(2, 3, 2)
-        self.wave_time_ofdm_start = spin(-1024, 1023, -6)
-        self.wave_time_ofdm_step = spin(1, 1024, 11)
+        self.wave_time_ofdm_start = spin(-1024, 1023, 2)
+        self.wave_time_ofdm_step = spin(1, 1024, 6)
         self.wave_time_ofdm_nsc = spin(64, 2048, 512)
         self.wave_time_ofdm_nsc.setSingleStep(64)
         self.wave_time_ofdm_sps = spin(1, 16, 4)
@@ -443,8 +443,9 @@ class FunctionalTestPage(WorkbenchPage):
             ("SNR (dB)", self.prec_snr),
         ])
         hint = QLabel(
-            "运行一次短链路（TX→信道→RX），逐模块校验输出信号数据类型"
-            "（期望：比特 uint8、波形符号 complex128、LLR float64）。"
+            "运行一次短链路（TX→信道→RX），逐模块校验浮点信号输出数据类型"
+            "（期望：波形符号 complex128、LLR 与噪声方差 float64；"
+            "uint8 比特阶段与未启用模块不参与）。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("CardHint")
@@ -490,17 +491,18 @@ class FunctionalTestPage(WorkbenchPage):
         return self._wrap_with_hint(box, hint)
 
     def _build_calibration_params(self) -> QWidget:
-        self.calibration_bits = spin(10000, 10000000, 200000)
+        self.calibration_bits = spin(10000, 10000000, 2000000)
         self.calibration_seed = spin(0, 2147483647, 2026)
-        box = make_form_group("校准测试参数", [
+        box = make_form_group("调制编码功能正确性验证参数", [
             ("每个 BER 点比特数", self.calibration_bits),
             ("随机种子", self.calibration_seed),
         ])
         hint = QLabel(
             "QPSK / 16QAM / 64QAM 与 AWGN 理论 BER 曲线比较；"
             "LDPC(1440,1056) 与 RS(255,192) 的 QPSK 编码链路 BER 校准："
-            "虚线为同 Eb/N0 下未编码 QPSK 理论，点划线为编码后理论曲线"
-            "（RS 为硬判决解析式，LDPC 来自 MATLAB 官方工具同配置仿真）。"
+            "仿真曲线与 MATLAB 官方 Communications Toolbox 同配置仿真基准对照"
+            "（最小和译码 30 次迭代，LDPC 校准点 1.5~3.0 dB、"
+            "RS(255,192) 校准点 4.0~5.5 dB）。"
             "每条曲线独立绘图，图下附仿真点明细表格。"
         )
         hint.setWordWrap(True)
@@ -547,7 +549,8 @@ class FunctionalTestPage(WorkbenchPage):
         hint = QLabel(
             "严格按 SNR 扫描范围逐点仿真（无早停、无 95% 置信验证）："
             "每个点按每点最大比特数与最少误码数逐试次累计实测误码率，"
-            "0 误码点在曲线上以空心圆标识，目标 BER=1e-6 以红色虚线标出。"
+            "无误码点直接在图上标注「无误码」；SNR 与 Eb/N0 两张曲线图"
+            "均完整绘制，目标 BER=1e-6 以红色虚线标出。"
             "切换配置会载入对应链路说明并恢复默认 SNR 扫描范围（可自由修改）。"
             "可随时停止，已完成点会保存到 simulation_results。"
         )
@@ -800,12 +803,11 @@ class FunctionalTestPage(WorkbenchPage):
         progress_card = CardWidget("运行进度")
         progress_card.layout.addWidget(self.ber_progress_label)
         progress_card.layout.addWidget(self.ber_progress)
-        self.ber_plot_card = CardWidget("BER 曲线")
-        self.ber_plot = QLabel()
-        self.ber_plot.setAlignment(Qt.AlignCenter)
-        self.ber_plot.setMinimumHeight(390)
-        self.ber_plot_card.layout.addWidget(self.ber_plot)
-        self.ber_plot_card.hide()
+        # BER 曲线图卡片容器：SNR 与 Eb/N0 两张图逐次渲染
+        self.ber_plots_container = QWidget()
+        self.ber_plots_layout = QVBoxLayout(self.ber_plots_container)
+        self.ber_plots_layout.setContentsMargins(0, 0, 0, 0)
+        self.ber_plots_layout.setSpacing(12)
         self.ber_table = self._make_table([
             "SNR/dB", "Eb/N0/dB", "误码数", "比特数",
             "实测 BER", "运行次数",
@@ -813,7 +815,7 @@ class FunctionalTestPage(WorkbenchPage):
         self.ber_summary_card = _UpdatableSummaryCard("BER 扫描总览", ["尚未运行"])
         layout.addWidget(self.ber_placeholder)
         layout.addWidget(progress_card)
-        layout.addWidget(self.ber_plot_card)
+        layout.addWidget(self.ber_plots_container)
         layout.addWidget(self.ber_table, 1)
         layout.addWidget(self.ber_summary_card)
         return page
@@ -1265,8 +1267,7 @@ class FunctionalTestPage(WorkbenchPage):
         else:
             self.ber_placeholder.setText("运行中，请稍候…")
             self.ber_placeholder.show()
-            self.ber_plot_card.hide()
-            self.ber_plot.clear()
+            self._clear_ber_plot_cards()
             self._ber_pixmaps = []
             self.ber_table.setRowCount(0)
             self.ber_progress.setValue(0)
@@ -1442,14 +1443,27 @@ class FunctionalTestPage(WorkbenchPage):
         self.calibration_summary_card.set_lines(lines or ["-"])
         self._apply_result_pixmaps(self._calibration_pixmaps)
 
+    def _clear_ber_plot_cards(self) -> None:
+        while self.ber_plots_layout.count():
+            item = self.ber_plots_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
     def _render_ber(self, result: dict) -> None:
+        self._clear_ber_plot_cards()
         self._ber_pixmaps = []
-        plots = result.get("plots", [])
-        if plots:
+        for plot in result.get("plots", []):
+            card = CardWidget(plot.get("title", "BER 曲线"))
+            label = QLabel()
+            label.setAlignment(Qt.AlignCenter)
+            label.setMinimumHeight(390)
+            card.layout.addWidget(label)
+            self.ber_plots_layout.addWidget(card)
             pm = QPixmap()
-            if pm.loadFromData(plots[0].get("png", b""), "PNG"):
-                self._ber_pixmaps.append((self.ber_plot, pm))
-                self.ber_plot_card.show()
+            if pm.loadFromData(plot.get("png", b""), "PNG"):
+                self._ber_pixmaps.append((label, pm))
         self._render_table_result(
             result, self.ber_table, self.ber_placeholder, self.ber_summary_card)
         self.ber_progress.setValue(100 if not result.get("cancelled") else self.ber_progress.value())
@@ -1555,7 +1569,7 @@ class FunctionalTestPage(WorkbenchPage):
             },
             "单链路物理层速率测试": self._build_payload("single_link_rate"),
             "总物理层速率测试": self._build_payload("total_phy_rate"),
-            "校准测试": self._build_payload("function_calibration"),
+            "调制编码功能正确性验证": self._build_payload("function_calibration"),
             "误码率测试": {
                 "测试配置": self.ber_config_combo.currentText(),
                 **self._build_payload("ber"),

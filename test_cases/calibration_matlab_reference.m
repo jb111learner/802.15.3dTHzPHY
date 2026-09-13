@@ -20,7 +20,9 @@ function calibration_matlab_reference()
     S = load(fullfile(repo, 'ieee802153d_1440_H_11_15.mat'), 'H');
     H = sparse(logical(S.H));
     enc_cfg = ldpcEncoderConfig(H);
-    dec_cfg = ldpcDecoderConfig(H);
+    % norm-min-sum + 缩放因子 1.0 = 纯最小和，
+    % 与 Python LDPCCoder（min_sum，30 次迭代）保持一致
+    dec_cfg = ldpcDecoderConfig(H, 'norm-min-sum');
     rng(2026, 'twister');
 
     ref = struct();
@@ -28,27 +30,27 @@ function calibration_matlab_reference()
         '(QPSK Gray + AWGN, Es/N0 = 2*rate*Eb/N0)'];
     ref.generated_by = 'MATLAB R2024b Communications Toolbox (official functions)';
 
-    % ---------- LDPC(1440,1056) 11/15：Eb/N0 = 1..4 dB ----------
+    % ---------- LDPC(1440,1056) 11/15：Eb/N0 = 1.5..3.0 dB（4 点） ----------
     ldp = struct('name', 'LDPC(1440,1056)', 'code_rate', '11/15', ...
-        'decode_algorithm', 'min-sum (ldpcDecode, 30 iterations)');
-    ebn0 = 1:4;
+        'decode_algorithm', 'min-sum (ldpcDecode norm-min-sum, scaling=1.0, 30 iterations)');
+    ebn0 = [1.5 2 2.5 3];
     ber = zeros(size(ebn0)); nbits = zeros(size(ebn0)); nerr = zeros(size(ebn0));
     for i = 1:numel(ebn0)
-        [ber(i), nbits(i), nerr(i)] = simulate_ldpc(enc_cfg, dec_cfg, ebn0(i), 4e6, 40);
-        fprintf('LDPC Eb/N0 = %.0f dB : BER = %.3e (%d bits, %d errors)\n', ...
+        [ber(i), nbits(i), nerr(i)] = simulate_ldpc(enc_cfg, dec_cfg, ebn0(i), 4e6, 500);
+        fprintf('LDPC Eb/N0 = %.1f dB : BER = %.3e (%d bits, %d errors)\n', ...
             ebn0(i), ber(i), nbits(i), nerr(i));
     end
     ldp.ebn0_db = ebn0; ldp.ber = ber; ldp.bits = nbits; ldp.errors = nerr;
     ref.ldpc = ldp;
 
-    % ---------- RS(255,192) GF(2^8) 硬判决：Eb/N0 = 4..7 dB ----------
+    % ---------- RS(255,192) GF(2^8) 硬判决：Eb/N0 = 4.0..5.5 dB（4 点） ----------
     rs = struct('name', 'RS(255,192)', 'code_rate', '192/255', ...
         'decoding', 'hard-decision (comm.RSDecoder, BitInput)');
-    ebn0 = 4:7;
+    ebn0 = 4:0.5:5.5;
     ber = zeros(size(ebn0)); nbits = zeros(size(ebn0)); nerr = zeros(size(ebn0));
     for i = 1:numel(ebn0)
-        [ber(i), nbits(i), nerr(i)] = simulate_rs(ebn0(i), 4e6, 40);
-        fprintf('RS Eb/N0 = %.0f dB : BER = %.3e (%d bits, %d errors)\n', ...
+        [ber(i), nbits(i), nerr(i)] = simulate_rs(ebn0(i), 4e6, 1000);
+        fprintf('RS Eb/N0 = %.1f dB : BER = %.3e (%d bits, %d errors)\n', ...
             ebn0(i), ber(i), nbits(i), nerr(i));
     end
     rs.ebn0_db = ebn0; rs.ber = ber; rs.bits = nbits; rs.errors = nerr;
@@ -74,7 +76,8 @@ function [ber, nbits, nerr] = simulate_ldpc(enc_cfg, dec_cfg, ebn0_db, max_bits,
     test_s = qammod(test_cw, 4, 'gray', 'InputType', 'bit', 'UnitAveragePower', true);
     test_llr = qamdemod(test_s, 4, 'gray', 'OutputType', 'llr', ...
         'UnitAveragePower', true, 'NoiseVariance', 1e-9);
-    flip_llr = biterr(test_bits, ldpcDecode(test_llr, dec_cfg, 30)) > k / 2;
+    flip_llr = biterr(test_bits, ...
+        ldpcDecode(test_llr, dec_cfg, 30, MinSumScalingFactor=1.0)) > k / 2;
 
     nerr = 0; nbits = 0;
     while nbits < max_bits && nerr < min_errors
@@ -87,7 +90,7 @@ function [ber, nbits, nerr] = simulate_ldpc(enc_cfg, dec_cfg, ebn0_db, max_bits,
         if flip_llr
             llr = -llr;
         end
-        decoded = ldpcDecode(llr, dec_cfg, 30);
+        decoded = ldpcDecode(llr, dec_cfg, 30, MinSumScalingFactor=1.0);
         nerr = nerr + biterr(blk, decoded);
         nbits = nbits + k;
     end

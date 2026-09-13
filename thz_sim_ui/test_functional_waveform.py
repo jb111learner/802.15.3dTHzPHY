@@ -106,7 +106,7 @@ def test_ofdm_time_single_tone_scan_returns_time_and_heatmap():
     assert checks["OFDM 循环前缀复制正确"]["ok"]
     assert checks["逐符号单音峰值沿指定子载波扫描"]["ok"]
     summary = {item["label"]: item["value"] for item in result["summary"]}
-    assert summary["时域扫描子载波"] == "[-6, 5]"
+    assert summary["时域扫描子载波"] == "[2, 8]"
     assert summary["热图扫描范围"] == "k=-24…23，显示 [-28, 27]"
 
 
@@ -177,8 +177,8 @@ def test_time_waveform_ui_switches_to_ofdm_groups_and_payload():
         assert not page.wave_time_ofdm_heat_box.isHidden()
         assert payload["link_mode"] == "ofdm"
         assert payload["ofdm_time_symbol_count"] == 2
-        assert payload["ofdm_time_start_subcarrier"] == -6
-        assert payload["ofdm_time_subcarrier_step"] == 11
+        assert payload["ofdm_time_start_subcarrier"] == 2
+        assert payload["ofdm_time_subcarrier_step"] == 6
         assert payload["ofdm_heatmap_symbol_count"] == 48
         assert payload["ofdm_heatmap_floor_db"] == pytest.approx(-45.0)
     finally:

@@ -17,7 +17,7 @@ def test_single_link_actual_rate_exceeds_50_gbps():
     assert result["data"]["actual_rate_bps"] == pytest.approx(
         result["data"]["theoretical_rate_bps"], rel=1e-12
     )
-    assert {item["label"] for item in result["summary"]} >= {"理论速率", "实际速率"}
+    assert {item["label"] for item in result["summary"]} >= {"设计速率", "实际速率"}
     # 结果表：实际速率位于最下方，并列出「信息比特数 ÷ 波形持续时间」公式
     metrics = [row[0] for row in result["table"]["rows"]]
     assert metrics[-1] == "实际速率"
@@ -55,7 +55,9 @@ def test_function_calibration_matches_theory_and_matlab_references():
     pytest.importorskip("PySide6")
     from thz_sim_ui.services.functional_test_service import run_function_calibration_test
 
-    result = run_function_calibration_test(bits_per_point=10000, random_seed=2026)
+    # LDPC 3.0/3.5 dB 点每点仅十余个误码，需要足够比特数保证单调性
+    # 判定与仿真曲线统计稳健
+    result = run_function_calibration_test(bits_per_point=50000, random_seed=2026)
     assert result["ok"]
     assert all(item["ok"] for item in result["checks"])
     # 5 条校准曲线：QPSK/16QAM/64QAM + LDPC(1440,1056) + RS(255,192)
@@ -67,9 +69,11 @@ def test_function_calibration_matches_theory_and_matlab_references():
     # 无旧校准项目表格；每张校准图下附仿真点明细表格
     assert "table" not in result
     assert len(result["tables"]) == 5
-    for table in result["tables"]:
+    # 未编码曲线最后一列为「理论 BER」，编码曲线为「MATLAB基准BER」
+    for table_index, table in enumerate(result["tables"]):
+        expected_last_column = "理论 BER" if table_index < 3 else "MATLAB基准BER"
         assert table["columns"] == [
-            "SNR/dB", "Eb/N0/dB", "误码数", "比特数", "实测 BER", "理论 BER"]
+            "SNR/dB", "Eb/N0/dB", "误码数", "比特数", "实测 BER", expected_last_column]
         assert len(table["rows"]) == 4
     # 编码曲线明细：误码数/比特数与曲线数据一致
     coded = next(curve for curve in result["data"]["curves"]
@@ -84,8 +88,8 @@ def test_function_calibration_matches_theory_and_matlab_references():
     assert len(rs["coded_theory"]["ber"]) == 4
     ldpc_theory = coded.get("coded_theory")
     assert ldpc_theory is None or len(ldpc_theory["ber"]) == 4
-    # 编码曲线的「理论 BER」列直接填充编码后理论值（0 误码点显示 —），
-    # 未编码调制曲线的「理论 BER」列仍为 AWGN 理论
+    # 编码曲线的最后一列直接填充 MATLAB 基准值（0 误码点显示 —），
+    # 未编码调制曲线的最后一列仍为 AWGN 理论
     uncoded_qpsk_table = result["tables"][0]
     assert uncoded_qpsk_table["rows"][0][5] == f"{result['data']['curves'][0]['theoretical'][0]:.3e}"
     for table_index, curve in zip((3, 4), (coded, rs)):
@@ -94,6 +98,10 @@ def test_function_calibration_matches_theory_and_matlab_references():
         for row, value in zip(table["rows"], theory["ber"]):
             expected = f"{value:.3e}" if value > 1e-12 else "—"
             assert row[5] == expected
+    # LDPC 仿真曲线与 MATLAB 基准（同为最小和译码）应基本一致：2 dB 点
+    # 的 log10(BER) 偏差小于 0.4（约 2.5 倍以内）
+    import math as _math
+    assert abs(_math.log10(coded["simulated"][1]) - _math.log10(ldpc_theory["ber"][1])) < 0.4
 
 
 def test_rs_coded_theory_matches_matlab_official_data():
@@ -107,13 +115,14 @@ def test_rs_coded_theory_matches_matlab_official_data():
     rs_ref = references.get("RS(255,192)")
     assert rs_ref is not None
     analytic = _rs_hard_decoded_ber(np.asarray(rs_ref["ebn0_db"], dtype=float))
-    # 解析式与 MATLAB 官方 comm.RSDecoder 数据同一量级（0 误码点跳过）
+    # 解析式与 MATLAB 官方 comm.RSDecoder 数据对数域偏差 < 0.4
+    #（悬崖尾部两者译码失败行为略有差异，允许不到 1 个数量级）
     for ebn0, matlab_ber, analytic_ber in zip(
             rs_ref["ebn0_db"], rs_ref["ber"], analytic):
         if matlab_ber == 0:
             assert analytic_ber < 1e-4
         else:
-            assert analytic_ber == pytest.approx(matlab_ber, rel=0.35)
+            assert abs(np.log10(analytic_ber) - np.log10(matlab_ber)) < 0.4
     assert np.all(np.diff(analytic) <= 0)
 
 
@@ -131,7 +140,7 @@ def test_new_ui_tests_follow_precision_in_required_order():
         )
         assert page.test_radios[5].text().startswith("单链路物理层速率测试")
         assert page.test_radios[6].text().startswith("总物理层速率测试")
-        assert page.test_radios[7].text() == "校准测试"
+        assert page.test_radios[7].text() == "调制编码功能正确性验证"
         assert page.test_radios[8].text().startswith("误码率测试")
         assert page.param_stack.count() == 9
         assert page.result_stack.count() == 9

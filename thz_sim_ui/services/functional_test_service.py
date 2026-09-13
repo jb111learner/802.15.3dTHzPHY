@@ -896,11 +896,20 @@ def _run_ofdm_random_spectrum_test(n_sc: int, sps: int, cp_len: int,
     y_measured = measured_db if is_db else measured
     ylabel = "归一化功率谱 (dB)" if is_db else "归一化功率谱"
 
+    # 理论功率谱：理想带限矩形 —— 补零 IFFT 的砖墙带限，带内平坦
+    # 0 dB、带外无能量，边界即 ±Rs/2。
+    theory_lin = np.where(np.abs(f) <= fs_base / 2.0, 1.0, 1e-12)
+    theory_db = 10 * np.log10(theory_lin + 1e-15)
+
     _apply_plot_style()
     fig, ax = plt.subplots(figsize=(8.2, 4.8))
     ax.plot(
         f / 1e9, y_measured, color="#2C68B4", lw=0.95, alpha=0.95,
         label="随机 16QAM-OFDM 实测 PSD（分段 FFT）")
+    ax.plot(
+        f / 1e9, theory_db if is_db else theory_lin,
+        color="#D95F02", lw=1.6, ls="--",
+        label="理论带限响应（理想矩形）")
     edge_ghz = fs_base / 2e9
     ax.axvline(
         edge_ghz, color="#E5484D", lw=1.35, ls="--",
@@ -923,6 +932,7 @@ def _run_ofdm_random_spectrum_test(n_sc: int, sps: int, cp_len: int,
     summary.extend([
         {"label": "功率谱纵坐标", "value": "对数功率 dB" if is_db else "线性归一化功率"},
         {"label": "理论占用带宽边界", "value": f"±{edge_ghz:.1f} GHz（红色虚线）"},
+        {"label": "理论曲线", "value": "理想带限矩形（补零 IFFT 砖墙带限）"},
         {"label": "功率谱数据", "value": (
             f"随机 16QAM，{num_symbols} 个连续 OFDM symbols，seed={random_seed}")},
         {"label": "功率谱计算", "value": (
@@ -1213,8 +1223,9 @@ def _run_spectrum_test(params, mode: str, modulation: str, num_symbols: int,
             cut_lines = [0.5]
             band_edges = [(1 - rolloff) / 2, (1 + rolloff) / 2]
             cut_level = "-3 dB" if filter_type == "rrc" else "-6 dB"
-            cut_text = (f"±Rs/2 处 {cut_level}；通带边缘 ±{band_edges[0]:.3f}；"
-                        f"理论带宽 ±{band_edges[1]:.3f}")
+            cut_text = (f"±Rs/2（±{fs_base / 2e9:.1f} GHz）处 {cut_level}；"
+                        f"通带边缘 ±{band_edges[0] * fs_base / 1e9:.2f} GHz；"
+                        f"理论带宽 ±{band_edges[1] * fs_base / 1e9:.2f} GHz")
             passband = max(0.05, min(0.30, band_edges[0] * 0.8))
             stopband = band_edges[1] + 0.05
         else:
@@ -1241,7 +1252,7 @@ def _run_spectrum_test(params, mode: str, modulation: str, num_symbols: int,
         fs_out = float(shaped["sample_rate_Hz"])
         cut_lines = [0.5]                 # 带限边界 ±fs_base/2
         band_edges = []
-        cut_text = "理想带限 ±fs_base/2（补零 IFFT）"
+        cut_text = f"理想带限 ±{fs_base / 2e9:.1f} GHz（补零 IFFT）"
         passband = 0.40
         # 0.6 处仍处于砖墙边缘的 hann 泄漏裙内（实测约 -21 dB），
         # 阻带检查从 0.7 起算（实测 < -35 dB），阈值 -20 dB 稳健。
@@ -1357,17 +1368,18 @@ def _run_spectrum_test(params, mode: str, modulation: str, num_symbols: int,
         upper = max(1.2, float(
             np.percentile(measured_plot[np.abs(f_n) < 1.0], 99)) * 1.1)
         ylim = (0, upper)
-    ax.plot(f_n, measured_plot, color="#2C68B4", lw=0.85, alpha=0.9,
+    f_ghz = f_n * fs_base / 1e9  # 横坐标统一为频率 (GHz)，与 OFDM 功率谱一致
+    ax.plot(f_ghz, measured_plot, color="#2C68B4", lw=0.85, alpha=0.9,
             label="实测功率谱（Welch）")
-    ax.plot(f_n, theory_plot, color="#D95F02", lw=1.8, ls="--",
+    ax.plot(f_ghz, theory_plot, color="#D95F02", lw=1.8, ls="--",
             label=h_label)
     for cf in cut_lines:
-        ax.axvline(cf, color="#E5484D", lw=1.0, ls="-.")
-        ax.axvline(-cf, color="#E5484D", lw=1.0, ls="-.")
+        ax.axvline(cf * fs_base / 1e9, color="#E5484D", lw=1.0, ls="-.")
+        ax.axvline(-cf * fs_base / 1e9, color="#E5484D", lw=1.0, ls="-.")
     for be in band_edges:
-        ax.axvline(be, color="gray", lw=0.6, ls=":")
-        ax.axvline(-be, color="gray", lw=0.6, ls=":")
-    ax.set_xlabel("归一化频率 f / fs_base")
+        ax.axvline(be * fs_base / 1e9, color="gray", lw=0.6, ls=":")
+        ax.axvline(-be * fs_base / 1e9, color="gray", lw=0.6, ls=":")
+    ax.set_xlabel("频率 (GHz)")
     ax.set_ylabel(ylabel)
     visible_mode = "单载波" if mode == "sc-fde" else "OFDM"
     if mode == "sc-fde":
@@ -1375,7 +1387,7 @@ def _run_spectrum_test(params, mode: str, modulation: str, num_symbols: int,
     else:
         title_text = "OFDM 功率谱（随机 16QAM-OFDM）"
     ax.set_title(title_text)
-    ax.set_xlim(-1.2, 1.2)
+    ax.set_xlim(-1.2 * fs_base / 1e9, 1.2 * fs_base / 1e9)
     ax.set_ylim(*ylim)
     ax.grid(True)
     ax.legend(fontsize=8)
@@ -1402,8 +1414,8 @@ def run_waveform_time_test(link_mode: str = "sc-fde",
                            ofdm_oversampling: int = 4,
                            ofdm_cp_length: int = 32,
                            ofdm_time_symbol_count: int = 2,
-                           ofdm_time_start_subcarrier: int = -6,
-                           ofdm_time_subcarrier_step: int = 11,
+                           ofdm_time_start_subcarrier: int = 2,
+                           ofdm_time_subcarrier_step: int = 6,
                            ofdm_heatmap_symbol_count: int = 48,
                            ofdm_heatmap_start_subcarrier: int = -24,
                            ofdm_heatmap_subcarrier_step: int = 1,
@@ -1860,7 +1872,11 @@ def run_codec_test(config_text: str) -> Dict[str, Any]:
 
 def run_precision_test(link_mode: str = "sc-fde", duration: float = 1e-6,
                        SNRdB: float = 24.0) -> Dict[str, Any]:
-    """全链路各模块输出信号数据类型校验（TX → 信道 → RX）。"""
+    """全链路浮点信号模块输出数据类型校验（TX → 信道 → RX）。
+
+    仅覆盖浮点处理阶段（complex128 / float64），跳过 uint8 比特阶段
+    与当前链路模式下不启用的模块，不存在「跳过」行。
+    """
     from params.PHYParams import PHYParams
     from transmitter.THzTransmitter import THzTransmitter
     from channel.THzChannel import THzChannel
@@ -1891,10 +1907,9 @@ def run_precision_test(link_mode: str = "sc-fde", duration: float = 1e-6,
     recv = THzReceiver(params, tx)
     recv.run(channel_out)
 
+    # 仅浮点信号阶段：uint8 比特阶段（组装/扰码/信道编码/译码/解扰）
+    # 不参与；CFO 补偿、IQ 补偿等未启用模块不列出，因此无「跳过」行。
     stages: List[tuple] = [
-        ("TX 比特组装", "data_bits_dict", "uint8"),
-        ("TX 扰码", "data_scrambled_dict", "uint8"),
-        ("TX 信道编码", "coded_bits_dict", "uint8"),
         ("TX 调制", "modulated_data_dict", "complex128"),
     ]
     if mode == "ofdm":
@@ -1906,26 +1921,23 @@ def run_precision_test(link_mode: str = "sc-fde", duration: float = 1e-6,
         ("信道输出", "_channel_out", "complex128"),
         ("RX 匹配滤波", "rx_matched", "complex128"),
         ("RX 粗同步", "rx_coarse_synced", "complex128"),
-        ("RX CFO 粗补偿", "rx_cfo_coarse", "complex128"),
         ("RX 精同步", "rx_fine_synced", "complex128"),
-        ("RX 下采样", "rx_downsampled", "complex128"),
-        ("RX CFO 精补偿", "rx_cfo_fine", "complex128"),
-        ("RX IQ 补偿", "rx_iq_compensated", "complex128"),
+    ]
+    if mode == "sc-fde":
+        stages.append(("RX 下采样", "rx_downsampled", "complex128"))
+    stages += [
         ("RX 均衡", "rx_equalized", "complex128"),
         ("RX LLR 软信息", "llr_dict", "float64"),
-        ("RX 译码", "decoded_bits", "uint8"),
-        ("RX 解扰", "data_bits", "uint8"),
         ("噪声方差", "noise_var", "float64"),
     ]
 
-    # RX 专属属性集合（"data_bits" 不能靠前缀区分，TX 侧是 data_bits_dict）
-    rx_attrs = {"rx_matched", "rx_coarse_synced", "rx_cfo_coarse", "rx_fine_synced",
-                "rx_downsampled", "rx_cfo_fine", "rx_iq_compensated", "rx_equalized",
-                "llr_dict", "decoded_bits", "data_bits", "noise_var"}
+    # RX 专属属性集合
+    rx_attrs = {"rx_matched", "rx_coarse_synced", "rx_fine_synced",
+                "rx_downsampled", "rx_equalized", "llr_dict", "noise_var"}
 
     rows: List[List[str]] = []
     details: List[str] = []
-    n_pass = n_skip = n_fail = 0
+    n_pass = n_fail = 0
     for module_name, attr, expected in stages:
         if attr == "_channel_out":
             value = channel_out
@@ -1933,10 +1945,8 @@ def run_precision_test(link_mode: str = "sc-fde", duration: float = 1e-6,
             source = recv if attr in rx_attrs else tx
             value = getattr(source, attr, None)
         if value is None:
-            rows.append([module_name, "-", "-", "-", "跳过"])
-            details.append(f"{module_name}：未产生输出（该模块未启用），跳过")
-            n_skip += 1
-            continue
+            raise ValueError(
+                f"浮点精度验证：{module_name}（{attr}）未产生输出，请检查链路配置")
         arr = np.asarray(value["signal_stream"] if isinstance(value, dict) else value)
         dtype_str = str(arr.dtype)
         verdict = "通过" if dtype_str == expected else "失败"
@@ -1960,9 +1970,8 @@ def run_precision_test(link_mode: str = "sc-fde", duration: float = 1e-6,
     }]
     result["summary"] = [
         {"label": "链路模式", "value": mode.upper()},
-        {"label": "模块阶段数", "value": str(len(stages))},
+        {"label": "浮点模块数", "value": str(len(stages))},
         {"label": "通过", "value": str(n_pass)},
-        {"label": "跳过", "value": str(n_skip)},
         {"label": "失败", "value": str(n_fail)},
         {"label": "存在 float32", "value": "是" if has_float32 else "否"},
     ]
@@ -2009,7 +2018,7 @@ def _rate_result(test_type: str, params, threshold_bps: float) -> Dict[str, Any]
             "relative_deviation": deviation,
         },
         "summary": [
-            {"label": "理论速率", "value": f"{theoretical / 1e9:.3f} Gbps"},
+            {"label": "设计速率", "value": f"{theoretical / 1e9:.3f} Gbps"},
             {"label": "实际速率", "value": f"{actual / 1e9:.3f} Gbps"},
             {"label": "理论/实际偏差", "value": f"{deviation * 100:.3f}%"},
             {"label": "验收门限", "value": f"≥ {threshold_bps / 1e9:.3f} Gbps"},
@@ -2023,7 +2032,7 @@ def _rate_result(test_type: str, params, threshold_bps: float) -> Dict[str, Any]
         "table": {
             "columns": ["指标", "测量值", "门限/参考", "判定"],
             "rows": [
-                ["理论速率", f"{theoretical / 1e9:.3f} Gbps", "帧结构公式", "参考"],
+                ["设计速率", f"{theoretical / 1e9:.3f} Gbps", "帧结构公式", "参考"],
                 ["信息比特数", f"{information_bits:,}", "实际 TX 输入", "参考"],
                 ["波形持续时间", f"{waveform_duration:.6e} s", "实际 TX 输出", "参考"],
                 ["实际速率计算",
@@ -2080,7 +2089,7 @@ def run_total_phy_rate_test(threshold_tbps: float = 0.5) -> Dict[str, Any]:
     """固定验收配置：256QAM、1024 子载波、2×2 MIMO、LDPC(11/15)，CP 长度 32。
 
     该配置与参数配置页同配置（MIMO-OFDM / 256QAM / 1024 子载波 /
-    LDPC 11/15 / 60 GBd / CP 32）的理论速率一致，约 567.61 Gbps。
+    LDPC 11/15 / 60 GBd / CP 32）的设计速率一致，约 567.61 Gbps。
     """
     from params.PHYParams import PHYParams
 
@@ -2355,11 +2364,18 @@ def _run_coded_calibration(code_type: str, ebn0_points, bits_per_point: int,
 def _calibration_curve_table(curve: dict) -> dict:
     """把一条校准曲线的仿真点明细整理为表格。
 
-    编码曲线（LDPC/RS）的「理论 BER」列直接填充编码后理论 BER
-    （MATLAB 官方参考 / RS 解析式），不再单列一列；未编码调制曲线
-    仍为 AWGN 理论 BER。0 误码参考点显示「—」。
+    编码曲线（LDPC/RS）的最后一列直接填充 MATLAB 基准 BER（数据文件
+    缺失时 RS 回退解析式），列名为「MATLAB基准BER」；未编码调制曲线
+    仍为各自 AWGN 理论 BER，列名为「理论 BER」。0 误码参考点显示「—」。
     """
-    coded_ber = (curve.get("coded_theory") or {}).get("ber") or []
+    coded_theory = curve.get("coded_theory") or {}
+    coded_ber = coded_theory.get("ber") or []
+    if coded_ber:
+        column_label = (
+            "MATLAB基准BER" if coded_theory.get("source") == "matlab"
+            else "编码理论BER")
+    else:
+        column_label = "理论 BER"
     rows = []
     for index, ebn0_db in enumerate(curve["ebn0_db"]):
         errors = curve["total_errors"][index]
@@ -2380,19 +2396,20 @@ def _calibration_curve_table(curve: dict) -> dict:
     return {
         "title": f"{curve['name']} 仿真点数据",
         "columns": ["SNR/dB", "Eb/N0/dB", "误码数", "比特数",
-                    "实测 BER", "理论 BER"],
+                    "实测 BER", column_label],
         "rows": rows,
     }
 
 
-def run_function_calibration_test(bits_per_point: int = 200000,
+def run_function_calibration_test(bits_per_point: int = 2000000,
                                   random_seed: int = 2026) -> Dict[str, Any]:
     """校准 QPSK/16QAM/64QAM 与 LDPC(1440,1056)/RS(255,192) 的 BER 曲线。
 
-    每条曲线独立绘图（前 4 个 Eb/N0 点），每张图下附带仿真点明细表格。
-    编码曲线额外绘制「编码后理论」曲线：RS(255,192) 为硬判决解析式，
-    LDPC(1440,1056) 来自 MATLAB 官方 Communications Toolbox 同配置仿真
-    （test_cases/calibration_matlab_reference.json，可用随附 .m 脚本重新生成）。
+    每条曲线独立绘图，每张图下附带仿真点明细表格。编码曲线仅绘制
+    仿真与「MATLAB基准」两条曲线：基准来自 MATLAB 官方 Communications
+    Toolbox 同配置仿真（最小和译码，与 Python 一致；数据文件
+    test_cases/calibration_matlab_reference.json，可用随附 .m 脚本重新
+    生成；文件缺失时 RS(255,192) 回退硬判决解析式）。
     """
     if int(bits_per_point) < 10000:
         raise ValueError("每个 BER 点的比特数不能少于 10000")
@@ -2401,11 +2418,11 @@ def run_function_calibration_test(bits_per_point: int = 200000,
     curves, checks = _run_modulation_calibration(int(bits_per_point), int(random_seed))
     matlab_refs = _load_matlab_calibration_reference()
 
-    # RS(255,192) 采用 4..7 dB：其纠错能力悬崖位于 5~6 dB，原 2..5 dB
-    # 区间内曲线与信道 BER 几乎重合，无法体现编码增益。
+    # LDPC 校准点取 1.5~3.0 dB 共 4 点（避开 4 dB 处 BER 为 0 的贴地
+    # 点）；RS(255,192) 取 4.0~5.5 dB 共 4 点，覆盖其纠错能力悬崖。
     coded_specs = [
-        ("LDPC", np.arange(1.0, 5.0, 1.0)),
-        ("RS", np.arange(4.0, 8.0, 1.0)),
+        ("LDPC", np.array([1.5, 2.0, 2.5, 3.0])),
+        ("RS", np.arange(4.0, 6.0, 0.5)),
     ]
     for code_type, points in coded_specs:
         curve, monotonic = _run_coded_calibration(
@@ -2427,20 +2444,23 @@ def run_function_calibration_test(bits_per_point: int = 200000,
         sim = np.maximum(curve["simulated"], 0.5 / int(bits_per_point))
         ax.semilogy(curve["ebn0_db"], sim, "o-", color=color,
                     label=f"{curve['name']} 仿真")
-        ax.semilogy(curve["ebn0_db"], curve["theoretical"], "--", color=color,
-                    label="未编码 QPSK 理论" if "QPSK" not in curve["name"] else f"{curve['name']} 理论")
         coded_theory = curve.get("coded_theory")
         if coded_theory:
+            # 编码曲线仅绘制仿真与 MATLAB 基准两条曲线，不画未编码理论
             is_matlab = coded_theory.get("source") == "matlab"
-            label = "编码后理论（MATLAB）" if is_matlab else "编码后理论（RS 解析式）"
+            label = "MATLAB基准" if is_matlab else "编码后理论（RS 解析式）"
             # 0 误码参考点抬高到图幅下限上方（semilogy 不能画 0）
             coded_ber = np.maximum(
                 np.asarray(coded_theory["ber"], dtype=float), 1.2e-6)
             ax.semilogy(coded_theory["ebn0_db"], coded_ber, "-.", color=color,
                         marker="s", ms=4, label=label)
+        else:
+            # 未编码调制曲线：对照各自 AWGN 理论
+            ax.semilogy(curve["ebn0_db"], curve["theoretical"], "--", color=color,
+                        label=f"{curve['name']} AWGN 理论")
         ax.set_xlabel("Eb/N0 (dB)")
         ax.set_ylabel("BER")
-        ax.set_title(f"{curve['name']} BER 校准（前 4 个 Eb/N0 点）")
+        ax.set_title(f"{curve['name']} BER 校准")
         ax.grid(True, which="both")
         ax.set_ylim(1e-6, 0.5)
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.0e}"))
@@ -2451,7 +2471,7 @@ def run_function_calibration_test(bits_per_point: int = 200000,
         tables.append(_calibration_curve_table(curve))
 
     coded_theory_texts = [
-        f"{curve['name']}：{'MATLAB' if (curve.get('coded_theory') or {}).get('source') == 'matlab' else '解析式'}"
+        f"{curve['name']}：{'MATLAB基准' if (curve.get('coded_theory') or {}).get('source') == 'matlab' else '解析式'}"
         for curve in curves
         if curve.get("coded_theory")
     ]
@@ -2464,7 +2484,7 @@ def run_function_calibration_test(bits_per_point: int = 200000,
         "summary": [
             {"label": "调制校准", "value": "QPSK / 16QAM / 64QAM，各 4 个 Eb/N0 点"},
             {"label": "编码校准", "value": "LDPC(1440,1056) / RS(255,192)，QPSK 编码链路，各 4 点"},
-            {"label": "编码理论曲线", "value": "；".join(coded_theory_texts) or "无"},
+            {"label": "编码基准曲线", "value": "；".join(coded_theory_texts) or "无"},
             {"label": "通过项", "value": f"{sum(c['ok'] for c in checks)}/{len(checks)}"},
             {"label": "最终判定", "value": "通过" if all(c["ok"] for c in checks) else "失败"},
         ],

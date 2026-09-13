@@ -212,7 +212,7 @@ def test_ber_ui_is_last_option_and_builds_payload():
             "snr_min": 14.0,
             "snr_max": 20.0,
             "snr_step": 1.0,
-            "quick_max_bits": 300000,
+            "quick_max_bits": 3000000,
             "quick_min_errors": 100,
             "random_seed": 2026,
         }

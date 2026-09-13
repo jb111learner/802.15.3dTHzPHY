@@ -402,7 +402,7 @@ def _plot_results(results: list[dict], target_ber: float,
         if not points:
             continue
         x = np.asarray([point[x_key] for point in points], dtype=float)
-        # 每个点绘制其实测 BER；0 误码点不连线，在底部以空心圆标识。
+        # 每个点绘制其实测 BER；0 误码点不连线，在曲线下方直接标注「无误码」。
         y = np.asarray([
             point["BER"] if point["total_errors"] else np.nan
             for point in points
@@ -412,10 +412,14 @@ def _plot_results(results: list[dict], target_ber: float,
         zero = np.asarray([point["total_errors"] == 0 for point in points])
         if np.any(zero):
             ax.semilogy(x[zero], np.full(int(zero.sum()), zero_level),
-                        linestyle="none", marker="o", fillstyle="none",
-                        color=color, ms=7,
+                        linestyle="none", marker=marker, fillstyle="full",
+                        color=color, ms=6,
                         label="无误码点" if not zero_label_used else None)
             zero_label_used = True
+            for x_value in x[zero]:
+                ax.annotate("无误码", (x_value, zero_level),
+                            xytext=(0, 10), textcoords="offset points",
+                            ha="center", va="bottom", fontsize=7, color=color)
     ax.axhline(target_ber, color="#E5484D", ls="--", lw=1.2,
                label=f"目标 BER = {target_ber:.0e}")
     ax.set_xlabel(xlabel)
@@ -427,7 +431,7 @@ def _plot_results(results: list[dict], target_ber: float,
     ax.set_ylim(zero_level / 1.5, 0.5)
     ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.0e}"))
     ax.legend(fontsize=8, ncol=2)
-    ax.text(0.01, 0.018, "注：0 误码点以空心圆标识，不参与连线",
+    ax.text(0.01, 0.018, "注：无误码点以「无误码」标注，不参与连线",
             transform=ax.transAxes, fontsize=8, color="#596579")
     fig.tight_layout()
     buffer = io.BytesIO()
@@ -531,8 +535,8 @@ def run_ber_test(random_seed: int = 2026, quick_max_bits: int = 300_000,
     """按所选配置严格扫描全部 SNR 点。
 
     每个点按「每点最大比特数 + 每点最少误码数」逐试次累计实测统计量，
-    无早停、无 95% 置信验证；0 误码点在曲线上以空心圆标识。每次运行只
-    运行一条链路配置，产出一张图、一条误码曲线。
+    无早停、无 95% 置信验证；无误码点直接在图上标注「无误码」，不参与
+    连线。每次运行只运行一条链路配置，产出 SNR 与 Eb/N0 两张 BER 曲线图。
     """
     if int(quick_max_bits) <= 0 or int(quick_min_errors) <= 0:
         raise ValueError("每点最大比特数和最少误码数必须大于 0")
@@ -580,8 +584,8 @@ def run_ber_test(random_seed: int = 2026, quick_max_bits: int = 300_000,
             break
 
     png, figure = _plot_results(results, target_ber)
-    _, ebn0_figure = _plot_results(results, target_ber,
-                                   x_key="EbN0_dB", xlabel="Eb/N0 (dB)")
+    ebn0_png, ebn0_figure = _plot_results(results, target_ber,
+                                          x_key="EbN0_dB", xlabel="Eb/N0 (dB)")
     artifact_paths = {}
     if save_artifacts:
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -623,7 +627,10 @@ def run_ber_test(random_seed: int = 2026, quick_max_bits: int = 300_000,
         "test_type": "ber", "ok": completed,
         "cancelled": cancelled, "elapsed_ms": (time.perf_counter() - started) * 1000.0,
         "summary": summary, "checks": [],
-        "plots": [{"title": "BER 曲线", "png": png}],
+        "plots": [
+            {"title": "BER 曲线（SNR）", "png": png},
+            {"title": "BER 曲线（Eb/N0）", "png": ebn0_png},
+        ],
         "table": {"columns": ["SNR/dB", "Eb/N0/dB", "误码数", "比特数",
                               "实测 BER", "运行次数"], "rows": rows},
         "data": {"target_BER": target_ber,
