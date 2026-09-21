@@ -300,7 +300,7 @@ class MainWindow(QMainWindow):
         title = QLabel(APP_NAME)
         title.setObjectName('Title')
 
-        subtitle = QLabel('西安交通大学无线通信研究所杜清河老师课题组研制')
+        subtitle = QLabel('西安交通大学信息与通信工程学院无线通信研究所')
         subtitle.setObjectName('Subtitle')
 
         title_box.addWidget(title)

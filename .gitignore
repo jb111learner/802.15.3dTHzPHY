@@ -209,3 +209,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 simulation_results/
+
+# 环境迁移包（含数 GB 的 thz.tar.gz，勿提交）
+env_migration/

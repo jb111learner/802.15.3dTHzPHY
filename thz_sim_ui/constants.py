@@ -1,6 +1,6 @@
 from collections import OrderedDict
 
-APP_NAME = '太赫兹通信物理层仿真平台'
+APP_NAME = '面向Tbps量级移动通信的链路级仿真平台'
 APP_ORG = 'LiZhe'
 WINDOW_MIN_SIZE = (1440, 900)
 
