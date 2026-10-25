@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 
 from utils.MIMOUtils import ensure_antenna_axis, validate_mimo_params
 
 
-class MIMOChannel:
+class MIMOChannel(FixedPointMixin):
     """实现 y_r[n] = sum_t h_rt[n] * x_t[n] + w_r[n]。"""
 
     def __init__(self, params, channel_impulse_response=None):
+        self._init_fixed(params, "channel.mimo")
         self.params = params
         self.num_tx, self.num_rx, _ = validate_mimo_params(params)
         self.nfft = int(params.get("subwave_num"))
@@ -154,13 +156,40 @@ class MIMOChannel:
             )
 
         num_samples = tx.shape[1]
+        quantize_arithmetic = self.enable_fixed and bool(
+            self.fixed_context.module_config("channel.mimo").get("quantize_channel_arithmetic", False)
+        )
+        operation = quantize_arithmetic and self.fixed_context.arithmetic_level("channel.mimo") == "operation"
+        self.fixed_context.observe("channel.mimo.input", tx)
+        self.fixed_context.observe("channel.mimo.coefficient", self.channel_impulse_response)
+        self.fixed_context.record_coverage("channel.mimo.tap_generation", "float", "Prepared physical channel realization")
         rx = np.zeros((self.num_rx, num_samples), dtype=np.complex128)
         for rx_index in range(self.num_rx):
+            path_outputs = []
             for tx_index in range(self.num_tx):
-                convolved = np.convolve(
-                    tx[tx_index], self.channel_impulse_response[rx_index, tx_index], mode="full"
+                if quantize_arithmetic:
+                    convolved = self.fixed_context.fir(
+                        tx[tx_index], self.channel_impulse_response[rx_index, tx_index], "channel.mimo", mode="full"
+                    )
+                else:
+                    convolved = np.convolve(
+                        tx[tx_index], self.channel_impulse_response[rx_index, tx_index], mode="full"
+                    )
+                if operation:
+                    path_outputs.append(convolved[:num_samples])
+                else:
+                    rx[rx_index] += convolved[:num_samples]
+            if operation:
+                rx[rx_index] = self.fixed_context.sum(
+                    np.stack(path_outputs), "channel.mimo", axis=0, role="accumulator", node="channel.mimo.path_sum", input_role="output"
                 )
-                rx[rx_index] += convolved[:num_samples]
+        if operation:
+            rx = self.fixed_context.quantize(rx, "channel.mimo", role="output", node="channel.mimo.path_sum.output")
+        if quantize_arithmetic and not operation:
+            rx = self._fq(rx, node="channel.mimo.path_sum")
+            self.fixed_context.record_coverage("channel.mimo", "boundary")
+        elif not quantize_arithmetic:
+            self.fixed_context.record_coverage("channel.mimo", "float", "Physical MIMO propagation model")
 
         signal_power = float(np.mean(np.abs(rx) ** 2))
         if self.params.get("enable_awgn", False):
@@ -169,9 +198,28 @@ class MIMOChannel:
             noise = np.sqrt(self.noise_power / 2.0) * (
                 self.rng.standard_normal(rx.shape) + 1j * self.rng.standard_normal(rx.shape)
             )
-            rx += noise
+            stimulus = self.fixed_context.stimulus
+            if stimulus is not None:
+                if "noise" in stimulus:
+                    replay_noise = np.asarray(stimulus["noise"], dtype=np.complex128)
+                    if replay_noise.shape != rx.shape:
+                        raise ValueError("MIMO replay noise shape does not match received waveform")
+                    noise = replay_noise.copy()
+                    self.noise_power = float(stimulus["noise_power"])
+                else:
+                    stimulus["noise"] = noise.copy()
+                    stimulus["noise_power"] = float(self.noise_power)
+            self.last_noise = noise.copy()
+            self.fixed_context.observe("channel.mimo.noise", noise)
+            self.fixed_context.record_coverage("channel.mimo.noise_generation", "float", "Shared Gaussian environmental stimulus")
+            if operation:
+                rx = self.fixed_context.add(rx, noise, "channel.mimo", node="channel.mimo.noise_injection")
+            else:
+                rx += noise
 
         sample_rate = float(signal_dict["sample_rate_Hz"])
+        if quantize_arithmetic and (self.params.get("enable_iq_imbalance", False) or self.params.get("enable_cfo", False) or self.params.get("enable_phase_noise", False)):
+            self.fixed_context.record_coverage("channel.mimo.rf_impairments", "float", "Physical IQ/CFO/phase-noise environment model")
         rx = self._apply_cfo_and_phase_noise(rx, sample_rate)
         if self.params.get("enable_iq_imbalance", False) and str(
             self.params.get("iq_imbalance_position", "rx")
@@ -181,6 +229,9 @@ class MIMOChannel:
                 self.params.get("rx_iq_gain_imbalance_db"),
                 self.params.get("rx_iq_phase_imbalance_deg"),
             )
+        if quantize_arithmetic:
+            rx = self._fq(rx, node="channel.mimo.output")
+        self.fixed_context.observe("channel.mimo.output", rx)
 
         result = dict(signal_dict)
         result.update(

@@ -1,4 +1,5 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 from scipy.signal import resample_poly
 import matplotlib.pyplot as plt
 from params.PHYParams import PHYParams
@@ -13,12 +14,13 @@ from scipy.signal import firwin
 plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False 
 
-class TxPulseShaper:
+class TxPulseShaper(FixedPointMixin):
     """
     发送端脉冲成型类：RC/RRC/矩形滤波器
     """
 
     def __init__(self, params):
+        self._init_fixed(params, "sc.tx.pulse_shaping")
         self.sps = params.get("oversampling")
         self.rolloff = params.get("rolloff")
         self.filter_type = params.get("filter_type").lower()
@@ -240,12 +242,22 @@ class TxPulseShaper:
             self.filter_coeffs = np.array([1.0], dtype=np.float64)
             shaped = symbols
             up = symbols.copy()  # 兼容下游对 "up" 键的读取
+            self.fixed_context.record_coverage("ofdm.tx.pulse_shaping", "bit_exact", "OFDM waveform passthrough")
+            self.fixed_context.observe("ofdm.tx.pulse_shaping.output", shaped)
         else:
             self.filter_coeffs = self._design_tx_filter()
             up = self.upsample_symbols(symbols)
 
             # 卷积 + 延迟对齐
-            sig = np.convolve(up, self.filter_coeffs, mode="full")
+            if self.enable_fixed:
+                sig = self.fixed_context.fir(
+                    up, self.filter_coeffs, "sc.tx.pulse_shaping", mode="full"
+                )
+            else:
+                sig = np.convolve(up, self.filter_coeffs, mode="full")
+                self.fixed_context.observe("sc.tx.pulse_shaping.input", up)
+                self.fixed_context.observe("sc.tx.pulse_shaping.coefficient", self.filter_coeffs)
+                self.fixed_context.observe("sc.tx.pulse_shaping.output", sig)
             delay = len(self.filter_coeffs) // 2
             shaped = sig[delay : delay + len(up)]   # 对齐后截取有效长度
 

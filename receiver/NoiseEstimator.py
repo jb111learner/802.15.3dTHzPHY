@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 
 import numpy as np
 from params.PHYParams import PHYParams
@@ -95,7 +96,7 @@ from receiver.Downsampler import Downsampler
 #         result_dict['noise_var'] = self.noise_var
 #         return result_dict
 
-class NoiseEstimator:
+class NoiseEstimator(FixedReceiverMixin):
     """
     噪声方差估计器（支持多帧）
     利用每帧开头的 SYNC 序列（由多个重复块组成）进行无偏噪声方差估计。
@@ -104,6 +105,7 @@ class NoiseEstimator:
       - 'per_frame' : 每帧独立估计，返回列表
     """
     def __init__(self, transmitter, estimation_mode='per_frame'):
+        self._init_fixed(transmitter.params, "rx.noise_estimator")
         self.params = transmitter.params
         self.link_mode = self.params.get("link_mode").lower()
         self.oversampling = transmitter.params.get("oversampling")
@@ -201,16 +203,34 @@ class NoiseEstimator:
         rx_sync_valid = rx_sync_seq[:self.base_sequences_length * Nblks]
         sync_blk = np.reshape(rx_sync_valid, (self.base_sequences_length, Nblks), order='F')
         # 相邻块差分
-        diff_blk = np.diff(sync_blk, axis=1)
+        if self._fixed_enabled():
+            ctx, mid = self.fixed_context, self.fixed_module_id
+            diff_blk = ctx.add(sync_blk[:, 1:], -sync_blk[:, :-1], mid,
+                               node=mid + ".difference")
+        else:
+            diff_blk = np.diff(sync_blk, axis=1)
+            self._watch(rx_sync_seq, self.fixed_module_id + ".input")
         if self.link_mode == "ofdm" and diff_blk.shape[1] >= 3:
             # OFDM 补零 IFFT 后前导码经 resample_poly 插值：首块含滤波器
             # 启动瞬态、末块被后续 SFD（-a128）的滤波器拖尾污染，破坏
             # “相邻块完全相同”的模型假设，丢弃首尾两个差分列。
             diff_blk = diff_blk[:, 1:-1]
-        total_power = np.sum(np.abs(diff_blk) ** 2)
+        if self._fixed_enabled():
+            power = np.real(ctx.mul(diff_blk, np.conj(diff_blk), mid, role="product",
+                                    a_role="output", b_role="output"))
+            total_power = ctx.sum(power, mid, input_role="product", node=mid + ".power_sum")
+        else:
+            total_power = np.sum(np.abs(diff_blk) ** 2)
         # 无偏归一化：差分方差 = 2*σ²
         norm_factor = self.base_sequences_length * diff_blk.shape[1] * 2
-        noise_var = total_power / norm_factor
+        if self._fixed_enabled():
+            noise_var = ctx.div(total_power, norm_factor, mid,
+                                a_role="accumulator", b_role="index",
+                                role="noise", node=mid + ".noise_var")
+            ctx.record_coverage(mid, ctx.arithmetic_level(mid), "repeated-block subtraction/power/sum/integer-count division")
+        else:
+            noise_var = total_power / norm_factor
+            self._watch(noise_var, self.fixed_module_id + ".noise_var")
         return noise_var
 
     def noise_estimate(self, signal_dict):

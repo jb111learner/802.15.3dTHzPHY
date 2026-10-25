@@ -1,13 +1,15 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 from utils.Seq_gen import Generator
 
 
-class DeScrambler:
+class DeScrambler(FixedReceiverMixin):
     """
     扰码器/解扰码器：严格遵循3GPP TS 38.211标准实现
     核心：两个31阶m序列异或生成Gold序列，完全匹配5G NR物理层规范
     """
     def __init__(self, params):
+        self._init_fixed(params, "rx.descrambler")
         self.params = params
         self.generator = Generator(params)
         # 输出参数      
@@ -63,4 +65,8 @@ class DeScrambler:
             "signal_length": self.bit_length,
             "padding_bit_num": self.padding_bit_num,
         }   
+        if "ldpc_diagnostics" in data_dict:
+            result_dict["ldpc_diagnostics"] = data_dict["ldpc_diagnostics"]
+        if self._fixed_enabled():
+            self.fixed_context.record_coverage(self.fixed_module_id, "bit_exact", "Gold sequence XOR")
         return result_dict

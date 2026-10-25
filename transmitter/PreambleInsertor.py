@@ -1,4 +1,5 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 import matplotlib.pyplot as plt
 from scipy.signal import resample_poly
 from params.PHYParams import PHYParams
@@ -7,11 +8,12 @@ from utils.Seq_gen import Generator
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
-class PreambleInsertor:
+class PreambleInsertor(FixedPointMixin):
     """
     前导码插入器：按802.15.3d协议插入SYNC+SFD+CES序列，支持相位旋转
     """
     def __init__(self, params):
+        self._init_fixed(params, "tx.preamble")
         self.params = params
         self.generator = Generator(params)
         self.preamble_type = self.params.get("Preamble_type")  # 默认long类型
@@ -126,6 +128,7 @@ class PreambleInsertor:
     
     def insert_preamble(self, data_dict):
         """在符号序列中插入前导码"""
+        self.fixed_context.require_boundary("tx.preamble", "polyphase preamble construction supports boundary quantization only")
         self._verification_data(data_dict)
         symbols = data_dict["signal_stream"]
         # 将每一帧的前导码插入到符号序列开头
@@ -135,6 +138,8 @@ class PreambleInsertor:
             return ValueError("输入数据字典中的分帧信息不匹配")
         # 将 preamble 扩展到每帧一行
         preamble = self.preamble_upsampled if self.link_mode == "ofdm" else self.preamble
+        preamble = self._fq(preamble, role="coefficient", node="tx.preamble.reference")
+        self.fixed_context.record_coverage("tx.preamble", "boundary" if self.enable_fixed else "float")
         preamble_rows = np.tile(preamble, (num_frames, 1))  # shape (num_frames, len(preamble))
         # 沿列拼接
         frame_symbols = np.concatenate([preamble_rows, frame_symbols], axis=1)

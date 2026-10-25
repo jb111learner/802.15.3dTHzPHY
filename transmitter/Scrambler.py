@@ -1,15 +1,17 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 from params.PHYParams import PHYParams
 from transmitter.DataProcesser import BitStreamProcessor
 from utils.Seq_gen import Generator
 
 
-class Scrambler:
+class Scrambler(FixedPointMixin):
     """
     扰码器/解扰码器：严格遵循3GPP TS 38.211标准实现
     核心：两个31阶m序列异或生成Gold序列，完全匹配5G NR物理层规范
     """
     def __init__(self, params):
+        self._init_fixed(params, "tx.scrambler")
         self.params = params
         self.generator = Generator(params)
         # 输出参数      
@@ -76,6 +78,7 @@ class Scrambler:
             "frame_bit_num": self.frame_bit_num,
             "frame_num": self.frame_num
         }   
+        self.fixed_context.record_coverage("tx.scrambler", "bit_exact")
         return result_dict
 
 

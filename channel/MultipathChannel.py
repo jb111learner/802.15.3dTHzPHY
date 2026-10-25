@@ -1,5 +1,6 @@
 import copy
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 
 
 # 3GPP TR 38.901 V19.4.0, Table 7.7.2-1 through Table 7.7.2-5.
@@ -68,7 +69,7 @@ _TDL_PROFILES = {
 }
 
 
-class MultipathChannel:
+class MultipathChannel(FixedPointMixin):
     """
     多径信道模型：支持 3GPP TDL-A~E 和旧版自定义/PDP 回退。
 
@@ -85,6 +86,7 @@ class MultipathChannel:
     _DEFAULT_JAKES_SINUSOIDS = 48
 
     def __init__(self, params):
+        self._init_fixed(params, "channel.multipath")
         self.params = params
 
         self.tdl_model = self._normalize_tdl_model(self._get_param("tdl_model", None))
@@ -1133,7 +1135,10 @@ class MultipathChannel:
         if len(h) == 0:
             return np.zeros_like(x, dtype=complex)
 
-        y_full = np.convolve(x, h, mode="full")
+        if self._fixed_channel_arithmetic():
+            y_full = self.fixed_context.fir(x, h, "channel.multipath", mode="full")
+        else:
+            y_full = np.convolve(x, h, mode="full")
         return y_full[: len(x)]
 
     def _apply_tdl_path_sum(self, x, active_paths, gain_traces=None):
@@ -1190,13 +1195,18 @@ class MultipathChannel:
         history_length = max(len(h) - 1, 0)
 
         if history_length == 0:
+            if self._fixed_channel_arithmetic():
+                return self.fixed_context.fir(x, h, "channel.multipath", mode="full"), np.zeros(0, dtype=complex)
             return h[0] * x, np.zeros(0, dtype=complex)
 
         if input_history is None or len(input_history) != history_length:
             input_history = np.zeros(history_length, dtype=complex)
 
         x_ext = np.concatenate([input_history, x])
-        y_ext = np.convolve(x_ext, h, mode="full")
+        if self._fixed_channel_arithmetic():
+            y_ext = self.fixed_context.fir(x_ext, h, "channel.multipath", mode="full")
+        else:
+            y_ext = np.convolve(x_ext, h, mode="full")
 
         y = y_ext[history_length: history_length + len(x)]
         new_history = x_ext[-history_length:].copy()
@@ -1392,6 +1402,14 @@ class MultipathChannel:
 
         return h_eff
 
+    def _fixed_channel_arithmetic(self):
+        return self.enable_fixed and bool(
+            self.fixed_context.module_config("channel.multipath").get("quantize_channel_arithmetic", False)
+        )
+
+    def _fixed_channel_operation(self):
+        return self._fixed_channel_arithmetic() and self.fixed_context.arithmetic_level("channel.multipath") == "operation"
+
     def apply(self, signal_dict):
         """
         将输入 signal_dict 通过静态多径信道。
@@ -1418,6 +1436,19 @@ class MultipathChannel:
 
         if round(fs * float(signal_dict["duration_seconds"])) != expected_length:
             raise ValueError("输入 signal_dict 中的采样率、时长与信号长度不匹配")
+        quantize_arithmetic = self._fixed_channel_arithmetic()
+        if self._fixed_channel_operation() and (
+            self.fading_model != "static" or self.use_frac_delay or self.tdl_max_doppler_hz > 0.0
+        ):
+            self.fixed_context.record_coverage("channel.multipath", "unsupported", "Operation requires a static integer-delay channel")
+            raise NotImplementedError(
+                "channel.multipath operation supports static integer-delay channels only; "
+                "time-varying/block/fractional-delay models require boundary quantization"
+            )
+        if quantize_arithmetic and not self._fixed_channel_operation():
+            x = self._fq(x, role="input")
+        else:
+            self.fixed_context.observe("channel.multipath.input", x)
 
         resolved_paths_raw = self._parse_paths(fs)
 
@@ -1458,13 +1489,37 @@ class MultipathChannel:
 
             self.chan_impulse = self._build_effective_impulse_response(active_paths)
 
-            if self.tdl_model is not None:
-                y = self._apply_tdl_path_sum(x, active_paths, gain_traces)
+            if self.tdl_model is not None and self._fixed_channel_operation():
+                if self.enable_multipath_memory:
+                    y = self._apply_static_fir_with_history(x, self.chan_impulse)
+                else:
+                    y = self._apply_static_fir_no_history(x, self.chan_impulse)
+                    self._processed_samples += len(x)
+            elif self.tdl_model is not None:
+                processing_paths = active_paths
+                processing_traces = gain_traces
+                if quantize_arithmetic:
+                    processing_paths = [dict(path, gain=self._fq(
+                        path["gain"], role="coefficient", node="channel.multipath.path_gain"
+                    )) for path in active_paths]
+                    if gain_traces is not None:
+                        processing_traces = self._fq(
+                            gain_traces, role="coefficient", node="channel.multipath.gain_traces"
+                        )
+                y = self._apply_tdl_path_sum(x, processing_paths, processing_traces)
             elif self.enable_multipath_memory:
                 y = self._apply_static_fir_with_history(x, self.chan_impulse)
             else:
                 y = self._apply_static_fir_no_history(x, self.chan_impulse)
                 self._processed_samples += len(x)
+
+        self.fixed_context.observe("channel.multipath.coefficient", self.chan_impulse)
+        if quantize_arithmetic and not self._fixed_channel_operation():
+            y = self._fq(y)
+            self.fixed_context.record_coverage("channel.multipath", "boundary")
+        elif not quantize_arithmetic:
+            self.fixed_context.observe("channel.multipath.output", y)
+            self.fixed_context.record_coverage("channel.multipath", "float", "Physical propagation model")
 
         input_power = float(np.mean(np.abs(x) ** 2)) if len(x) > 0 else 0.0
         output_power = float(np.mean(np.abs(y) ** 2)) if len(y) > 0 else 0.0

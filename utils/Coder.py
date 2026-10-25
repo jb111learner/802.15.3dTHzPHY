@@ -548,15 +548,18 @@ class LDPCCoder:
         llrs: np.ndarray,
         original_bit_len: Optional[int] = None,
         ldpc_padding_bits: Optional[int] = None,
+        *,
+        input_is_soft: bool = False,
+        llr_preprocessed: bool = False,
     ) -> Tuple[np.ndarray, dict]:
         llrs = np.asarray(llrs).ravel()
-        used_hard_fallback = bool(np.all(np.isin(llrs, [0, 1])))
+        used_hard_fallback = bool(not input_is_soft and np.all(np.isin(llrs, [0, 1])))
         if used_hard_fallback:
             llrs = np.where(llrs.astype(np.uint8) == 0, self.hard_llr_value, -self.hard_llr_value)
         else:
             llrs = llrs.astype(np.float64, copy=False)
 
-        if self.llr_clip > 0:
+        if self.llr_clip > 0 and not llr_preprocessed:
             llrs = np.clip(llrs, -self.llr_clip, self.llr_clip)
 
         input_llr_length = int(len(llrs))

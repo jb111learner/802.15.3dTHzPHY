@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 import matplotlib.pyplot as plt
 from params.PHYParams import PHYParams
@@ -8,9 +9,10 @@ from receiver.MatchedFilter import RxMatchedFilter
 plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
-class THzDemodulator:
+class THzDemodulator(FixedReceiverMixin):
     """解调器类"""
     def __init__(self, params):
+        self._init_fixed(params, "rx.demodulator")
         self.params = params
         self.MCS = self.params.get("MCS")
         self.NCBPS = self.params.get("NCBPS")
@@ -377,7 +379,9 @@ class THzDemodulator:
 
     def demodulate(self, rx_symbols_dict, sigma):
         self._verification_data(rx_symbols_dict)
+        self._boundary_only("max-log constellation distance arithmetic is not yet implemented")
         rx_symbols = rx_symbols_dict["signal_stream"]
+        rx_symbols = self._fq(rx_symbols, role="input")
         if self.MCS == 0:
             llr = self._dbpsk_demodulate(rx_symbols, sigma)
         elif self.MCS == 2:
@@ -400,6 +404,10 @@ class THzDemodulator:
         
         if np.isclose(self.Rate, 13/16):
             llr = llr / 2
+        # LDPC LLR is quantized after its clipping in Decoder, not here.
+        self._watch(llr, "ldpc.llr.raw")
+        if self._fixed_enabled():
+            self.fixed_context.record_coverage(self.fixed_module_id, "boundary", "constellation input quantized; LLR output clipping/quantization in Decoder")
 
         if len(llr) != self.bit_length:
             raise ValueError(f"解调后比特长度不匹配:预期长度={self.bit_length}, 实际长度={len(llr)}")
@@ -411,6 +419,9 @@ class THzDemodulator:
             "signal_length": self.bit_length,
             "padding_bit_num": self.padding_bit_num
         }
+        context = getattr(self, "fixed_context", None)
+        if context is not None and context.config.enable_fixed:
+            result_dict["llr_input_kind"] = "soft"
         
         return result_dict
 

@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
@@ -8,12 +9,13 @@ from receiver.Downsampler import Downsampler
 import matplotlib.pyplot as plt
 from scipy import signal
 
-class CFOEstimator:
+class CFOEstimator(FixedReceiverMixin):
     """
     载波频率偏移（CFO）估计与补偿类
     支持多帧信号：每帧独立估计并补偿自身 CFO。
     """
     def __init__(self, transmitter):
+        self._init_fixed(transmitter.params, "sc.rx.cfo")
         self.params = transmitter.params
         self.link_mode = self.params.get("link_mode").lower()
         gi_len = self.params.get("gi_length")
@@ -65,9 +67,20 @@ class CFOEstimator:
             raise ValueError(f"sync_field 长度 ({len(sync_field)}) 必须大于 L ({L})")
         cx = sync_field[:-L]
         sx = sync_field[L:]
+        if self._fixed_enabled():
+            ctx, mid = self.fixed_context, self.fixed_module_id
+            product = ctx.mul(np.conj(cx), sx, mid, role="product", node=mid + ".correlation_product")
+            result = ctx.sum(product, mid, input_role="product", node=mid + ".correlation_sum")
+            phase = ctx.angle(result, mid, node=mid + ".phase")
+            offset = ctx.mul(phase, 1.0 / (2 * np.pi), mid, role="phase", a_role="phase", b_role="coefficient", node=mid + ".normalized_frequency")
+            # Hz is physical metadata; the hardware quantity is normalized cycles/sample.
+            return float(offset) * fs / L
+        self._watch(sync_field, self.fixed_module_id + ".input")
         # 多通道处理：如果 sync_field 是 2D (采样点 x 通道)，则按通道求和
         res = np.sum(np.conj(cx) * sx)          # 自动广播，结果为标量（所有通道求和）
         phase = np.angle(res)
+        self._watch(res, self.fixed_module_id + ".correlation_sum")
+        self._watch(phase, self.fixed_module_id + ".phase")
         offset = phase / (2 * np.pi)            # 归一化周期数
         # 可选相位折叠修正（保留注释，暂不启用）
         # offset = np.mod(offset + 0.5, 1) - 0.5
@@ -114,8 +127,20 @@ class CFOEstimator:
         n_samples = rx_signal.shape[0]
         # 使用全局索引：从 start_idx 到 start_idx + n_samples - 1
         n = np.arange(start_idx, start_idx + n_samples)[:, np.newaxis]
-        cfo_factor = np.exp(-1j * 2 * np.pi * cfo_est * n / fs)
-        compensated = rx_signal * cfo_factor
+        if self._fixed_enabled():
+            ctx, mid = self.fixed_context, self.fixed_module_id
+            # Form the configured physical phase grid before quantizing it; n/fs
+            # is timing metadata, not a signal value in the fixed format.
+            phase_grid = (-2 * np.pi * cfo_est * n / fs + np.pi) % (2 * np.pi) - np.pi
+            phase = ctx.quantize(phase_grid, mid,
+                                 role="phase", node=mid + ".rotation_phase")
+            cfo_factor = ctx.phasor(phase, mid, node=mid + ".rotation")
+            compensated = ctx.mul(rx_signal, cfo_factor, mid, b_role="coefficient", node=mid + ".output")
+            ctx.record_coverage(mid, ctx.arithmetic_level(mid), "correlation/CORDIC/rotation; phase grid uses physical timing metadata")
+        else:
+            cfo_factor = np.exp(-1j * 2 * np.pi * cfo_est * n / fs)
+            compensated = rx_signal * cfo_factor
+            self._watch(compensated, self.fixed_module_id + ".output")
 
         if is_1d:
             compensated = compensated.flatten()

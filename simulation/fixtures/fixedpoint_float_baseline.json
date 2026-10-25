@@ -1,0 +1,166 @@
+{
+  "ofdm": {
+    "overrides": {
+      "random_seed": 2026,
+      "seed_strategy": "????",
+      "NCBPS": 4,
+      "code_type": "LDPC",
+      "ldpc_matrix_type": "engineering",
+      "ldpc_n": 64,
+      "ldpc_k": 32,
+      "duration": null,
+      "sample_length": 1,
+      "SNRdB": 60.0,
+      "enable_multipath": false,
+      "enable_cfo": false,
+      "enable_iq_imbalance": false,
+      "enable_pa": false,
+      "link_mode": "ofdm"
+    },
+    "global_seed": 555,
+    "tx": {
+      "shape": [
+        117760
+      ],
+      "dtype": "complex128",
+      "sha256": "cf2703aaa2ab69ec1ac014373b2c5c71fe7dc13cd8000932b64fc28e7872b611"
+    },
+    "channel": {
+      "shape": [
+        117760
+      ],
+      "dtype": "complex128",
+      "sha256": "aed59fdb75033dbfed8d973bf1d1764acb4736bd67a530d6462cbaff0d589896"
+    },
+    "equalized": {
+      "shape": [
+        23040
+      ],
+      "dtype": "complex128",
+      "sha256": "480ea7922a86995acfed55fc280dab1a84f857303c5044e1a42d3661f12657f1"
+    },
+    "bits": {
+      "shape": [
+        46080
+      ],
+      "dtype": "uint8",
+      "sha256": "5bc1cc43b58ae08372045ef8719cf56df4aa432ca21c3e593372c273cfe83596"
+    }
+  },
+  "sc-fde": {
+    "overrides": {
+      "random_seed": 2026,
+      "seed_strategy": "????",
+      "NCBPS": 4,
+      "code_type": "LDPC",
+      "ldpc_matrix_type": "engineering",
+      "ldpc_n": 64,
+      "ldpc_k": 32,
+      "duration": null,
+      "sample_length": 1,
+      "SNRdB": 60.0,
+      "enable_multipath": false,
+      "enable_cfo": false,
+      "enable_iq_imbalance": false,
+      "enable_pa": false,
+      "link_mode": "sc-fde"
+    },
+    "global_seed": 555,
+    "tx": {
+      "shape": [
+        117760
+      ],
+      "dtype": "complex128",
+      "sha256": "0d0015031c67dd273b7a3e83fe8e79d71e526a14419bed1748ab7053f85c72f4"
+    },
+    "channel": {
+      "shape": [
+        117760
+      ],
+      "dtype": "complex128",
+      "sha256": "8c128f682a96a1f33ec2bcd4d6ec407b40385912afb5ceca048c15d3c96a9d80"
+    },
+    "equalized": {
+      "shape": [
+        24480
+      ],
+      "dtype": "complex128",
+      "sha256": "a5a2bb9127394ff0de4045b25b7f9654efc60dcef9598b3fc4c29895ae96c225"
+    },
+    "bits": {
+      "shape": [
+        48960
+      ],
+      "dtype": "uint8",
+      "sha256": "ac8934f87e92a2265b14f8fabddb70bf0d9243b91e09d9549d2be409b5e6b2d1"
+    }
+  },
+  "mimo": {
+    "overrides": {
+      "random_seed": 2026,
+      "seed_strategy": "????",
+      "NCBPS": 4,
+      "code_type": "LDPC",
+      "ldpc_matrix_type": "engineering",
+      "ldpc_n": 64,
+      "ldpc_k": 32,
+      "duration": null,
+      "sample_length": 1,
+      "SNRdB": 60.0,
+      "enable_multipath": false,
+      "enable_cfo": false,
+      "enable_iq_imbalance": false,
+      "enable_pa": false,
+      "enable_mimo": true,
+      "link_mode": "ofdm",
+      "num_tx": 2,
+      "num_rx": 2,
+      "num_spatial_streams": 2,
+      "subwave_num": 64,
+      "gi_length": 8,
+      "subframe_ofdm_num": 4,
+      "pilot_block_indexes": [],
+      "mimo_channel_model": "identity",
+      "mimo_num_taps": 1,
+      "oversampling": 1
+    },
+    "global_seed": 555,
+    "tx": {
+      "shape": [
+        2,
+        496
+      ],
+      "dtype": "complex128",
+      "sha256": "15860099b620f721a823e22732c9837a98f563700bd0294d5e8eb6fa0f7fa9fc"
+    },
+    "channel": {
+      "shape": [
+        2,
+        496
+      ],
+      "dtype": "complex128",
+      "sha256": "5a07703887fc4fe17db16b65f451efd6ead5c81ca42dc5f4dc5ac7ecaa804b01"
+    },
+    "equalized": {
+      "shape": [
+        256
+      ],
+      "dtype": "complex128",
+      "sha256": "238ed5708102df64e5571e2e279d61a1d7f8ea1b112a1b23cb712a73bcb9cc07"
+    },
+    "bits": {
+      "shape": [
+        512
+      ],
+      "dtype": "uint8",
+      "sha256": "6ad708acab7e061c7b016c9baf3109de4f83e5017080d26f686abba445375a91"
+    }
+  },
+  "_meta": {
+    "description": "????????????????????",
+    "python": "3.10.20",
+    "numpy": "2.2.5",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "git_head": "839a1d89a29eefae96f4e7fc56a20a2ebe022581"
+  }
+}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from receiver.FixedReceiverSupport import FixedReceiverMixin
+
 import numpy as np
 
 from receiver.MIMOChannelEstimator import MIMOChannelEstimator
@@ -10,8 +12,9 @@ from receiver.MIMOLayerDemapper import MIMOLayerDemapper
 from utils.MIMOUtils import ensure_antenna_axis, validate_mimo_params
 
 
-class MIMOReceiverProcessor:
+class MIMOReceiverProcessor(FixedReceiverMixin):
     def __init__(self, params, transmitter):
+        self._init_fixed(params, "mimo.rx.processor")
         self.params = params
         self.transmitter = transmitter
         self.num_tx, self.num_rx, self.num_streams = validate_mimo_params(params)
@@ -19,10 +22,16 @@ class MIMOReceiverProcessor:
         self.nfft = int(self.frame["nfft"])
         self.cp_length = int(self.frame["cp_length"])
         self.block_length = int(self.frame["block_length"])
-        self.detector = MIMODetector(params.get("mimo_detector", "mmse"))
+        self.detector = MIMODetector(params.get("mimo_detector", "mmse"), params=params)
+        self.channel_estimator = MIMOChannelEstimator(params)
+        self.layer_demapper = MIMOLayerDemapper(params)
 
     def _sync_template(self):
-        time = np.fft.ifft(self.frame["sync_frequency"])
+        mid = "mimo.rx.synchronization"
+        if self._fixed_enabled(mid):
+            time = self.fixed_context.fft(self.frame["sync_frequency"], mid, inverse=True)
+        else:
+            time = np.fft.ifft(self.frame["sync_frequency"])
         if self.cp_length:
             time = np.concatenate((time[-self.cp_length:], time))
         return time
@@ -43,35 +52,69 @@ class MIMOReceiverProcessor:
         denominator = abs(alpha) ** 2 - abs(beta) ** 2
         if abs(denominator) < 1e-12:
             raise ValueError("RX IQ 不平衡参数导致补偿矩阵不可逆")
+        mid = "mimo.rx.iq"
+        if self._fixed_enabled(mid):
+            ctx = self.fixed_context
+            direct = ctx.mul(np.conj(alpha), received, mid, role="product", a_role="coefficient")
+            image = ctx.mul(beta, np.conj(received), mid, role="product", a_role="coefficient")
+            numerator = ctx.add(direct, -image, mid, role="accumulator", a_role="product", b_role="product")
+            return ctx.div(numerator, denominator, mid, a_role="accumulator", b_role="denominator")
         return (np.conj(alpha) * received - beta * np.conj(received)) / denominator
 
     def _detect_sync(self, received):
+        mid = "mimo.rx.synchronization"
+        received = self.fixed_context.quantize(received, mid, role="input")
         template = self._sync_template()
+        template = self.fixed_context.quantize(template, mid, role="coefficient")
         maximum = min(
             int(self.params.get("mimo_sync_search_samples", self.block_length)),
             received.shape[1] - len(template),
         )
         if maximum < 0:
             raise ValueError("接收信号短于 MIMO 同步符号")
+        if self._fixed_enabled(mid) and self.fixed_context.arithmetic_level(mid) == "operation":
+            ctx = self.fixed_context
+            correlations = np.asarray([
+                ctx.correlate(antenna[:maximum + len(template)], template, mid, mode="valid")
+                for antenna in received
+            ])
+            power = np.real(ctx.mul(correlations, np.conj(correlations), mid,
+                                    role="product", a_role="output", b_role="output"))
+            metrics = ctx.sum(power, mid, axis=0, input_role="product")
+            ctx.record_coverage(mid, "operation", "template IFFT/antenna correlations/power accumulation")
+            return int(np.argmax(metrics)), metrics
         metrics = np.zeros(maximum + 1, dtype=float)
         for offset in range(maximum + 1):
             segment = received[:, offset:offset + len(template)]
             correlations = segment @ np.conj(template)
             metrics[offset] = np.sum(np.abs(correlations) ** 2)
+        metrics = self.fixed_context.quantize(metrics, mid, role="accumulator")
         return int(np.argmax(metrics)), metrics
 
     def _estimate_and_compensate_cfo(self, received, sync_offset, sample_rate):
+        mid = "mimo.rx.cfo"
         first_start = sync_offset
         second_start = sync_offset + self.block_length
         first = received[:, first_start:first_start + self.block_length]
         second = received[:, second_start:second_start + self.block_length]
         if first.shape[1] != self.block_length or second.shape[1] != self.block_length:
             raise ValueError("接收信号不包含两个完整的重复同步符号")
-        phase = np.angle(np.vdot(first, second))
+        if self._fixed_enabled(mid):
+            ctx = self.fixed_context
+            product = ctx.mul(np.conj(first), second, mid, role="product")
+            phase = ctx.angle(ctx.sum(product, mid, input_role="product"), mid)
+        else:
+            phase = np.angle(np.vdot(first, second))
         frequency_offset = phase * sample_rate / (2.0 * np.pi * self.block_length)
         if not self.params.get("enable_cfo_compensation", False):
             return received.copy(), float(frequency_offset)
         sample_index = np.arange(received.shape[1])
+        if self._fixed_enabled(mid):
+            phase_grid = (-2.0 * np.pi * frequency_offset * sample_index / sample_rate + np.pi) % (2 * np.pi) - np.pi
+            correction = ctx.phasor(phase_grid, mid)
+            compensated = ctx.mul(received, correction[np.newaxis, :], mid, b_role="coefficient")
+            ctx.record_coverage(mid, ctx.arithmetic_level(mid), "repeated-block correlation/CORDIC/rotation; physical phase-grid metadata")
+            return compensated, float(frequency_offset)
         correction = np.exp(-1j * 2.0 * np.pi * frequency_offset * sample_index / sample_rate)
         return received * correction[np.newaxis, :], float(frequency_offset)
 
@@ -85,7 +128,12 @@ class MIMOReceiverProcessor:
             self.num_rx, count, self.block_length
         )
         without_cp = blocks[..., self.cp_length:]
-        return np.fft.fft(without_cp, axis=-1)
+        if self._fixed_enabled("mimo.rx.fft"):
+            return self.fixed_context.fft(without_cp, "mimo.rx.fft", axis=-1)
+        result = np.fft.fft(without_cp, axis=-1)
+        self._watch(without_cp, "mimo.rx.fft.input")
+        self._watch(result, "mimo.rx.fft.output")
+        return result
 
     def process(self, signal_dict):
         received = ensure_antenna_axis(
@@ -158,16 +206,27 @@ class MIMOReceiverProcessor:
             sync_frequency = self._extract_fft_blocks(
                 compensated, guard_length, 2
             )
-            noise_frequency = float(
-                np.mean(np.abs(sync_frequency[:, 0] - sync_frequency[:, 1]) ** 2) / 2.0
-            )
+            noise_mid = "mimo.rx.noise_estimator"
+            if self._fixed_enabled(noise_mid):
+                ctx = self.fixed_context
+                difference = ctx.add(sync_frequency[:, 0], -sync_frequency[:, 1], noise_mid,
+                                     a_role="output", b_role="output")
+                power = np.real(ctx.mul(difference, np.conj(difference), noise_mid, role="product",
+                                        a_role="output", b_role="output"))
+                total = ctx.sum(power, noise_mid, input_role="product")
+                noise_frequency = float(ctx.div(total, 2 * power.size, noise_mid,
+                                                role="noise", a_role="accumulator", b_role="index"))
+            else:
+                noise_frequency = float(
+                    np.mean(np.abs(sync_frequency[:, 0] - sync_frequency[:, 1]) ** 2) / 2.0
+                )
 
             # 帧内训练符号 → LS 信道估计
             training_start = guard_length + 2 * self.block_length
             training = self._extract_fft_blocks(
                 compensated, training_start, self.num_tx
             )
-            estimated_channel = MIMOChannelEstimator.estimate(
+            estimated_channel = self.channel_estimator.estimate_with_config(
                 training, self.frame["pilot_frequency"]
             )
             channel_estimates.append(estimated_channel)
@@ -187,6 +246,11 @@ class MIMOReceiverProcessor:
                 detector_noise = max(
                     float(noise_frequency_known) * self.nfft, 0.0
                 ) if not zf_mode else 0.0
+                if not zf_mode and self._fixed_enabled(noise_mid):
+                    detector_noise = float(self.fixed_context.mul(
+                        noise_frequency_known, self.nfft, noise_mid,
+                        role="noise", a_role="noise", b_role="index", node=noise_mid + ".known_frequency_noise"
+                    ))
             else:
                 detector_noise = 0.0 if zf_mode else max(noise_frequency, 0.0)
 
@@ -196,19 +260,36 @@ class MIMOReceiverProcessor:
             layers = []
             for stream_index, length in enumerate(self.frame["layer_lengths"]):
                 layer = detected[stream_index].reshape(-1)[:int(length)] / tx_scale
+                if self._fixed_enabled("mimo.rx.layer_scale"):
+                    layer = self.fixed_context.div(detected[stream_index].reshape(-1)[:int(length)], tx_scale,
+                                                   "mimo.rx.layer_scale", a_role="output", b_role="coefficient")
                 layers.append(layer)
             recovered_frames.append(
-                MIMOLayerDemapper.demap(
+                self.layer_demapper.demap(
                     layers, self.frame["original_symbol_count"]
                 )
             )
+            if self._fixed_enabled("mimo.rx.layer_demap"):
+                self.fixed_context.record_coverage("mimo.rx.layer_demap", "bit_exact", "interleaved layer sample selection")
 
             post_variance = detector_diagnostics["post_noise_variance"]
             if tx_scale != 0:
-                post_variance = post_variance / (tx_scale ** 2)
-            post_vars.append(
-                float(np.mean(post_variance)) if post_variance.size else 0.0
-            )
+                if self._fixed_enabled("mimo.rx.layer_scale"):
+                    ctx, scale_mid = self.fixed_context, "mimo.rx.layer_scale"
+                    scale_power = ctx.mul(tx_scale, tx_scale, scale_mid, role="coefficient",
+                                          a_role="coefficient", b_role="coefficient")
+                    post_variance = ctx.div(post_variance, scale_power, scale_mid, role="noise",
+                                            a_role="noise", b_role="coefficient", node=scale_mid + ".post_noise")
+                else:
+                    post_variance = post_variance / (tx_scale ** 2)
+            if post_variance.size and self._fixed_enabled(noise_mid):
+                mean_variance = self.fixed_context.div(
+                    self.fixed_context.sum(post_variance, noise_mid, input_role="noise"),
+                    post_variance.size, noise_mid, role="noise", a_role="accumulator", b_role="index"
+                )
+                post_vars.append(float(mean_variance))
+            else:
+                post_vars.append(float(np.mean(post_variance)) if post_variance.size else 0.0)
 
         recovered_symbols = (
             np.concatenate(recovered_frames)
@@ -216,14 +297,28 @@ class MIMOReceiverProcessor:
             else np.zeros(0, dtype=np.complex128)
         )
         # 多帧信道估计取平均（静态信道假设下降低估计噪声）
-        mean_channel_estimate = np.mean(np.asarray(channel_estimates), axis=0)
+        if self._fixed_enabled("mimo.rx.channel_estimation"):
+            ctx, est_mid = self.fixed_context, "mimo.rx.channel_estimation"
+            mean_channel_estimate = ctx.div(
+                ctx.sum(np.asarray(channel_estimates), est_mid, axis=0, input_role="output"),
+                len(channel_estimates), est_mid, a_role="accumulator", b_role="index"
+            )
+        else:
+            mean_channel_estimate = np.mean(np.asarray(channel_estimates), axis=0)
         channel_nmse = None
         if aligned_true_channel is not None:
             channel_nmse = MIMOChannelEstimator.nmse(
                 mean_channel_estimate, aligned_true_channel
             )
         estimated_cfo = float(np.mean(cfo_list)) if cfo_list else 0.0
-        mean_post_variance = float(np.mean(post_vars)) if post_vars else 0.0
+        if post_vars and self._fixed_enabled("mimo.rx.noise_estimator"):
+            ctx, noise_mid = self.fixed_context, "mimo.rx.noise_estimator"
+            mean_post_variance = float(ctx.div(
+                ctx.sum(post_vars, noise_mid, input_role="noise"), len(post_vars), noise_mid,
+                role="noise", a_role="accumulator", b_role="index"
+            ))
+        else:
+            mean_post_variance = float(np.mean(post_vars)) if post_vars else 0.0
 
         output = {
             "signal_stream": recovered_symbols,

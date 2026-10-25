@@ -1,8 +1,9 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 from scipy.signal import correlate
 
 
-class CoarseSync:
+class CoarseSync(FixedReceiverMixin):
     """
     粗同步：基于 SYNC 互相关的帧起始定位
 
@@ -16,6 +17,7 @@ class CoarseSync:
     """
 
     def __init__(self, transmitter):
+        self._init_fixed(transmitter.params, "sc.rx.coarse_sync")
         self.params = transmitter.params
         self.oversampling = self.params.get("oversampling")
 
@@ -69,9 +71,27 @@ class CoarseSync:
 
         # ———— 1. SYNC 互相关 → 帧起始 ————
         search_len = min(len(rx_signal), self.sync_len_oversample * 5)
-        corr = np.abs(self._valid_correlation(
-            rx_signal[:search_len], self.sync_ref
-        ))
+        if self._fixed_enabled():
+            correlation = self.fixed_context.correlate(
+                rx_signal[:search_len], self.sync_ref,
+                self.fixed_module_id, mode="valid"
+            )
+            corr = self.fixed_context.magnitude(
+                correlation, self.fixed_module_id,
+                node=self.fixed_module_id + ".correlation_magnitude"
+            )
+            self.fixed_context.record_coverage(
+                self.fixed_module_id,
+                self.fixed_context.arithmetic_level(self.fixed_module_id),
+                "correlation/integer magnitude; argmax is discrete index selection"
+            )
+        else:
+            self._watch(rx_signal[:search_len], self.fixed_module_id + ".input")
+            self._watch(self.sync_ref, self.fixed_module_id + ".reference")
+            corr = np.abs(self._valid_correlation(
+                rx_signal[:search_len], self.sync_ref
+            ))
+            self._watch(corr, self.fixed_module_id + ".correlation")
         sync_start = np.argmax(corr)
         self.sync_offset = sync_start
         self.corr_peak = corr[sync_start]

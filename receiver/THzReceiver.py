@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
@@ -24,7 +25,7 @@ from receiver.IQCompensatorOFDM import (
 from receiver.MIMOReceiverProcessor import MIMOReceiverProcessor
 
 
-class THzReceiver(BaseReceiver):
+class THzReceiver(FixedReceiverMixin, BaseReceiver):
     """
     THz 接收机主类 — 支持 SC-FDE / OFDM 双模式
 
@@ -38,6 +39,7 @@ class THzReceiver(BaseReceiver):
 
     def __init__(self, params, transmitter):
         super().__init__(params, transmitter)
+        self._init_fixed(params, "rx")
         self.link_mode = params.get("link_mode").lower()
         self.enable_mimo = bool(params.get("enable_mimo", False))
 
@@ -117,6 +119,22 @@ class THzReceiver(BaseReceiver):
             self.rx_ofdm = RxOFDMProcesser(transmitter)
 
     # ==================== 子模块调用 ====================
+
+    def configure_fixed(self, enable_fixed, fixed_config=None, fixed_context=None):
+        super().configure_fixed(enable_fixed, fixed_config, fixed_context)
+        context = self.fixed_context
+        visited = {id(self)}
+
+        def configure_children(parent):
+            for child in vars(parent).values():
+                if isinstance(child, FixedReceiverMixin) and id(child) not in visited:
+                    visited.add(id(child))
+                    # Use the shared context while preserving each child's module id.
+                    FixedReceiverMixin.configure_fixed(child, enable_fixed, fixed_context=context)
+                    configure_children(child)
+
+        configure_children(self)
+        return self
 
     def matched_filter(self, signal_dict):
         self.rx_matched = self.rx_matched_filter.matched_filter(signal_dict)
@@ -231,7 +249,13 @@ class THzReceiver(BaseReceiver):
         result = self.noise_estimator.noise_estimate(signal_dict)
         var_list = result.get("noise_var", [0.01])
         if isinstance(var_list, list):
-            self.noise_var = np.mean(var_list)
+            if self._fixed_enabled("rx.noise_estimator"):
+                ctx, mid = self.fixed_context, "rx.noise_estimator"
+                self.noise_var = ctx.div(ctx.sum(var_list, mid, input_role="noise"), len(var_list),
+                                        mid, role="noise", a_role="accumulator", b_role="index",
+                                        node=mid + ".frame_mean")
+            else:
+                self.noise_var = np.mean(var_list)
         else:
             self.noise_var = var_list
         return self.noise_var
@@ -265,6 +289,7 @@ class THzReceiver(BaseReceiver):
         # Pad/truncate LLR to expected coded bit length if needed
         llr = signal_dict["signal_stream"]
         expected_len = round(signal_dict["sample_rate_Hz"] * signal_dict["duration_seconds"])
+        self._record_length_event("receiver.llr_input", len(llr), expected_len)
         if len(llr) > expected_len:
             signal_dict = dict(signal_dict)
             signal_dict["signal_stream"] = llr[:expected_len]
@@ -334,7 +359,7 @@ class THzReceiver(BaseReceiver):
         # 将噪声估计显式送入后续信道估计/均衡链路；此前该值只保存在
         # receiver 成员中，MMSE 和均衡后噪声传播都无法读取。
         sig = dict(sig)
-        sig["noise_var"] = self.noise_var
+        sig["noise_var"] = getattr(self, "noise_var", sig.get("noise_var", 0.01))
 
         if self.enable_channel_est:
             if self.link_mode == "ofdm":

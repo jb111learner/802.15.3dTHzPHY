@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 
 from transmitter.MIMOLayerMapper import MIMOLayerMapper
 from utils.MIMOUtils import validate_mimo_params
 
 
-class MIMOOFDMProcessor:
+class MIMOOFDMProcessor(FixedPointMixin):
     """生成重复同步、正交训练和多空间流 OFDM 数据块。"""
 
     def __init__(self, params):
+        self._init_fixed(params, "mimo.tx.ifft")
         self.params = params
         self.num_tx, _, self.num_streams = validate_mimo_params(params)
         self.nfft = int(params.get("subwave_num"))
@@ -56,7 +58,8 @@ class MIMOOFDMProcessor:
             training_grid[tx_index, tx_index, :] = self.pilot_frequency
 
         # 逐帧组帧：每帧 = 保护间隔 + 2 SYNC + 训练 + 该帧数据块（含 CP）
-        mapper = MIMOLayerMapper(self.num_streams)
+        mapper = MIMOLayerMapper(self.num_streams, self.params)
+        mapper.configure_fixed(self.fixed_context.config.enable_fixed, fixed_context=self.fixed_context)
         frame_waveforms = []
         layer_lengths = None
         num_data_symbols = None
@@ -75,12 +78,24 @@ class MIMOOFDMProcessor:
             )
             for tx_index, layer in enumerate(layers):
                 flat = data_grid[tx_index].reshape(-1)
-                flat[:len(layer)] = layer * self.tx_scale
+                if self.enable_fixed and self.fixed_context.arithmetic_level("mimo.tx.ifft") == "operation":
+                    flat[:len(layer)] = self.fixed_context.mul(
+                        layer, self.tx_scale, "mimo.tx.ifft", node="mimo.tx.ifft.tx_scale", b_role="coefficient"
+                    )
+                else:
+                    flat[:len(layer)] = layer * self.tx_scale
 
             frequency_grid = np.concatenate(
                 (sync_grid, training_grid, data_grid), axis=1
             )
-            time_blocks = np.fft.ifft(frequency_grid, axis=-1)
+            if self.enable_fixed:
+                time_blocks = self.fixed_context.fft(
+                    frequency_grid, "mimo.tx.ifft", inverse=True, axis=-1
+                )
+            else:
+                time_blocks = np.fft.ifft(frequency_grid, axis=-1)
+                self.fixed_context.observe("mimo.tx.ifft.input", frequency_grid)
+                self.fixed_context.observe("mimo.tx.ifft.output", time_blocks)
             blocks_with_cp = self._with_cp(time_blocks)
             frame_wave = blocks_with_cp.reshape(self.num_tx, -1)
             if guard_length:

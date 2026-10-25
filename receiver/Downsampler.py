@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 from scipy.signal import find_peaks, resample_poly
 from params.PHYParams import PHYParams
@@ -8,13 +9,14 @@ from receiver.sync.FineSync import FineSync
 # from receiver.CFOEstimator import CFOEstimator
 import matplotlib.pyplot as plt
 
-class Downsampler:
+class Downsampler(FixedReceiverMixin):
     """
     下采样器
     用于将上采样后的信号转换为原始采样率，并根据细同步修正量进行偏移调整
     """
 
     def __init__(self, transmitter):
+        self._init_fixed(transmitter.params, "rx.downsampler")
         self.params = transmitter.params
         self.oversampling = self.params.get("oversampling")
         self.filter_delay = (len(transmitter.pulse_shaper.filter_coeffs) - 1) // 2
@@ -98,6 +100,9 @@ class Downsampler:
         self._verification_data(signal_dict)
         y = signal_dict["signal_stream"]
         self.rx_symbols = self.downsample(y, symbol_length=self.signal_length)
+        self._watch(self.rx_symbols, self.fixed_module_id + ".output")
+        if self._fixed_enabled():
+            self.fixed_context.record_coverage(self.fixed_module_id, "bit_exact", "sample selection preserves values")
         result_dict = {
             "signal_stream": self.rx_symbols,
             "sample_rate_Hz": self.sample_rate,

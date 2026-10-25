@@ -1,4 +1,5 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 import matplotlib.pyplot as plt
 from params.PHYParams import PHYParams
 from transmitter.DataProcesser import BitStreamProcessor
@@ -10,12 +11,13 @@ plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
 
-class TxOFDMProcesser:
+class TxOFDMProcesser(FixedPointMixin):
     """
     OFDM处理器类：按子帧分帧 → 插入块状导频 → 串并转换 → IFFT → 加CP → 并串转换
     """
 
     def __init__(self, params):
+        self._init_fixed(params, "ofdm.tx.ifft")
         self.subwave_num = params.get("subwave_num")                   # 子载波数 (N_fft = 512)
         self.subframe_ofdm_num = params.get("subframe_ofdm_num")       # 每个子帧的OFDM符号总数 (48)
         self.pilot_block_indexes = params.get("pilot_block_indexes")   # 块状导频索引 [0, 16, 32]
@@ -152,7 +154,14 @@ class TxOFDMProcesser:
         padded[:half] = ofdm_2d[:half]            # 正频率段 [0, N_SC/2)
         padded[N_FFT - half:] = ofdm_2d[half:]    # 负频率段 [N_SC/2, N_SC)
         # 每列是一个OFDM符号（频域补零到 N_FFT），正交归一化 IFFT
-        ifft_out = np.fft.ifft(padded, axis=0, norm='ortho')  # (N_FFT, total_ofdm_symbols)
+        if self.enable_fixed:
+            ifft_out = self.fixed_context.fft(
+                padded, "ofdm.tx.ifft", inverse=True, axis=0, norm="ortho"
+            )
+        else:
+            ifft_out = np.fft.ifft(padded, axis=0, norm='ortho')  # (N_FFT, total_ofdm_symbols)
+            self.fixed_context.observe("ofdm.tx.ifft.input", padded)
+            self.fixed_context.observe("ofdm.tx.ifft.output", ifft_out)
 
         # ==================== 4. 并串转换 (列优先) ====================
         tx_signal = ifft_out.ravel(order='F')

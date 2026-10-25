@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 from scipy.signal import correlate, find_peaks, resample_poly
 from params.PHYParams import PHYParams
@@ -7,7 +8,7 @@ from receiver.MatchedFilter import RxMatchedFilter
 # from receiver.CFOEstimator import CFOEstimator
 import matplotlib.pyplot as plt
 
-class FineSync:
+class FineSync(FixedReceiverMixin):
     """
     细同步与定时恢复（支持 SC‑FDE / OFDM 双模式）
 
@@ -16,6 +17,7 @@ class FineSync:
     """
 
     def __init__(self, transmitter, search_window=50, min_peak_ratio=0.5):
+        self._init_fixed(transmitter.params, "sc.rx.fine_sync")
         self.params = transmitter.params
         self.oversampling = self.params.get("oversampling")
         self.link_mode = self.params.get("link_mode").lower()  # 新增
@@ -70,11 +72,25 @@ class FineSync:
         # ========== 3. 构造匹配滤波器 + 卷积 ==========
         # 高过采样率下直接时域卷积复杂度为 O(N²)，4x SFD 会非常慢。
         # FFT 相关与原来的 conj+reverse 卷积数学等价。
-        Mn = correlate(
-            rx_segment, self.sfd_upsampled, mode="full", method="fft"
-        )
+        if self._fixed_enabled():
+            Mn = self.fixed_context.correlate(
+                rx_segment, self.sfd_upsampled,
+                self.fixed_module_id, mode="full"
+            )
+        else:
+            self._watch(rx_segment, self.fixed_module_id + ".input")
+            self._watch(self.sfd_upsampled, self.fixed_module_id + ".reference")
+            Mn = correlate(
+                rx_segment, self.sfd_upsampled, mode="full", method="fft"
+            )
+            self._watch(Mn, self.fixed_module_id + ".correlation")
         Mn = Mn[self.sfd_upsampled_length:]  # 截断前导无效区
-        abs_Mn = np.abs(Mn)
+        if self._fixed_enabled():
+            abs_Mn = self.fixed_context.magnitude(
+                Mn, self.fixed_module_id, node=self.fixed_module_id + ".correlation_magnitude"
+            )
+        else:
+            abs_Mn = np.abs(Mn)
 
         # ========== 4. 异常保护 ==========
         if len(abs_Mn) == 0:
@@ -92,10 +108,22 @@ class FineSync:
         search_start = max(0, idx_peak - self.search_window)
         search_end = min(len(Mn), idx_peak + self.search_window + 1)
         Mn_region = Mn[search_start:search_end]
-        abs_Mn_region = np.abs(Mn_region)
+        abs_Mn_region = abs_Mn[search_start:search_end] if self._fixed_enabled() else np.abs(Mn_region)
 
         # 筛选有效峰值
-        peaks, _ = find_peaks(abs_Mn_region, height=self.min_peak_ratio * max_corr)
+        if self._fixed_enabled():
+            threshold = self.fixed_context.mul(
+                self.min_peak_ratio, max_corr, self.fixed_module_id,
+                a_role="coefficient", b_role="output", node=self.fixed_module_id + ".peak_threshold"
+            )
+            self.fixed_context.record_coverage(
+                self.fixed_module_id,
+                self.fixed_context.arithmetic_level(self.fixed_module_id),
+                "correlation/integer magnitude/quantized peak threshold; find_peaks selects discrete indices"
+            )
+            peaks, _ = find_peaks(abs_Mn_region, height=threshold)
+        else:
+            peaks, _ = find_peaks(abs_Mn_region, height=self.min_peak_ratio * max_corr)
         if len(peaks) == 0:
             peak_pos_in_segment = idx_peak
         else:

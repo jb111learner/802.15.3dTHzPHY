@@ -49,6 +49,9 @@ class PHYParams(BaseParams):
             "random_seed": None,                                                                   # 固定/手动种子
             "seed_strategy": "递增种子",                                                            # 随机种子策略("固定种子", "递增种子", "时间种子")
             "link_mode":"ofdm",                                                                  # 链路模式（"SC-FDE", "OFDM"）
+            # 唯一模式开关位于 fixed_point.enable_fixed；旧工程默认浮点。
+            "fixed_point": {},
+            "range_analysis": {},
 
 
             # 基础参数
@@ -249,6 +252,13 @@ class PHYParams(BaseParams):
         }
 
     def validate(self):
+        from fixedpoint.config import FixedPointConfig
+        FixedPointConfig.from_dict(self.get("fixed_point", {}))
+        range_config = self.get("range_analysis", {})
+        if not isinstance(range_config, dict):
+            raise ValueError("range_analysis 必须为字典")
+        if "enabled" in range_config and not isinstance(range_config["enabled"], bool):
+            raise ValueError("range_analysis.enabled 必须为布尔值")
         # """校验参数合法性"""
         # # assert self.get("bandwidth") == 8.64, "当前仅支持8.64 GHz带宽"
         # assert self.get("ppre") >= 0 and self.get("ppre") <= 3, "PPRE字段必须为0到3之间的整数"

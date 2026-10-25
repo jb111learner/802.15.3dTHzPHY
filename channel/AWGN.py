@@ -1,6 +1,7 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 
-class AWGN:
+class AWGN(FixedPointMixin):
     """
     加性高斯白噪声（AWGN）模型，支持两种配置方式：
     1. 基于噪声温度+带宽（物理层热噪声）
@@ -15,6 +16,7 @@ class AWGN:
     BOLTZMANN_CONST = 1.38e-23  # 玻尔兹曼常数，单位J/K
 
     def __init__(self, params):
+        self._init_fixed(params, "channel.awgn")
         self.params = params
         self.noise_temp = self.params.get("noise_temperature") # 噪声温度，默认290K
         self.bandwidth = self.params.get("bandwidth")  # 系统等效噪声带宽，单位Hz（必填）
@@ -129,9 +131,39 @@ class AWGN:
         # 噪声方差 = 噪声功率/2（复信号的实/虚部分开）
         noise_std = np.sqrt(noise_power / 2)
         noise = noise_std * (np.random.randn(len(signal)) + 1j * np.random.randn(len(signal)))
+        # Replay consumes the original random samples before replacing them,
+        # preserving subsequent phase-noise random realizations.
+        stimulus = self.fixed_context.stimulus
+        if stimulus is not None:
+            if "noise" in stimulus:
+                replay_noise = np.asarray(stimulus["noise"], dtype=np.complex128)
+                if replay_noise.shape != np.asarray(signal).shape:
+                    raise ValueError("AWGN replay noise shape does not match signal")
+                noise = replay_noise.copy()
+                noise_power = float(stimulus["noise_power"])
+            else:
+                stimulus["noise"] = noise.copy()
+                stimulus["noise_power"] = float(noise_power)
+        self.last_noise = noise.copy()
+        self.last_noise_power = float(noise_power)
+        self.fixed_context.observe("channel.awgn.noise", noise)
+        self.fixed_context.record_coverage("channel.awgn.noise_generation", "float", "Shared Gaussian environmental stimulus")
         print(f"设定噪声方差：{noise_power:.6f}")
         # 4. 添加噪声
-        signal_with_noise = signal + noise
+        quantize_arithmetic = self.enable_fixed and bool(
+            self.fixed_context.module_config("channel.awgn").get("quantize_channel_arithmetic", False)
+        )
+        if quantize_arithmetic:
+            if self.fixed_context.arithmetic_level("channel.awgn") == "operation":
+                signal_with_noise = self.fixed_context.add(signal, noise, "channel.awgn")
+            else:
+                signal_with_noise = self._fq(signal, role="input") + self._fq(noise, role="input", node="channel.awgn.noise.quantized")
+                signal_with_noise = self._fq(signal_with_noise)
+                self.fixed_context.record_coverage("channel.awgn", "boundary")
+        else:
+            signal_with_noise = signal + noise
+            self.fixed_context.record_coverage("channel.awgn", "float", "Physical noise generation and injection")
+            self.fixed_context.observe("channel.awgn.output", signal_with_noise)
         noise_bandwidth = self._noise_bandwidth()
         sample_snr_db = 10 * np.log10(signal_power / noise_power)
         # 将全采样带宽噪声折算回配置带宽，报告与 UI 参数一致的带内 SNR。

@@ -1,5 +1,6 @@
 import copy
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 
 
 def dbm_to_watt(power_dbm: float) -> float:
@@ -25,7 +26,7 @@ def compute_papr_db(x: np.ndarray) -> float:
     return float(10 * np.log10(peak_power / avg_power))
 
 
-class ModifiedRappPA:
+class ModifiedRappPA(FixedPointMixin):
     """
     Modified Rapp PA model.
 
@@ -40,6 +41,7 @@ class ModifiedRappPA:
     """
 
     def __init__(self, pa_params: dict):
+        self._init_fixed(pa_params, "channel.pa")
         self.G = float(pa_params["pa_G"])
         self.Vsat = float(pa_params["pa_Vsat"])
         self.p = float(pa_params["pa_p"])
@@ -83,6 +85,12 @@ class ModifiedRappPA:
 
     def process_array(self, x: np.ndarray):
         x = np.asarray(x, dtype=np.complex128)
+        quantize_arithmetic = self.enable_fixed and bool(
+            self.fixed_context.module_config("channel.pa").get("quantize_channel_arithmetic", False)
+        )
+        if quantize_arithmetic:
+            self.fixed_context.require_boundary("channel.pa", "nonlinear PA model supports boundary quantization only")
+            x = self._fq(x, role="input")
 
         x_scaled, scale = self._scale_to_target_input_power(x)
 
@@ -93,6 +101,11 @@ class ModifiedRappPA:
         phi = self._am_pm(rho)
 
         y = rho_out * np.exp(1j * (theta + phi))
+        if quantize_arithmetic:
+            y = self._fq(y)
+        else:
+            self.fixed_context.observe("channel.pa.output", y)
+        self.fixed_context.record_coverage("channel.pa", "boundary" if quantize_arithmetic else "float")
 
         diagnostics = {
             "pa_input_scaling": scale,

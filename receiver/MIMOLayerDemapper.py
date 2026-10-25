@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import numpy as np
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 
 
-class MIMOLayerDemapper:
+class MIMOLayerDemapper(FixedReceiverMixin):
+    def __init__(self, params=None):
+        self._init_fixed(params, "mimo.rx.layer_demap")
+
     @staticmethod
     def demap(layers, original_symbol_count):
         arrays = [np.asarray(layer).reshape(-1) for layer in layers]

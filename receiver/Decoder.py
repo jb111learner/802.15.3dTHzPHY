@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 from transmitter.THzTransmitter import THzTransmitter
 from params.PHYParams import PHYParams
@@ -6,11 +7,12 @@ from receiver.MatchedFilter import RxMatchedFilter
 from receiver.DeModulator import THzDemodulator
 from utils.Coder import RSCoder, LDPCCoder
 
-class Decoder:
+class Decoder(FixedReceiverMixin):
     """
     支持按字节分包编码/解码。
     """
     def __init__(self, params):
+        self._init_fixed(params, "ldpc.llr")
         self.params = params
         self.code_type = self.params.get("code_type")   # 编码类型
         if self.code_type not in ["RS", "LDPC"]:
@@ -67,6 +69,7 @@ class Decoder:
         """
         self._verification_data(data_dict)
         llr = data_dict["signal_stream"]
+        debug = None
         if self.code_type == "RS":
             if self.decode_mode == "hard":
                 bits_encoded = self.decoder.decode(llr, int(self.bit_length))
@@ -75,7 +78,44 @@ class Decoder:
                     llr, int(self.bit_length), num_chase_per_packet=self.params.get("chase_num_per_packet")
                 )
         elif self.code_type == "LDPC":
-            bits_encoded, _ = self.decoder.decode(llr, original_bit_len=int(self.bit_length))
+            ctx = getattr(self, "fixed_context", None)
+            if self._fixed_enabled():
+                raw = np.asarray(llr).ravel()
+                ctx.observe("ldpc.llr.raw", raw)
+                explicit_soft = data_dict.get("llr_input_kind") == "soft" or data_dict.get("input_is_soft") is True
+                hard_fallback = not explicit_soft and bool(np.all(np.isin(raw, [0, 1])))
+                if hard_fallback:
+                    raw = np.where(raw.astype(np.uint8) == 0,
+                                   self.decoder.hard_llr_value, -self.decoder.hard_llr_value)
+                raw = np.asarray(raw, dtype=np.float64)
+                clipped = np.clip(raw, -self.decoder.llr_clip, self.decoder.llr_clip) \
+                    if self.decoder.llr_clip > 0 else raw
+                ctx.observe("ldpc.llr.clipped", clipped)
+                quantized = ctx.quantize(clipped, "ldpc.llr", node="ldpc.llr.quantized")
+                bits_encoded, debug = self.decoder.decode(
+                    quantized, original_bit_len=int(self.bit_length),
+                    input_is_soft=True, llr_preprocessed=True,
+                )
+                debug.update({
+                    "used_hard_fallback": hard_fallback,
+                    "llr_input_kind": "soft_quantized",
+                    "llr_clipping_count": int(np.count_nonzero(raw != clipped)),
+                    "llr_zero_count": int(np.count_nonzero(quantized == 0)),
+                    "llr_sign_change_count": int(np.count_nonzero(np.sign(clipped) != np.sign(quantized))),
+                    "fixed_scope": "llr_input_quantized",
+                    "ldpc_internal_arithmetic": "float",
+                })
+                ctx.record_coverage("ldpc.llr", "boundary", "input clipping then quantization; LDPC iterations stay float")
+            else:
+                if data_dict.get("input_is_soft") is True:
+                    bits_encoded, debug = self.decoder.decode(llr, original_bit_len=int(self.bit_length), input_is_soft=True)
+                else:
+                    bits_encoded, debug = self.decoder.decode(llr, original_bit_len=int(self.bit_length))
+                if ctx is not None:
+                    ctx.observe("ldpc.llr.raw", llr)
+                    if self.decoder.llr_clip > 0:
+                        ctx.observe("ldpc.llr.clipped", np.clip(llr, -self.decoder.llr_clip, self.decoder.llr_clip))
+        self._record_length_event("decoder.information_output", len(bits_encoded), round(self.bit_length))
         if len(bits_encoded) < round(self.bit_length):
             bits_encoded = np.pad(bits_encoded, (0, round(self.bit_length) - len(bits_encoded)))
         elif len(bits_encoded) > round(self.bit_length):
@@ -88,6 +128,21 @@ class Decoder:
             "signal_length": round(self.bit_length),
             "padding_bit_num": self.padding_bit_num,
         }   
+        ctx = getattr(self, "fixed_context", None)
+        if debug is not None and ctx is not None and (ctx.config.enable_fixed or ctx.range_enabled):
+            valid_length = max(0, len(bits_encoded) - int(self.padding_bit_num))
+            block_count = int(debug["num_blocks"])
+            debug["information_block_valid_bits"] = [
+                max(0, min(self.decoder.k, valid_length - index * self.decoder.k))
+                for index in range(block_count)
+            ]
+            debug["code_blocks"] = [
+                {"block_index": index, "coded_offset": index * self.decoder.n,
+                 "information_offset": index * self.decoder.k,
+                 "valid_information_bits": debug["information_block_valid_bits"][index]}
+                for index in range(block_count)
+            ]
+            result_dict["ldpc_diagnostics"] = debug
         # 转换为比特流返回
         return result_dict
 
@@ -227,4 +282,3 @@ if __name__ == "__main__":
     plt.legend()
     plt.ylim(1e-6, 1)
     plt.show()
-    

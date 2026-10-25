@@ -1,4 +1,5 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 import matplotlib.pyplot as plt
 from core.BaseTransmitter import BaseTransmitter
 from transmitter.HeaderGenerator import HeaderGenerator
@@ -14,12 +15,13 @@ from transmitter.Scrambler import Scrambler
 from transmitter.TxOFDMProcesser import TxOFDMProcesser
 from transmitter.MIMOOFDMProcessor import MIMOOFDMProcessor
 
-class THzTransmitter(BaseTransmitter):
+class THzTransmitter(FixedPointMixin, BaseTransmitter):
     """
     THz发射机主类
     """
     def __init__(self, params):
         super().__init__(params)
+        self._init_fixed(params, "transmitter")
         # 初始化子模块
         self.preamble_gen = PreambleInsertor(params)
         self.modulator = Modulator(params)
@@ -34,8 +36,18 @@ class THzTransmitter(BaseTransmitter):
         self.link_mode = self.params.get("link_mode") 
         self.enable_mimo = bool(self.params.get("enable_mimo", False))
         self.mimo_ofdm_processor = MIMOOFDMProcessor(params) if self.enable_mimo else None
+        self.configure_fixed(self.fixed_context.config.enable_fixed, fixed_context=self.fixed_context)
         # self.rotator = Rotator()  
     
+    def configure_fixed(self, enable_fixed, fixed_config=None, fixed_context=None):
+        FixedPointMixin.configure_fixed(self, enable_fixed, fixed_config, fixed_context)
+        for name in ("preamble_gen", "modulator", "coder", "gi_inserter", "pulse_shaper",
+                     "scrambler", "assembler", "ofdm_processer", "mimo_ofdm_processor"):
+            module = getattr(self, name, None)
+            if module is not None:
+                module.configure_fixed(enable_fixed, fixed_config, self.fixed_context)
+        return self
+
     def assemble_frame(self):
         """组装帧"""
         self.data_bits_dict = self.assembler.run()

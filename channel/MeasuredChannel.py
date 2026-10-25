@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 from scipy.signal import resample_poly
 
 
-class MeasuredChannel:
+class MeasuredChannel(FixedPointMixin):
     """加载固定的 2×2 实测 CIR，并生成可供 SISO/MIMO 使用的抽头。
 
     数据只有单个测量快照，因此 Rayleigh 是显式的工程建模假设；实测数据只
@@ -40,6 +41,7 @@ class MeasuredChannel:
     }
 
     def __init__(self, params):
+        self._init_fixed(params, "channel.measured")
         self.params = params
         self.scenario = str(self._get("measured_channel_scenario", "8cm")).lower()
         if self.scenario not in self.SCENARIOS:
@@ -413,7 +415,17 @@ class MeasuredChannel:
         self.diagnostics["channel_delay_samples_high_rate"] = channel_delay_samples
         self.diagnostics["cp_samples_high_rate"] = cp_samples_high_rate
         self.diagnostics["cp_covers_channel"] = True
-        output = np.convolve(signal, taps, mode="full")[: len(signal)]
+        quantize_arithmetic = self.enable_fixed and bool(
+            self.fixed_context.module_config("channel.measured").get("quantize_channel_arithmetic", False)
+        )
+        self.fixed_context.observe("channel.measured.input", signal)
+        self.fixed_context.observe("channel.measured.coefficient", taps)
+        if quantize_arithmetic:
+            output = self.fixed_context.fir(signal, taps, "channel.measured", mode="full")[:len(signal)]
+        else:
+            output = np.convolve(signal, taps, mode="full")[: len(signal)]
+            self.fixed_context.observe("channel.measured.output", output)
+            self.fixed_context.record_coverage("channel.measured", "float", "Measured propagation model")
         result = dict(signal_dict)
         result.update(
             signal_stream=output,

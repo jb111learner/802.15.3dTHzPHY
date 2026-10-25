@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 
 from PySide6.QtWidgets import (
     QFileDialog, QGridLayout, QHBoxLayout, QLabel,
@@ -120,6 +121,17 @@ class ParameterConfigPage(WorkbenchPage):
         self.enable_ch_est.setCurrentText("是")
 
         self.seed_strategy = combo(["固定种子", "递增种子", "时间种子"])
+        self.numeric_mode = combo(["浮点", "定点"])
+        self.fixed_word_length = spin(2, 62, 16)
+        self.fixed_fractional_length = spin(0, 61, 12)
+        self.fixed_rounding = combo(["nearest_even", "nearest_away", "toward_zero", "floor", "ceil"])
+        self.fixed_saturation = combo(["启用", "关闭"])
+        self.range_statistics = combo(["关闭", "启用"])
+        self._fixed_extra = {}
+        self.fixed_word_length.valueChanged.connect(
+            lambda value: self.fixed_fractional_length.setMaximum(value - 1)
+        )
+        self.fixed_fractional_length.setMaximum(15)
 
         # =================================================================
         # 左侧表单
@@ -166,6 +178,16 @@ class ParameterConfigPage(WorkbenchPage):
         self.add_left_widget(
             make_form_group("任务运行参数", [
                 ("随机种子策略", self.seed_strategy),
+            ])
+        )
+        self.add_left_widget(
+            make_form_group("数值精度", [
+                ("仿真数值模式", self.numeric_mode),
+                ("定点字长", self.fixed_word_length),
+                ("定点小数位", self.fixed_fractional_length),
+                ("舍入规则", self.fixed_rounding),
+                ("溢出饱和", self.fixed_saturation),
+                ("范围统计", self.range_statistics),
             ])
         )
 
@@ -576,6 +598,8 @@ class ParameterConfigPage(WorkbenchPage):
             self.ofdm_subcarriers, self.pilot_indexes,
             self.rs_decode_mode, self.bit_source,
             self.seed_strategy,
+            self.numeric_mode, self.fixed_word_length, self.fixed_fractional_length,
+            self.fixed_rounding, self.fixed_saturation, self.range_statistics,
             self.pulse_shaping, self.oversampling_factor,
             self.bandwidth, self.fc,
             self.sample_rate, self.duration, self.rolloff_factor,
@@ -647,6 +671,13 @@ class ParameterConfigPage(WorkbenchPage):
             "频偏补偿": self.enable_cfo_comp.currentText(),
             "IQ补偿": self.enable_iq_comp.currentText(),
             "信道估计与均衡": self.enable_ch_est.currentText(),
+            "仿真数值模式": self.numeric_mode.currentText(),
+            "定点字长": self.fixed_word_length.value(),
+            "定点小数位": self.fixed_fractional_length.value(),
+            "定点舍入": self.fixed_rounding.currentText(),
+            "定点饱和": self.fixed_saturation.currentText(),
+            "范围统计": self.range_statistics.currentText(),
+            "_fixed_point": deepcopy(self._fixed_extra),
         }
 
     def get_run_parameters(self) -> dict[str, object]:
@@ -673,6 +704,16 @@ class ParameterConfigPage(WorkbenchPage):
             self._refresh_all()
 
     def _apply_params(self, params: dict[str, object]) -> None:
+        self._fixed_extra = deepcopy(params.get("_fixed_point", params.get("fixed_point", {})))
+        numeric = self._fixed_extra
+        fmt = numeric.get("default_format", {})
+        self.numeric_mode.setCurrentText(params.get("仿真数值模式", "定点" if numeric.get("enable_fixed", False) else "浮点"))
+        self.fixed_word_length.setValue(int(params.get("定点字长", fmt.get("word_length", 16))))
+        self.fixed_fractional_length.setMaximum(self.fixed_word_length.value() - 1)
+        self.fixed_fractional_length.setValue(int(params.get("定点小数位", fmt.get("fractional_length", 12))))
+        self.fixed_rounding.setCurrentText(str(params.get("定点舍入", fmt.get("rounding", "nearest_even"))))
+        self.fixed_saturation.setCurrentText(params.get("定点饱和", "启用" if fmt.get("saturation", True) else "关闭"))
+        self.range_statistics.setCurrentText(params.get("范围统计", "启用" if params.get("range_analysis", {}).get("enabled", False) else "关闭"))
         _set_combo(params, "参数测试模版", self.preset_mode)
         _set_text(params, "工程名称", self.project_name)
         _set_text(params, "链路名称", self.link_name)

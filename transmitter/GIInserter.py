@@ -1,10 +1,11 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 from params.PHYParams import PHYParams
 from transmitter.DataProcesser import BitStreamProcessor
 from transmitter.Scrambler import Scrambler 
 from transmitter.Encoder import Encoder
 from transmitter.Modulator import THzModulator
-class GIInserter:
+class GIInserter(FixedPointMixin):
     """
     CP 插入器 — SC-FDE / OFDM 双模式
 
@@ -12,6 +13,7 @@ class GIInserter:
     OFDM:   每 block = subwave_num 符号 (一个OFDM符号), 每帧 subframe_ofdm_num 个 block
     """
     def __init__(self, params):
+        self._init_fixed(params, "tx.gi")
         self.params = params
         self.link_mode = (params.get("link_mode") or "sc-fde").lower()
         self.gi_length = params.get("gi_length")
@@ -84,6 +86,7 @@ class GIInserter:
             "frame_symbol_num": self.frame_symbol_num,
             "frame_num": self.frame_num,
         }
+        self.fixed_context.record_coverage("tx.gi", "bit_exact")
         return result_dict
 
 if __name__ == "__main__":

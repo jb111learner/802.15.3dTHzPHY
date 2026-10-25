@@ -1,14 +1,16 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 from params.PHYParams import PHYParams
 from transmitter.DataProcesser import BitStreamProcessor
 from transmitter.Scrambler import Scrambler
 from utils.Coder import RSCoder, LDPCCoder
 
-class Encoder:
+class Encoder(FixedPointMixin):
     """
     支持 RS / LDPC 编码。
     """
     def __init__(self, params):
+        self._init_fixed(params, "tx.encoder")
         self.params = params
         self.code_type = self.params.get("code_type")
         if self.code_type not in ["RS", "LDPC"]:
@@ -92,6 +94,7 @@ class Encoder:
             "frame_num": self.frame_num,
         }   
         # 转换为比特流返回
+        self.fixed_context.record_coverage("tx.encoder", "bit_exact")
         return result_dict
     
 if __name__ == "__main__":

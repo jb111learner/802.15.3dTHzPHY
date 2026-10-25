@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from receiver.FixedReceiverSupport import FixedReceiverMixin
+
 import numpy as np
 
 from channel.IQImbalance import IQImbalance
@@ -33,10 +35,11 @@ def resolve_iq_compensation_method(params, link_mode):
     return method
 
 
-class ConfiguredRXIQCompensator:
+class ConfiguredRXIQCompensator(FixedReceiverMixin):
     """使用仿真配置参数精确反演频率无关的 RX IQ 不平衡。"""
 
     def __init__(self, params):
+        self._init_fixed(params, "rx.iq.configured")
         self.params = params
         self.diagnostics = None
 
@@ -49,7 +52,10 @@ class ConfiguredRXIQCompensator:
             and model == "fid"
         )
 
-    def compensate(self, data_dict):
+    def compensate(self, data_dict, *args, **kwargs):
+        return self._boundary_dict_call(self._compensate_float, data_dict, *args, **kwargs)
+
+    def _compensate_float(self, data_dict):
         if not self.is_applicable():
             return data_dict
 
@@ -89,7 +95,7 @@ class ConfiguredRXIQCompensator:
         return result
 
 
-class BlindRXIQWhiteningCompensator:
+class BlindRXIQWhiteningCompensator(FixedReceiverMixin):
     """在 CFO 补偿前用二阶统计量盲校正 RX I/Q 正交性。
 
     该步骤不使用配置中的增益/相位数值，只假设输入复包络近似 proper。
@@ -97,6 +103,7 @@ class BlindRXIQWhiteningCompensator:
     """
 
     def __init__(self, params):
+        self._init_fixed(params, "rx.iq.blind")
         self.params = params
         self.diagnostics = None
 
@@ -107,7 +114,10 @@ class BlindRXIQWhiteningCompensator:
             and position in {"rx", "both"}
         )
 
-    def compensate(self, data_dict):
+    def compensate(self, data_dict, *args, **kwargs):
+        return self._boundary_dict_call(self._compensate_float, data_dict, *args, **kwargs)
+
+    def _compensate_float(self, data_dict):
         if not self.is_applicable():
             return data_dict
         signal = np.asarray(data_dict["signal_stream"], dtype=np.complex128)
@@ -163,7 +173,7 @@ class BlindRXIQWhiteningCompensator:
         return result
 
 
-class OFDMWidelyLinearIQCompensator:
+class OFDMWidelyLinearIQCompensator(FixedReceiverMixin):
     """基于正交块导频的逐子载波宽线性信道估计与均衡。
 
     对每个子载波估计
@@ -174,6 +184,7 @@ class OFDMWidelyLinearIQCompensator:
     """
 
     def __init__(self, params, pilot_indexes, pilot_sequences, n_subcarriers):
+        self._init_fixed(params, "ofdm.rx.iq")
         self.params = params
         self.pilot_indexes = [int(index) for index in pilot_indexes]
         self.pilot_sequences = np.asarray(
@@ -369,6 +380,17 @@ class OFDMWidelyLinearIQCompensator:
         }
 
     def compensate(self, freq_grid, frame_num):
+        self._boundary_only("widely-linear IQ estimation/matrix inversion is boundary-only")
+        freq_grid = self._fq(freq_grid, role="input")
+        output, direct, image, diagnostics = self._compensate_float(freq_grid, frame_num)
+        output = self._fq(output)
+        if self._fixed_enabled():
+            direct = [self._fq(x, role="coefficient") for x in direct]
+            image = [self._fq(x, role="coefficient") for x in image]
+            self.fixed_context.record_coverage(self.fixed_module_id, "boundary", "widely-linear float solve with input/output quantization")
+        return output, direct, image, diagnostics
+
+    def _compensate_float(self, freq_grid, frame_num):
         """估计有效直通/镜像响应，并返回联合均衡后的频域网格。"""
         freq_grid = np.asarray(freq_grid, dtype=np.complex128)
         direct_list, image_list, estimation_info = (

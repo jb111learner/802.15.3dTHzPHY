@@ -35,6 +35,18 @@ class SimulationManager:
         """设置仿真控制参数（run_times、seed_strategy、random_seed等）。"""
         self.control_params = control_params.copy() if control_params else {}
 
+    def configure_fixed(self, enable_fixed=False, fixed_config=None):
+        """配置下次运行的数值路径，不改变当前运行的模块状态。"""
+        from copy import deepcopy
+        from fixedpoint.config import FixedPointConfig
+        config = (fixed_config.to_dict() if isinstance(fixed_config, FixedPointConfig)
+                  else deepcopy(fixed_config if fixed_config is not None
+                                else self.base_params.get("fixed_point", {})))
+        config["enable_fixed"] = bool(enable_fixed)
+        FixedPointConfig.from_dict(config)
+        self.base_params.update(fixed_point=config)
+        return self
+
     def apply_dict_to_params(self, params: PHYParams, param_dict: Dict[str, Any]):
         """原子更新 PHYParams，避免关联参数逐键校验产生临时非法状态。"""
         valid_updates = {
@@ -97,11 +109,18 @@ class SimulationManager:
         progress_callback: Callable[[int], None] = None,
     ) -> Dict[str, Any]:
         """完整链路：TX → Channel → RX。"""
+        from fixedpoint.context import FixedPointContext
+        # 每次运行重建观察与诊断；滤波/信道状态仍由原模块维护。
+        if hasattr(params, "_fixed_context"):
+            del params._fixed_context
+        fixed_context = FixedPointContext.from_params(params)
         # TX
         if progress_callback:
             progress_callback(5)
         transmitter = THzTransmitter(params)
         tx_signal_dict = transmitter.run()
+        from simulation.fixedpoint_observations import observe_transmit_regions
+        observe_transmit_regions(fixed_context, transmitter, tx_signal_dict)
         if progress_callback:
             progress_callback(35)
 
@@ -160,7 +179,7 @@ class SimulationManager:
             mimo_condition_number = diagnostics.get("mean_condition_number")
         if progress_callback:
             progress_callback(98)
-        return {
+        result = {
             "params": params,
             "seed": params.get("random_seed"),
             "tx_signal": tx_signal_dict,
@@ -178,6 +197,9 @@ class SimulationManager:
             "mimo_mean_condition_number": mimo_condition_number,
             "tx_modulated": transmitter.modulated_data_dict if hasattr(transmitter, 'modulated_data_dict') else None,
         }
+        if fixed_context.config.enable_fixed or fixed_context.range_enabled:
+            result["fixed_point_report"] = fixed_context.report()
+        return result
 
     @staticmethod
     def compute_ber(tx_bits: np.ndarray, rx_bits: np.ndarray) -> float:

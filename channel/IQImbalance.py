@@ -1,6 +1,7 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 
-class IQImbalance:
+class IQImbalance(FixedPointMixin):
     """
     频率无关（FID）和频率相关（FD）的 IQ 不平衡模型。
 
@@ -16,6 +17,7 @@ class IQImbalance:
     STAGES = {"tx", "rx"}
 
     def __init__(self, params):
+        self._init_fixed(params, "channel.iq")
         """
         参数：
             params : dict
@@ -266,12 +268,19 @@ class IQImbalance:
 
         # 校验输入并存储字段
         self._verification_data(signal_dict)
+        quantize_arithmetic = self.enable_fixed and bool(
+            self.fixed_context.module_config("channel.iq").get("quantize_channel_arithmetic", False)
+        )
+        if quantize_arithmetic:
+            self.fixed_context.require_boundary("channel.iq", "IQ model supports boundary quantization only")
 
         # 若未启用，直接返回原信号（但输出格式固定）
         if not self._stage_is_enabled(stage):
             result_signal = np.asarray(signal_dict["signal_stream"], dtype=complex)
         else:
             x = np.asarray(signal_dict["signal_stream"], dtype=complex)
+            if quantize_arithmetic:
+                x = self._fq(x, role="input", node=f"channel.iq.{stage}.input")
             gain_db, phase_deg = self._get_stage_gain_phase(stage)
 
             if self.model == "fid":
@@ -282,6 +291,11 @@ class IQImbalance:
             else:
                 raise ValueError(f"Unsupported model '{self.model}'")
             result_signal = y
+        if quantize_arithmetic:
+            result_signal = self._fq(result_signal, node=f"channel.iq.{stage}.output")
+        else:
+            self.fixed_context.observe(f"channel.iq.{stage}.output", result_signal)
+        self.fixed_context.record_coverage("channel.iq", "boundary" if quantize_arithmetic else "float")
 
         # 校验输出长度（可选）
         if len(result_signal) != self.signal_length:

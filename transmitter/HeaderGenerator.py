@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 from params.PHYParams import PHYParams
 
 
-class HeaderGenerator:
+class HeaderGenerator(FixedPointMixin):
     """
     THz-SC PHY头部生成器：生成37位头部比特序列
     字段分配：
@@ -18,6 +19,7 @@ class HeaderGenerator:
     """
 
     def __init__(self, params: PHYParams):
+        self._init_fixed(params, "tx.header")
         self.params = params
         self.mcs = self.params.get("MCS")  # 默认MCS=5
         self.bandwidth = self.params.get("bandwidth")    # 默认带宽2.16GHz
@@ -128,6 +130,7 @@ class HeaderGenerator:
         # 显示头部信息
         self.display_header_info()
         
+        self.fixed_context.record_coverage("tx.header", "bit_exact")
         return header_bits
 
 

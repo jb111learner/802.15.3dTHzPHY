@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 import math
 import matplotlib.pyplot as plt
@@ -10,11 +11,12 @@ from receiver.NoiseEstimator import NoiseEstimator
 from receiver.ChannelEstimator import ChannelEstimator
 from receiver.MatchedFilter import RxMatchedFilter
 from receiver.Downsampler import Downsampler
-class FreqDomainEqualizer:
+class FreqDomainEqualizer(FixedReceiverMixin):
     """
     单载波频域均衡器（支持多帧，ZF/MMSE）
     """
     def __init__(self, transmitter):
+        self._init_fixed(transmitter.params, "sc.rx.equalizer")
         self.params = transmitter.params
         self.subframe_length = self.params.get("subframe_length")
         self.gi_length = self.params.get("gi_length")
@@ -101,6 +103,10 @@ class FreqDomainEqualizer:
         :param N0: 噪声方差 (MMSE)
         :return: 均衡后的数据、均衡后噪声方差和诊断信息
         """
+        if self._fixed_enabled():
+            return self._equalize_frame_fixed(frame_data, H, N0)
+        self._watch(frame_data, "sc.rx.equalizer.input")
+        self._watch(H, "sc.rx.equalizer.H")
         gi_length = self.gi_length
         subframe_length = self.subframe_length
 
@@ -177,6 +183,9 @@ class FreqDomainEqualizer:
 
         # 6. 按列拉平（先列后行）
         y = yt_blocks.ravel(order='F')
+        self._watch(Y, "sc.rx.equalizer.fft.output")
+        self._watch(W, "sc.rx.equalizer.weight")
+        self._watch(y, "sc.rx.equalizer.output")
         diagnostics = {
             "equivalent_gain_real": float(np.real(equivalent_gain)),
             "equivalent_gain_imag": float(np.imag(equivalent_gain)),
@@ -184,6 +193,72 @@ class FreqDomainEqualizer:
             "post_equalization_noise_var": post_noise_var,
         }
         return y, post_noise_var, diagnostics
+
+    def _equalize_frame_fixed(self, frame_data, H, N0=None):
+        """保持原 GI、归一化与 FDE 公式，显式调用定点运算内核。"""
+        ctx, mid = self.fixed_context, self.fixed_module_id
+        block_len = self.subframe_length + self.gi_length
+        if self.gi_type == "golay":
+            frame_data = frame_data[:-self.gi_length]
+        elif self.gi_type != "cp":
+            raise ValueError(f"不支持的GI类型: {self.gi_type}")
+        frame_data = frame_data[:len(frame_data) // block_len * block_len]
+        blocks = frame_data.reshape(-1, block_len).T[self.gi_length:]
+        Y = np.fft.fftshift(ctx.fft(blocks, mid, axis=0), axes=0)
+        H = ctx.quantize(np.asarray(H), mid, role="coefficient", node=mid + ".H")
+        if self.method == "zf":
+            power = np.real(ctx.mul(H, np.conj(H), mid, role="product", a_role="coefficient", b_role="coefficient", node=mid + ".H_power"))
+            magnitude = ctx.magnitude(H, mid, input_role="coefficient", node=mid + ".H_magnitude")
+            threshold = max(float(ctx.mul(np.max(magnitude), 0.05, mid,
+                                          a_role="output", b_role="coefficient", node=mid + ".clipping_threshold")), 1e-10)
+            # 保护值必须可表示；避免阈值舍入为零导致定点除零。
+            threshold = max(threshold, ctx.module_config(mid).format_for("coefficient").lsb)
+            safe = H.copy()
+            weak = magnitude < threshold
+            if np.any(weak):
+                phases = ctx.angle(H[weak], mid, node=mid + ".weak_phase")
+                safe[weak] = ctx.mul(ctx.phasor(phases, mid), threshold, mid,
+                                     role="coefficient", a_role="coefficient", b_role="coefficient", node=mid + ".H_safe")
+            W = ctx.div(1.0, safe, mid, role="weight", b_role="coefficient", node=mid + ".weight")
+        else:
+            if N0 is None:
+                raise ValueError("MMSE需要提供噪声方差")
+            noise = ctx.quantize(N0, mid, role="noise", node=mid + ".noise_var")
+            power = np.real(ctx.mul(H, np.conj(H), mid, role="product", a_role="coefficient", b_role="coefficient", node=mid + ".H_power"))
+            denominator = ctx.add(power, noise, mid, role="denominator", a_role="product", b_role="noise", node=mid + ".denominator")
+            W = ctx.div(np.conj(H), denominator, mid, role="weight", a_role="coefficient", b_role="denominator", node=mid + ".weight")
+        EQ = ctx.mul(Y, W[:, np.newaxis], mid, a_role="output", b_role="weight", node=mid + ".frequency_output")
+        y = ctx.fft(np.fft.ifftshift(EQ, axes=0), mid, inverse=True, axis=0, input_role="output").ravel(order="F")
+        # Noise propagation affects LLR scaling and therefore follows the same
+        # finite arithmetic. Integer count denominators retain their exact value.
+        response = ctx.mul(W, H, mid, role="product", a_role="weight", b_role="coefficient")
+        gain = ctx.div(ctx.sum(response, mid, input_role="product"), len(H), mid,
+                       role="product", a_role="accumulator", b_role="index", node=mid + ".equivalent_gain")
+        residual = 0.0
+        post_noise = None
+        if N0 is not None:
+            weight_power = np.real(ctx.mul(W, np.conj(W), mid, role="product", a_role="weight", b_role="weight"))
+            enhancement = ctx.div(ctx.sum(weight_power, mid, input_role="product"), len(H), mid,
+                                  role="product", a_role="accumulator", b_role="index")
+            response_power = np.real(ctx.mul(response, np.conj(response), mid,
+                                             role="product", a_role="product", b_role="product"))
+            mean_response_power = ctx.div(ctx.sum(response_power, mid, input_role="product"), len(H), mid,
+                                         role="product", a_role="accumulator", b_role="index")
+            gain_power = np.real(ctx.mul(gain, np.conj(gain), mid,
+                                        role="product", a_role="product", b_role="product"))
+            residual = float(max(ctx.add(mean_response_power, -gain_power, mid,
+                                        role="product", a_role="product", b_role="product"), 0.0))
+            propagated_noise = ctx.mul(N0, enhancement, mid, role="product", a_role="noise", b_role="product")
+            post_noise = float(ctx.add(propagated_noise, residual, mid, role="noise",
+                                       a_role="product", b_role="product", node=mid + ".post_noise_var"))
+        ctx.record_coverage(mid, ctx.arithmetic_level(mid), "FFT/FDE/IFFT and post-equalization noise propagation")
+        return y, post_noise, {
+            "equivalent_gain_real": float(np.real(gain)),
+            "equivalent_gain_imag": float(np.imag(gain)),
+            "residual_isi_var": residual,
+            "post_equalization_noise_var": post_noise,
+            "noise_propagation_arithmetic": ctx.arithmetic_level(mid),
+        }
 
     def equalize(self, data_dict):
         """
@@ -251,6 +326,14 @@ class FreqDomainEqualizer:
         self.symbol_length = total_symbol_len
         self.duration = total_symbol_len / fs
 
+        if post_noise_vars and self._fixed_enabled():
+            ctx, mid = self.fixed_context, self.fixed_module_id
+            noise_sum = ctx.sum(np.asarray(post_noise_vars), mid, input_role="noise",
+                                node=mid + ".frame_noise_sum")
+            fixed_mean_noise = float(ctx.div(noise_sum, len(post_noise_vars), mid, role="noise",
+                                             a_role="accumulator", b_role="index",
+                                             node=mid + ".frame_noise_mean"))
+
         result_dict = {
             "signal_stream": y,
             "sample_rate_Hz": fs,
@@ -265,6 +348,9 @@ class FreqDomainEqualizer:
         }
         if post_noise_vars:
             result_dict["noise_var"] = float(np.mean(post_noise_vars))
+            if self._fixed_enabled():
+                result_dict["noise_var"] = fixed_mean_noise
+                result_dict["post_equalization_noise_var"] = fixed_mean_noise
         return result_dict
     
 if __name__ == "__main__":

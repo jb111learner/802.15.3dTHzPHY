@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks, correlate
@@ -7,7 +8,7 @@ from channel.THzChannel import THzChannel
 from receiver.MatchedFilter import RxMatchedFilter
 from receiver.CFOEstimator import CFOEstimator
 
-class ChannelEstimator:
+class ChannelEstimator(FixedReceiverMixin):
     """
     信道估计器（符号率输入），支持 SC-FDE 和 OFDM 两种模式：
 
@@ -19,6 +20,7 @@ class ChannelEstimator:
       - 'global'     : 仅用第一帧估计，所有帧共享
     """
     def __init__(self, transmitter, estimation_mode='per_frame'):
+        self._init_fixed(transmitter.params, "sc.rx.channel_estimation")
         self.params = transmitter.params
         self.link_mode = self.params.get("link_mode").lower()
 
@@ -127,6 +129,9 @@ class ChannelEstimator:
         核心CES互相关信道估计（与原逻辑一致，未修改）
         """
         # 提取a512和b512
+        if self._fixed_enabled():
+            return self._ces_corr_estimate_fixed(ces_field, ces_seq)
+        self._watch(ces_field, self.fixed_module_id + ".input")
         start_a512 = self.len_b128
         a512 = ces_seq[start_a512 : start_a512 + self.N_ces]
         start_b512 = start_a512 + self.N_ces
@@ -186,7 +191,7 @@ class ChannelEstimator:
         if len(peaks) == 0:
             peaks = np.array([np.argmax(abs_c_region)])   # 转为numpy数组
         else:
-            peaks = np.array(peaks)                       # 确保为numpy数组        
+            peaks = np.array(peaks)                       # 确保为numpy数组
 
         idx0 = peaks + start_region
         fine_offset = idx0[0] - self.N_ces
@@ -198,6 +203,8 @@ class ChannelEstimator:
         h_est[valid_idx] = valid_c
 
         H_est = np.fft.fftshift(np.fft.fft(h_est, self.nfft))
+        self._watch(h_est, self.fixed_module_id + ".CIR")
+        self._watch(H_est, self.fixed_module_id + ".H")
         return H_est, fine_offset, h_est
 
     # ==================== OFDM LS 信道估计 ====================
@@ -213,6 +220,9 @@ class ChannelEstimator:
         :param ces_field: 接收CES时域信号（符号率，长度1408）
         :return: H_est (512点频域CSI), fine_offset (0), h_est (Lh点时域CIR)
         """
+        if self._fixed_enabled():
+            return self._ls_estimate_ofdm_fixed(ces_field)
+        self._watch(ces_field, self.fixed_module_id + ".input")
         full_len = self.N_ces + self.Lh - 1   # 512 + 31 = 543（完整线性卷积长度）
 
         # 1. 提取 a512 / b512 的完整线性卷积响应
@@ -259,6 +269,159 @@ class ChannelEstimator:
 
         fine_offset = 0
 
+        self._watch(h_est, self.fixed_module_id + ".CIR")
+        self._watch(H_est, self.fixed_module_id + ".H")
+        return H_est, fine_offset, h_est
+
+    def _ces_corr_estimate_fixed(self, ces_field, ces_seq):
+        """
+        核心CES互相关信道估计（与原逻辑一致，未修改）
+        """
+        # 提取a512和b512
+        start_a512 = self.len_b128
+        a512 = ces_seq[start_a512 : start_a512 + self.N_ces]
+        start_b512 = start_a512 + self.N_ces
+        b512 = ces_seq[start_b512 : start_b512 + self.N_ces]
+
+        ra512 = ces_field[start_a512 : start_a512 + self.N_ces]
+        rb512 = ces_field[start_b512 : start_b512 + self.N_ces]
+
+        ctx, mid = self.fixed_context, self.fixed_module_id
+        ra = ctx.correlate(ra512, a512, mid, mode="full")
+        rb = ctx.correlate(rb512, b512, mid, mode="full")
+        c = ctx.mul(ctx.add(ra, rb, mid, role="accumulator", a_role="output", b_role="output", node=mid + ".correlation_sum"),
+                    1.0 / (2 * self.N_ces), mid, a_role="accumulator", b_role="coefficient", node=mid + ".correlation_normalized")
+
+        if str(self.params.get("multipath_source", "simulated")).lower() == "measured":
+            # 帧同步在多径下可能锁定到主径附近，而不是最早到达径。此时
+            # CIR 会跨过零时延；固定从 N_ces-1 向后截取会丢失前游标。
+            # 在零时延附近搜索能量最大的 Lh 点窗口，并在构造频响时按
+            # 有符号时延循环放置抽头，使负时延所对应的线性相位得以保留。
+            center = self.N_ces - 1
+            search_radius = max(int(self.params.get("gi_length")), self.Lh)
+            min_lag = max(-search_radius, -center)
+            max_lag = min(
+                search_radius,
+                len(c) - center - self.Lh,
+            )
+            candidate_lags = np.arange(min_lag, max_lag + 1, dtype=int)
+            window_energy = np.asarray([
+                ctx.sum(np.real(ctx.mul(c[center + lag:center + lag + self.Lh],
+                                   np.conj(c[center + lag:center + lag + self.Lh]), mid,
+                                   role="product", a_role="output", b_role="output")), mid, input_role="product")
+                for lag in candidate_lags
+            ])
+            best_lag = int(candidate_lags[int(np.argmax(window_energy))])
+            start = center + best_lag
+            stop = start + self.Lh
+            h_est = np.asarray(c[start:stop], dtype=np.complex128)
+            if len(h_est) < self.Lh:
+                h_est = np.pad(h_est, (0, self.Lh - len(h_est)))
+
+            h_circular = np.zeros(self.nfft, dtype=np.complex128)
+            tap_indexes = (best_lag + np.arange(self.Lh)) % self.nfft
+            h_circular[tap_indexes] = h_est
+            H_est = np.fft.fftshift(ctx.fft(h_circular, mid))
+            ctx.record_coverage(mid, ctx.arithmetic_level(mid), "CES correlation/window/FFT")
+            return H_est, best_lag, h_est
+
+        abs_c = ctx.magnitude(c, mid, node=mid + ".cir_magnitude")
+        center = np.argmax(abs_c)
+
+        start_region = int(center - self.Lh / 2)
+        end_region = int(center + self.Lh / 2)
+        start_region = max(0, start_region)
+        end_region = min(len(c)-1, end_region)
+        c_region = c[start_region:end_region+1]
+        abs_c_region = abs_c[start_region:end_region+1]
+
+        # peaks, _ = find_peaks(abs_c_region, height=0.1 * abs_c.max())
+        # if len(peaks) == 0:
+        #     peaks = [np.argmax(abs_c_region)]
+        threshold = ctx.mul(0.1, abs_c.max(), mid, a_role="coefficient", b_role="output", node=mid + ".peak_threshold")
+        peaks, _ = find_peaks(abs_c_region, height=threshold)
+        if len(peaks) == 0:
+            peaks = np.array([np.argmax(abs_c_region)])   # 转为numpy数组
+        else:
+            peaks = np.array(peaks)                       # 确保为numpy数组
+
+        idx0 = peaks + start_region
+        fine_offset = idx0[0] - self.N_ces
+        idx_h = idx0 - idx0[0]
+
+        h_est = np.zeros((self.Lh,), dtype=np.complex128)
+        valid_idx = [i for i in idx_h if 0 <= i < self.Lh]
+        valid_c = [c[idx0[k]] for k in range(len(idx0)) if 0 <= idx_h[k] < self.Lh]
+        h_est[valid_idx] = valid_c
+
+        H_est = np.fft.fftshift(ctx.fft(h_est, mid, n=self.nfft))
+        ctx.record_coverage(mid, ctx.arithmetic_level(mid), "CES correlation/peak/FFT")
+        return H_est, fine_offset, h_est
+
+    # ==================== OFDM LS 信道估计 ====================
+    def _ls_estimate_ofdm_fixed(self, ces_field):
+        """
+        OFDM模式：基于CES序列的LS（最小二乘）信道估计
+
+        关键修正：线性卷积 vs 循环卷积
+          - 多径信道下接收CES是 tx * h 的线性卷积，长度 = 512 + Lh - 1
+          - 必须用扩展FFT窗口捕获完整卷积响应，否则LS幅值失真
+          - 做法：提取 512+Lh-1 点 → FFT → LS → IFFT → 截断至 Lh
+
+        :param ces_field: 接收CES时域信号（符号率，长度1408）
+        :return: H_est (512点频域CSI), fine_offset (0), h_est (Lh点时域CIR)
+        """
+        ctx, mid = self.fixed_context, self.fixed_module_id
+        full_len = self.N_ces + self.Lh - 1   # 512 + 31 = 543（完整线性卷积长度）
+
+        # 1. 提取 a512 / b512 的完整线性卷积响应
+        start_a512 = self.len_b128
+        rx_a512_full = ces_field[start_a512 : start_a512 + full_len]   # 543
+        start_b512 = start_a512 + self.N_ces
+        rx_b512_full = ces_field[start_b512 : start_b512 + full_len]   # 543
+
+        # 2. TX参考序列零填充至 full_len
+        tx_a512_padded = np.pad(self.tx_a512, (0, self.Lh - 1))  # 543
+        tx_b512_padded = np.pad(self.tx_b512, (0, self.Lh - 1))  # 543
+
+        # 3. FFT（full_len点，捕获完整线性卷积）
+        Y_a = ctx.fft(rx_a512_full, mid)
+        Y_b = ctx.fft(rx_b512_full, mid)
+        X_a = ctx.fft(tx_a512_padded, mid)
+        X_b = ctx.fft(tx_b512_padded, mid)
+
+        # 4. LS估计: H = Y / X（阈值保护低功率子载波）
+        magnitude_a = ctx.magnitude(X_a, mid, node=mid + ".reference_a_magnitude")
+        magnitude_b = ctx.magnitude(X_b, mid, node=mid + ".reference_b_magnitude")
+        threshold = ctx.mul(max(float(np.max(magnitude_a)), float(np.max(magnitude_b))),
+                            1e-3, mid, a_role="output", b_role="coefficient", node=mid + ".reference_threshold")
+        mask_a = magnitude_a > threshold
+        mask_b = magnitude_b > threshold
+
+        H_a = np.zeros(full_len, dtype=np.complex128)
+        H_b = np.zeros(full_len, dtype=np.complex128)
+        H_a[mask_a] = ctx.div(Y_a[mask_a], X_a[mask_a], mid, a_role="output", b_role="output")
+        H_b[mask_b] = ctx.div(Y_b[mask_b], X_b[mask_b], mid, a_role="output", b_role="output")
+
+        # 5. 两组平均
+        mask_both = mask_a & mask_b
+        H_est_full = np.zeros(full_len, dtype=np.complex128)
+        H_est_full[mask_both] = ctx.mul(ctx.add(H_a[mask_both], H_b[mask_both], mid, a_role="output", b_role="output"), 0.5, mid, a_role="output", b_role="coefficient")
+        H_est_full[mask_a & ~mask_b] = H_a[mask_a & ~mask_b]
+        H_est_full[mask_b & ~mask_a] = H_b[mask_b & ~mask_a]
+
+        # 6. IFFT → 时域CIR（full_len点），截断至 Lh
+        h_full = ctx.fft(H_est_full, mid, inverse=True, input_role="output")
+        h_est = h_full[:self.Lh].copy()
+
+        # 7. 输出512点频域CSI（零填充CIR → FFT，与SC-FDE格式一致）
+        h_padded = np.zeros(self.N_ces, dtype=np.complex128)
+        h_padded[:self.Lh] = h_est
+        H_est = ctx.fft(h_padded, mid)
+
+        fine_offset = 0
+
+        ctx.record_coverage(mid, ctx.arithmetic_level(mid), "CES FFT/LS/IFFT/FFT")
         return H_est, fine_offset, h_est
 
     def channel_estimate(self, signal_dict):

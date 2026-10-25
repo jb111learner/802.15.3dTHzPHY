@@ -1133,6 +1133,8 @@ class BackendService(QObject):
         if 'SNR' in ui_params and 'SNRdB' not in mapped_params:
             mapped_params['SNRdB'] = float(ui_params['SNR'])
 
+        from simulation.fixedpoint_config_bridge import map_numeric_ui_parameters
+        mapped_params.update(map_numeric_ui_parameters(ui_params))
         return mapped_params
 
     def run_simulation(self, params: dict = None, project_folder: str = None) -> None:
@@ -1491,6 +1493,10 @@ class BackendService(QObject):
 
         with open(project_path / 'metrics.json', 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+        numeric_report = (result.get('result') or result).get('fixed_point_report')
+        if numeric_report is not None:
+            from simulation.fixedpoint_report import save_fixedpoint_report
+            save_fixedpoint_report(numeric_report, project_path)
 
     def _save_transmitter_plots(self, result, output_dir):
         import matplotlib.pyplot as plt

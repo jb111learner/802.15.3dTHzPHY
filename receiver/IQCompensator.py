@@ -1,9 +1,10 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import warnings
 
 import numpy as np
 
 
-class IQRealParallelCalibrator:
+class IQRealParallelCalibrator(FixedReceiverMixin):
     """
     Real-based parallel LS estimator and TX precompensator for IQ imbalance.
 
@@ -14,6 +15,9 @@ class IQRealParallelCalibrator:
     All FIR convolutions are causal. Same-length signal outputs are produced by
     truncating the full causal convolution to the input sequence length.
     """
+
+    def __init__(self, params=None):
+        self._init_fixed(params, "rx.iq.calibrator")
 
     _COND_WARNING_THRESHOLD = 1e10
 
@@ -465,7 +469,7 @@ class IQRealParallelCalibrator:
         return rcI + 1j * rcQ
 
 
-class IQCompensator:
+class IQCompensator(FixedReceiverMixin):
     """
     RX IQ 不平衡补偿器（符号率、多帧支持）
 
@@ -485,6 +489,7 @@ class IQCompensator:
 
     def __init__(self, transmitter, filter_len=5, ridge_lambda=0.0,
                  compensation_mode='per_frame'):
+        self._init_fixed(transmitter.params, "rx.iq.ces")
         """
         :param transmitter: THzTransmitter 实例（提供 preamble/CES 结构信息）
         :param filter_len: IQ 损伤 FIR 滤波器阶数（≥1，默认 5）
@@ -675,7 +680,10 @@ class IQCompensator:
     # 主入口：IQ 补偿
     # ------------------------------------------------------------------
 
-    def compensate(self, data_dict, tail_mode='error'):
+    def compensate(self, data_dict, *args, **kwargs):
+        return self._boundary_dict_call(self._compensate_float, data_dict, *args, **kwargs)
+
+    def _compensate_float(self, data_dict, tail_mode='error'):
         """
         多帧 IQ 不平衡补偿入口
 
@@ -761,7 +769,7 @@ class IQCompensator:
         return result_dict
 
 
-class DecisionDirectedIQCompensator:
+class DecisionDirectedIQCompensator(FixedReceiverMixin):
     """均衡后基于硬判决符号的残余 RX IQ 不平衡补偿器。"""
 
     _QAM_SCALE = {
@@ -773,6 +781,7 @@ class DecisionDirectedIQCompensator:
     }
 
     def __init__(self, params, filter_len=5, ridge_lambda=0.0, iterations=1):
+        self._init_fixed(params, "rx.iq.decision_directed")
         self.params = params
         self.filter_len = IQRealParallelCalibrator._validate_filter_len(filter_len)
         self.ridge_lambda = float(ridge_lambda)
@@ -839,7 +848,10 @@ class DecisionDirectedIQCompensator:
             )
         )
 
-    def compensate(self, data_dict):
+    def compensate(self, data_dict, *args, **kwargs):
+        return self._boundary_dict_call(self._compensate_float, data_dict, *args, **kwargs)
+
+    def _compensate_float(self, data_dict):
         required_keys = [
             "signal_stream",
             "sample_rate_Hz",

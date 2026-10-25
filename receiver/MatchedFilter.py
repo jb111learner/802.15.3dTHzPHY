@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 from params.PHYParams import PHYParams
 from transmitter.THzTransmitter import THzTransmitter
@@ -10,8 +11,9 @@ import matplotlib.pyplot as plt
 plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 
-class RxMatchedFilter:
+class RxMatchedFilter(FixedReceiverMixin):
     def __init__(self, transmitter):
+        self._init_fixed(transmitter.params, "sc.rx.matched_filter")
         self.sps = transmitter.oversampling
         # self.chan_max_delay = transmitter.chan_max_delay
         self.filter_type = transmitter.pulse_shaper.filter_type
@@ -74,7 +76,16 @@ class RxMatchedFilter:
     def matched_filter(self, signal_dict):
         """匹配滤波"""
         self._verification_data(signal_dict)
-        y = np.convolve(signal_dict["signal_stream"], self.h_rx, 'full')
+        if self._fixed_enabled():
+            y = self.fixed_context.fir(
+                signal_dict["signal_stream"], self.h_rx,
+                self.fixed_module_id, mode="full"
+            )
+        else:
+            self._watch(signal_dict["signal_stream"], self.fixed_module_id + ".input")
+            self._watch(self.h_rx, self.fixed_module_id + ".coefficient")
+            y = np.convolve(signal_dict["signal_stream"], self.h_rx, 'full')
+            self._watch(y, self.fixed_module_id + ".output")
         # 最终长度校验··
         if not np.isclose(len(y), self.signal_length):
             raise ValueError(

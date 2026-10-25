@@ -1,4 +1,5 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 from pathlib import Path
 from core.BaseChannel import BaseChannel
 from channel.MultipathChannel import MultipathChannel
@@ -14,12 +15,13 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
-class THzChannel(BaseChannel):
+class THzChannel(FixedPointMixin, BaseChannel):
     """
     THz信道主类
     """
     def __init__(self, params):
         super().__init__(params)
+        self._init_fixed(params, "channel")
         self.enable_mimo = bool(self.params.get("enable_mimo", False))
         self.use_measured_channel = (
             str(self.params.get("multipath_source", "simulated")).lower()
@@ -45,6 +47,33 @@ class THzChannel(BaseChannel):
         self.power_amplifier = self._create_power_amplifier() if self.params.get("enable_pa") and not self.enable_mimo else None
         self.pa_diagnostics = None
         self.chan_true = None  # 多径启用后保存等效信道冲激响应，便于后续信道估计/均衡验证
+        self.configure_fixed(self.fixed_context.config.enable_fixed, fixed_context=self.fixed_context)
+
+    def configure_fixed(self, enable_fixed, fixed_config=None, fixed_context=None):
+        FixedPointMixin.configure_fixed(self, enable_fixed, fixed_config, fixed_context)
+        for name in ("mimo_channel", "measured_channel", "multipath_chan", "awgn",
+                     "cfo", "iq_imbalance", "power_amplifier"):
+            module = getattr(self, name, None)
+            if module is not None:
+                module.configure_fixed(enable_fixed, fixed_config, self.fixed_context)
+        return self
+
+    def _finalize_rx_samples(self, signal_dict):
+        """在全部物理信道损伤之后执行一次接收采样量化。"""
+        module_id = "channel.rx_samples"
+        samples = signal_dict["signal_stream"]
+        self.fixed_context.observe(module_id + ".input", samples)
+        config = self.fixed_context.module_config(module_id)
+        if self.fixed_context.module_enabled(module_id) and bool(config.get("quantize_rx_samples", True)):
+            result = dict(signal_dict)
+            result["signal_stream"] = self.fixed_context.quantize(
+                samples, module_id, role="output", node=module_id + ".output"
+            )
+            self.fixed_context.record_coverage(module_id, "operation", "Receive sample format conversion")
+            return result
+        self.fixed_context.record_coverage(module_id, "float")
+        self.fixed_context.observe(module_id + ".output", samples)
+        return signal_dict
 
     def _create_power_amplifier(self):
         """创建功率放大器，并按配置选择数据集参数或手动参数。"""
@@ -150,6 +179,7 @@ class THzChannel(BaseChannel):
                 raise ValueError("MIMO 分支暂不支持功率放大器非线性，请先关闭 enable_pa")
             self.rx_signal_dict = self.mimo_channel.apply(signal_dict)
             self.chan_true = self.mimo_channel.channel_impulse_response
+            self.rx_signal_dict = self._finalize_rx_samples(self.rx_signal_dict)
             return self.rx_signal_dict
         # 0. 可选 TX 端 IQ 不平衡
         signal = self.apply_iq_imbalance(signal_dict, stage="tx")
@@ -171,7 +201,7 @@ class THzChannel(BaseChannel):
             signal["measured_channel_impulse_response"] = (
                 self.measured_channel.channel_impulse_response[0, 0].copy()
             )
-        self.rx_signal_dict = signal
+        self.rx_signal_dict = self._finalize_rx_samples(signal)
         return self.rx_signal_dict
 
 def plot_eye_diagram(signal, symbol_period, num_symbols=100, ax=None):

@@ -39,15 +39,17 @@
 #     print(f"频偏值：{cfo.freq_offset} Hz")
 #     print(f"原始信号长度：{len(signal)}, 频偏后长度：{len(signal_with_cfo)}")
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 from scipy.signal import butter, lfilter, welch
 
-class CFO:
+class CFO(FixedPointMixin):
     """
     载波频率偏移（CFO） + 相位噪声 模型
     - 频偏：基于ppm或直接指定
     - 相位噪声：一阶IIR低通滤波生成有色噪声（模拟1/f特性）
     """
     def __init__(self, params):
+        self._init_fixed(params, "channel.cfo")
         self.params = params
         """初始化频偏：基于ppm和载波频率计算"""
         self.phase_noise_state = None    # 用于IIR滤波的状态
@@ -148,7 +150,23 @@ class CFO:
         # 3. 总相位扰动
         total_phase = cfo_phase + self.phase_noise
         # 4. 应用
-        result_signal = signal * np.exp(1j * total_phase)
+        quantize_arithmetic = self.enable_fixed and bool(
+            self.fixed_context.module_config("channel.cfo").get("quantize_channel_arithmetic", False)
+        )
+        self.fixed_context.observe("channel.cfo.phase", total_phase)
+        self.fixed_context.record_coverage("channel.cfo.phase_generation", "float", "Configured physical phase trajectory")
+        if quantize_arithmetic:
+            if self.fixed_context.arithmetic_level("channel.cfo") == "operation":
+                phasor = self.fixed_context.phasor(total_phase, "channel.cfo")
+                result_signal = self.fixed_context.mul(signal, phasor, "channel.cfo", b_role="coefficient")
+            else:
+                phasor = self._fq(np.exp(1j * total_phase), role="coefficient", node="channel.cfo.phasor")
+                result_signal = self._fq(self._fq(signal, role="input") * phasor)
+                self.fixed_context.record_coverage("channel.cfo", "boundary")
+        else:
+            result_signal = signal * np.exp(1j * total_phase)
+            self.fixed_context.record_coverage("channel.cfo", "float", "Physical CFO/phase-noise model")
+            self.fixed_context.observe("channel.cfo.output", result_signal)
 
         # 校验输出信号长度
         if len(result_signal) != self.signal_length:

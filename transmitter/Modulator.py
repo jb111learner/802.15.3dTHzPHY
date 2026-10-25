@@ -1,10 +1,11 @@
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 import matplotlib.pyplot as plt
 from params.PHYParams import PHYParams
 plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
-class THzModulator:
+class THzModulator(FixedPointMixin):
     """
     太赫兹通信调制器类：支持多种调制方式
     """
@@ -35,6 +36,7 @@ class THzModulator:
 
     # -------------------- init --------------------
     def __init__(self, params):
+        self._init_fixed(params, "tx.modulator")
         self.params = params
         self.MCS = self.params.get("MCS")
         self.NCBPS = self.params.get("NCBPS")
@@ -287,6 +289,7 @@ class THzModulator:
 
     def modulate(self, data_dict):
         """主调制函数（修正版）"""
+        self.fixed_context.require_boundary("tx.modulator", "constellation generation supports boundary quantization only")
         self._verification_data(data_dict)
         bits = data_dict["signal_stream"]
         if not np.all(np.isin(bits, [0, 1])):
@@ -319,6 +322,10 @@ class THzModulator:
                 * np.exp(-1j * np.pi * np.arange(len(symbols_modulated)) / 2)
             )
             
+        symbols_modulated = self._fq(symbols_modulated, node="tx.modulator.output")
+        self.fixed_context.record_coverage(
+            "tx.modulator", "boundary" if self.enable_fixed else "float"
+        )
         result_dict = {
             "signal_stream": symbols_modulated,
             "sample_rate_Hz": self.sample_rate,

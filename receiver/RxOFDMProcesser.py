@@ -1,3 +1,4 @@
+from receiver.FixedReceiverSupport import FixedReceiverMixin
 import numpy as np
 import matplotlib.pyplot as plt
 from params.PHYParams import PHYParams
@@ -12,7 +13,7 @@ plt.rcParams["font.family"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False
 
 
-class RxOFDMProcesser:
+class RxOFDMProcesser(FixedReceiverMixin):
     """
     OFDM 接收端处理器：完成完整的 OFDM 解调流程
 
@@ -25,6 +26,7 @@ class RxOFDMProcesser:
     """
 
     def __init__(self, transmitter):
+        self._init_fixed(transmitter.params, "ofdm.rx.processor")
         self.params = transmitter.params
         self.preamble_len = len(transmitter.preamble)
 
@@ -183,7 +185,14 @@ class RxOFDMProcesser:
         :return: (N_SC, num_blocks) 频域OFDM符号矩阵（取回 DC 居中的子载波）
         """
         # ortho模式：与发射端 ifft(norm='ortho') 匹配，完美还原
-        fft_out = np.fft.fft(time_grid, axis=0, norm='ortho')  # size N_SC*sps
+        if self._fixed_enabled("ofdm.rx.fft"):
+            fft_out = self.fixed_context.fft(
+                time_grid, "ofdm.rx.fft", axis=0, norm="ortho"
+            )
+        else:
+            self._watch(time_grid, "ofdm.rx.fft.input")
+            fft_out = np.fft.fft(time_grid, axis=0, norm='ortho')  # size N_SC*sps
+            self._watch(fft_out, "ofdm.rx.fft.output")
         half = self.N_SC // 2
         return np.concatenate(
             [fft_out[:half], fft_out[self.N_SC * self.sps - half:]], axis=0
@@ -207,6 +216,8 @@ class RxOFDMProcesser:
         Unlike piecewise interpolation, a single linear trend across the
         full 32-symbol span gives optimal residual-CFO frequency estimate.
         """
+        if self._fixed_enabled("ofdm.rx.channel_estimation") or self._fixed_enabled("ofdm.rx.equalizer"):
+            return self._ls_track_and_equalize_fixed(freq_grid, H_init_list)
         eps = np.finfo(np.complex128).eps
         has_init = H_init_list is not None and len(H_init_list) >= self.frame_num
         pilot_set = set(self.pilot_indexes)
@@ -279,8 +290,79 @@ class RxOFDMProcesser:
 
             H_est_list.append(H.copy())
             h_est_list.append(np.fft.ifft(H)[:self.channel_estimation_taps])
+            self._watch(H, "ofdm.rx.channel_estimation.H")
+        self._watch(eq_grid, "ofdm.rx.equalizer.output")
 
         return eq_grid, H_est_list, h_est_list
+
+    def _ls_track_and_equalize_fixed(self, freq_grid, H_init_list=None, track_phase=True):
+        """独立 Pilot-LS/ZF 分支；每个子模块开关分别生效。"""
+        ctx = self.fixed_context
+        est, eq = "ofdm.rx.channel_estimation", "ofdm.rx.equalizer"
+        pilots = sorted(self.pilot_indexes)
+        output = np.zeros_like(freq_grid)
+        responses, impulses = [], []
+        for frame in range(self.frame_num):
+            if H_init_list is not None and len(H_init_list) >= self.frame_num:
+                H = ctx.quantize(np.array(H_init_list[frame], copy=True), est, node=est + ".H")
+            else:
+                estimates = []
+                for pilot in pilots:
+                    reference = self.pilot_reference_by_index[pilot]
+                    reference = ctx.quantize(reference, est, role="coefficient", node=est + ".pilot")
+                    estimates.append(ctx.div(freq_grid[:, frame * self.N_SYM + pilot],
+                                             reference, est, role="accumulator", b_role="coefficient", node=est + ".pilot_ls"))
+                H = ctx.mul(ctx.sum(np.asarray(estimates), est, axis=0, input_role="accumulator"),
+                            1.0 / len(pilots), est, a_role="accumulator", b_role="coefficient", node=est + ".H")
+            magnitude = ctx.magnitude(H, est, input_role="output", node=est + ".H_magnitude")
+            weak_threshold = ctx.mul(np.max(magnitude), 1e-3, est,
+                                     a_role="output", b_role="coefficient", node=est + ".weak_threshold")
+            weak_threshold = max(1e-10, float(weak_threshold))
+            if ctx.module_enabled(est):
+                weak_threshold = max(weak_threshold, ctx.format_for(est, "output").lsb)
+            weak = magnitude < weak_threshold
+            if np.all(weak):
+                raise FloatingPointError("OFDM 定点 CSI 全为零，无法进行 ZF")
+            if np.any(weak):
+                replacement = ctx.mul(ctx.sum(H[~weak], est, input_role="output"),
+                                      1.0 / np.count_nonzero(~weak), est,
+                                      a_role="accumulator", b_role="coefficient")
+                H[weak] = replacement
+            # A representable floor protects denominators without changing the float reference.
+            H_eq = ctx.quantize(H, eq, role="coefficient", node=eq + ".H")
+            if np.any(H_eq == 0):
+                raise FloatingPointError("OFDM 定点均衡分母量化为零，请增加 CSI 精度")
+            phases = []
+            power = np.real(ctx.mul(H_eq, np.conj(H_eq), eq, role="product", a_role="coefficient", b_role="coefficient", node=eq + ".H_power"))
+            weight_sum = ctx.sum(power, eq, input_role="product")
+            if track_phase and weight_sum == 0:
+                raise FloatingPointError("OFDM 定点相位跟踪权重为零，请增加功率精度")
+            for symbol in range(self.N_SYM):
+                col = frame * self.N_SYM + symbol
+                output[:, col] = ctx.div(freq_grid[:, col], H_eq, eq, b_role="coefficient", node=eq + ".zf")
+                if track_phase and symbol in pilots:
+                    correlation = ctx.mul(output[:, col], np.conj(self.pilot_reference_by_index[symbol]), eq, role="product", a_role="output", b_role="coefficient")
+                    weighted = ctx.sum(ctx.mul(power, correlation, eq, role="product", a_role="product", b_role="product"), eq, input_role="product")
+                    # Positive real normalization does not affect phase; retain it to mirror the algorithm.
+                    correlation_mean = ctx.div(weighted, weight_sum, eq, role="accumulator", a_role="accumulator", b_role="accumulator")
+                    phases.append(ctx.angle(correlation_mean, eq, node=eq + ".pilot_phase"))
+            if track_phase:
+                unwrapped = ctx.quantize(np.unwrap(np.asarray(phases)), eq, role="phase", node=eq + ".phase_unwrapped")
+                slope = ctx.mul(ctx.add(unwrapped[-1], -unwrapped[0], eq, role="phase", a_role="phase", b_role="phase"),
+                                1.0 / (pilots[-1] - pilots[0]), eq, role="phase", a_role="phase", b_role="coefficient", node=eq + ".phase_slope")
+                for symbol in range(self.N_SYM):
+                    if symbol in pilots:
+                        continue
+                    phase = ctx.add(unwrapped[0], ctx.mul(symbol, slope, eq, role="phase", a_role="index", b_role="phase"),
+                                    eq, role="phase", a_role="phase", b_role="phase")
+                    rotation = ctx.phasor(-phase, eq, node=eq + ".rotation")
+                    col = frame * self.N_SYM + symbol
+                    output[:, col] = ctx.mul(output[:, col], rotation, eq, a_role="output", b_role="coefficient", node=eq + ".output")
+            responses.append(H.copy())
+            impulses.append(ctx.fft(H, est, inverse=True, input_role="output")[:self.channel_estimation_taps])
+        ctx.record_coverage(est, ctx.arithmetic_level(est) if ctx.module_enabled(est) else "float", "Pilot LS/average/CSI IFFT")
+        ctx.record_coverage(eq, ctx.arithmetic_level(eq) if ctx.module_enabled(eq) else "float", "ZF/phase CORDIC; unwrap is discrete phase branch selection")
+        return output, responses, impulses
 
     def _track_equalized_common_phase(self, eq_grid):
         """利用补偿后的块导频跟踪每帧残余公共相位。"""
@@ -352,10 +434,26 @@ class RxOFDMProcesser:
 
         # ———— 3. 宽线性联合均衡，或传统 Pilot-LS 均衡 ————
         if self.iq_ofdm_compensator is not None:
+            # These legacy algorithms perform a widely-linear matrix fit and
+            # polyfit phase tracking. Reject an operation request on either
+            # composite submodule instead of silently bypassing its switch.
+            self._boundary_only("widely-linear IQ path and polyfit phase tracking are boundary-only; disable IQ compensation for integer Pilot-LS/ZF",
+                                "ofdm.rx.channel_estimation")
+            self._boundary_only("widely-linear IQ path and polyfit phase tracking are boundary-only; disable IQ compensation for integer Pilot-LS/ZF",
+                                "ofdm.rx.equalizer")
             eq_grid, H_est_list, _, diagnostics = (
                 self.iq_ofdm_compensator.compensate(freq_grid, self.frame_num)
             )
             eq_grid = self._track_equalized_common_phase(eq_grid)
+            if self._fixed_enabled("ofdm.rx.equalizer"):
+                eq_grid = self.fixed_context.quantize(eq_grid, "ofdm.rx.equalizer",
+                                                     node="ofdm.rx.equalizer.iq_path_output")
+                self.fixed_context.record_coverage("ofdm.rx.equalizer", "boundary",
+                                                   "delegated widely-linear float solve/polyfit with boundary output quantization")
+            if self._fixed_enabled("ofdm.rx.channel_estimation"):
+                H_est_list = [self.fixed_context.quantize(H, "ofdm.rx.channel_estimation") for H in H_est_list]
+                self.fixed_context.record_coverage("ofdm.rx.channel_estimation", "boundary",
+                                                   "IQ module performs channel fit; only reported CSI converted at this module boundary")
             h_est_list = [
                 np.fft.ifft(response)[:self.channel_estimation_taps]
                 for response in H_est_list
@@ -366,6 +464,10 @@ class RxOFDMProcesser:
             eq_grid, H_est_list, h_est_list = self._ls_track_and_equalize(
                 freq_grid, H_init_list)
             self.H_est_per_subframe = H_est_list
+        elif self._fixed_enabled("ofdm.rx.channel_estimation") or self._fixed_enabled("ofdm.rx.equalizer"):
+            eq_grid, H_est_list, h_est_list = self._ls_track_and_equalize_fixed(
+                freq_grid, track_phase=False
+            )
         else:
             # 旁路：仅 pilot-LS + ZF（补偿滤波器响应），跳过相位跟踪
             eps = np.finfo(np.complex128).eps

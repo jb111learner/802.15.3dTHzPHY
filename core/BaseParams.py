@@ -1,4 +1,5 @@
 import numpy as np
+from copy import deepcopy
 
 class BaseParams:
     """
@@ -35,6 +36,10 @@ class BaseParams:
         """深拷贝参数对象并返回。"""
         new_obj = self.__class__()
         new_obj._params = self._params.copy()
+        # 只隔离新增分析配置，保持原有物理参数的复制行为。
+        for key in ("fixed_point", "range_analysis"):
+            if key in new_obj._params:
+                new_obj._params[key] = deepcopy(new_obj._params[key])
         new_obj.validate()
         return new_obj
 

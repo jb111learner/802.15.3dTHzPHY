@@ -1,14 +1,16 @@
 import os
 import random
 import numpy as np
+from fixedpoint.mixin import FixedPointMixin
 from params.PHYParams import PHYParams
 from utils.LDPCMatrix import ieee802153d_1440_dimensions
 
-class BitStreamProcessor:
+class BitStreamProcessor(FixedPointMixin):
     """
     比特流处理
     """
     def __init__(self, params):
+        self._init_fixed(params, "tx.data")
         self.params = params
         self.file_path = self.params.get("file_path")      # 文件路径
         self.sample_rate = self.params.get("sample_rate")  # 采样率 (sps)
@@ -232,6 +234,7 @@ class BitStreamProcessor:
             raise ValueError(f"不支持的数据源类型：{data_src}")
 
         self.frame_process()
+        self.fixed_context.record_coverage("tx.data", "bit_exact")
         return self._get_result()
 
     @staticmethod
